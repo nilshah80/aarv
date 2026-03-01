@@ -62,6 +62,7 @@ type ListUsersRes struct {
 
 var (
 	store   = make(map[string]User)
+	emails  = make(map[string]string) // email → id (O(1) dedup)
 	storeMu sync.RWMutex
 	nextID  int
 )
@@ -77,11 +78,9 @@ func createUser(c *aarv.Context, req CreateUserReq) (User, error) {
 	storeMu.Lock()
 	defer storeMu.Unlock()
 
-	// Check duplicate email
-	for _, u := range store {
-		if u.Email == req.Email {
-			return User{}, aarv.ErrConflict("email already registered")
-		}
+	// O(1) duplicate email check via secondary index
+	if _, dup := emails[req.Email]; dup {
+		return User{}, aarv.ErrConflict("email already registered")
 	}
 
 	user := User{
@@ -93,6 +92,7 @@ func createUser(c *aarv.Context, req CreateUserReq) (User, error) {
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
 	store[user.ID] = user
+	emails[req.Email] = user.ID
 
 	c.Logger().Info("user created", "user_id", user.ID)
 	return user, nil
@@ -164,9 +164,11 @@ func deleteUser(c *aarv.Context) error {
 	storeMu.Lock()
 	defer storeMu.Unlock()
 
-	if _, ok := store[id]; !ok {
+	user, ok := store[id]
+	if !ok {
 		return aarv.ErrNotFound("user not found")
 	}
+	delete(emails, user.Email)
 	delete(store, id)
 
 	return c.NoContent(http.StatusNoContent)

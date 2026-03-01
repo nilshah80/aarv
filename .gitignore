@@ -32,4 +32,4 @@ dist/
 # OS files
 .DS_Store
 Thumbs.db
-.claude
+.claude/settings.local.json
