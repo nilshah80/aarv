@@ -91,9 +91,10 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		// Update req to the mux-dispatched request so PathValue works
-		// even when middleware created new request objects via WithContext.
+		// Update req/res to the mux-dispatched request so PathValue works
+		// and response writes go through middleware wrappers (logger, etag, etc.).
 		ctx.req = r
+		ctx.res = w
 		if err := h(ctx); err != nil {
 			ctx.app.handleError(ctx, err)
 		}

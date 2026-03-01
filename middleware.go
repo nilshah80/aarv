@@ -50,6 +50,9 @@ func Recovery() Middleware {
 							"method", r.Method,
 							"path", r.URL.Path,
 						)
+						// Write to recovery's own ResponseWriter, bypassing any
+						// broken middleware wrappers (etag, compress) that panicked.
+						ctx.res = w
 						ctx.app.handleError(ctx, ErrInternal(nil).WithDetail("panic recovered"))
 					} else {
 						w.WriteHeader(http.StatusInternalServerError)
