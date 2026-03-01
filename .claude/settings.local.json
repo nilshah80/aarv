@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "Bash(go version)",
+      "Bash(go mod init github.com/nilshah80/aarv)",
+      "Bash(go build ./...)",
+      "Bash(go test -v -count=1 ./...)",
+      "Bash(go test -race -count=1 ./...)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(go test -bench=. -benchmem -count=3 -timeout=120s)",
+      "Bash(go test -run TestRPS -v -timeout=60s)",
+      "Bash(go mod init github.com/nilshah80/aarv/bench)",
+      "Bash(go mod edit -go=1.26.0)",
+      "Bash(go mod edit -replace github.com/nilshah80/aarv=../)",
+      "Bash(go get github.com/gin-gonic/gin@latest github.com/gofiber/fiber/v2@latest github.com/valyala/fasthttp@latest)",
+      "Bash(go mod tidy)",
+      "Bash(go test -run TestCompareRPS -v -timeout=120s)",
+      "Bash(go get github.com/mrshabel/mach@latest)",
+      "Bash(go env GOMODCACHE)",
+      "Bash(go test -count=1 ./...)",
+      "Bash(go test -bench=. -benchmem -count=3 -timeout=300s)",
+      "Bash(go test -run TestLoadTest -v -timeout=600s)",
+      "Bash(ls -la /c/share/aarv/*.go /c/share/aarv/*_test.go)",
+      "Bash(go vet ./...)",
+      "Bash(go test ./...)",
+      "Bash(go test -v ./examples/testing/)",
+      "Bash(bash test_examples.sh)",
+      "Bash(go build ./examples/codec/)",
+      "Bash(bash test_codec.sh)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(go test ./examples/testing/ -v -count=1)",
+      "Bash(taskkill //F //IM \"rest-crud.exe\")",
+      "Bash(taskkill //F //IM \"codec.exe\")",
+      "Bash(taskkill //F //IM \"middleware-chain.exe\")",
+      "Bash(taskkill //F //IM \"hooks.exe\")",
+      "Bash(taskkill //F //IM \"custom-plugin.exe\")"
+    ]
+  }
+}

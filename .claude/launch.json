@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "hello-example",
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["run", "./examples/hello"],
+      "port": 8080
+    }
+  ]
+}
