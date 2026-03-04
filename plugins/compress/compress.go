@@ -1,11 +1,12 @@
-// Package compress provides gzip compression middleware for the aarv framework.
+// Package compress provides gzip and deflate compression middleware for the aarv framework.
 //
-// It checks the Accept-Encoding request header for gzip support and compresses
-// response bodies using a pooled gzip.Writer. Responses smaller than the
-// configured minimum size are not compressed.
+// It checks the Accept-Encoding request header for gzip/deflate support and compresses
+// response bodies using pooled writers. Responses smaller than the configured minimum
+// size are not compressed. Content types can be excluded from compression.
 package compress
 
 import (
+	"compress/flate"
 	"compress/gzip"
 	"io"
 	"net/http"
@@ -17,7 +18,7 @@ import (
 
 // Config holds configuration for the compression middleware.
 type Config struct {
-	// Level is the gzip compression level.
+	// Level is the compression level for both gzip and deflate.
 	// Valid values range from gzip.BestSpeed (1) to gzip.BestCompression (9).
 	// Use gzip.DefaultCompression (-1) for the default level.
 	// Default: gzip.DefaultCompression.
@@ -27,6 +28,14 @@ type Config struct {
 	// compression is applied. Responses smaller than this threshold are sent
 	// uncompressed. Default: 1024.
 	MinSize int
+
+	// ExcludedTypes is a list of MIME types that should not be compressed.
+	// Default: image/*, video/*, audio/*, application/pdf, application/zip.
+	ExcludedTypes []string
+
+	// PreferGzip prefers gzip over deflate when both are accepted.
+	// Default: true.
+	PreferGzip bool
 }
 
 // DefaultConfig returns the default compression configuration.
@@ -34,6 +43,16 @@ func DefaultConfig() Config {
 	return Config{
 		Level:   gzip.DefaultCompression,
 		MinSize: 1024,
+		ExcludedTypes: []string{
+			"image/",
+			"video/",
+			"audio/",
+			"application/pdf",
+			"application/zip",
+			"application/gzip",
+			"application/x-gzip",
+		},
+		PreferGzip: true,
 	}
 }
 
@@ -41,13 +60,14 @@ func DefaultConfig() Config {
 // conditionally apply gzip compression based on the body size.
 type gzipResponseWriter struct {
 	http.ResponseWriter
-	gzWriter   *gzip.Writer
-	pool       *sync.Pool
-	buf        []byte
-	minSize    int
-	statusCode int
-	headerSent bool
-	compressed bool
+	gzWriter       *gzip.Writer
+	pool           *sync.Pool
+	buf            []byte
+	minSize        int
+	statusCode     int
+	headerSent     bool
+	compressed     bool
+	isExcludedFunc func(string) bool
 }
 
 func (grw *gzipResponseWriter) WriteHeader(code int) {
@@ -60,6 +80,17 @@ func (grw *gzipResponseWriter) Write(b []byte) (int, error) {
 	// If we already decided to compress, write through the gzip writer
 	if grw.compressed {
 		return grw.gzWriter.Write(b)
+	}
+
+	// Check if content type is excluded
+	if grw.isExcludedFunc != nil {
+		ct := grw.ResponseWriter.Header().Get("Content-Type")
+		if ct != "" && grw.isExcludedFunc(ct) {
+			// Skip compression for excluded types
+			grw.headerSent = true
+			grw.ResponseWriter.WriteHeader(grw.statusCode)
+			return grw.ResponseWriter.Write(b)
+		}
 	}
 
 	// Buffer data until we have enough to decide
@@ -112,8 +143,85 @@ func (grw *gzipResponseWriter) Unwrap() http.ResponseWriter {
 	return grw.ResponseWriter
 }
 
-// New creates a gzip compression middleware with optional configuration.
+// deflateResponseWriter wraps http.ResponseWriter for deflate compression.
+type deflateResponseWriter struct {
+	http.ResponseWriter
+	deflateWriter  *flate.Writer
+	pool           *sync.Pool
+	buf            []byte
+	minSize        int
+	statusCode     int
+	headerSent     bool
+	compressed     bool
+	isExcludedFunc func(string) bool
+}
+
+func (drw *deflateResponseWriter) WriteHeader(code int) {
+	if !drw.headerSent {
+		drw.statusCode = code
+	}
+}
+
+func (drw *deflateResponseWriter) Write(b []byte) (int, error) {
+	if drw.compressed {
+		return drw.deflateWriter.Write(b)
+	}
+
+	// Check if content type is excluded
+	if drw.isExcludedFunc != nil {
+		ct := drw.ResponseWriter.Header().Get("Content-Type")
+		if ct != "" && drw.isExcludedFunc(ct) {
+			drw.headerSent = true
+			drw.ResponseWriter.WriteHeader(drw.statusCode)
+			return drw.ResponseWriter.Write(b)
+		}
+	}
+
+	drw.buf = append(drw.buf, b...)
+
+	if len(drw.buf) >= drw.minSize {
+		drw.compressed = true
+		drw.ResponseWriter.Header().Set("Content-Encoding", "deflate")
+		drw.ResponseWriter.Header().Add("Vary", "Accept-Encoding")
+		drw.ResponseWriter.Header().Del("Content-Length")
+		drw.headerSent = true
+		drw.ResponseWriter.WriteHeader(drw.statusCode)
+
+		n, err := drw.deflateWriter.Write(drw.buf)
+		drw.buf = nil
+		if err != nil {
+			return 0, err
+		}
+		_ = n
+		return len(b), nil
+	}
+
+	return len(b), nil
+}
+
+func (drw *deflateResponseWriter) finish() {
+	if drw.compressed {
+		drw.deflateWriter.Close()
+		drw.pool.Put(drw.deflateWriter)
+		return
+	}
+
+	if !drw.headerSent {
+		drw.headerSent = true
+		drw.ResponseWriter.WriteHeader(drw.statusCode)
+	}
+	if len(drw.buf) > 0 {
+		drw.ResponseWriter.Write(drw.buf)
+	}
+}
+
+func (drw *deflateResponseWriter) Unwrap() http.ResponseWriter {
+	return drw.ResponseWriter
+}
+
+// New creates a compression middleware with optional configuration.
 // If no config is provided, DefaultConfig is used.
+// Supports both gzip and deflate compression.
 func New(config ...Config) aarv.Middleware {
 	cfg := DefaultConfig()
 	if len(config) > 0 {
@@ -128,17 +236,56 @@ func New(config ...Config) aarv.Middleware {
 		level = gzip.DefaultCompression
 	}
 
-	pool := &sync.Pool{
+	gzipPool := &sync.Pool{
 		New: func() any {
 			gz, _ := gzip.NewWriterLevel(io.Discard, level)
 			return gz
 		},
 	}
 
+	deflatePool := &sync.Pool{
+		New: func() any {
+			fw, _ := flate.NewWriter(io.Discard, level)
+			return fw
+		},
+	}
+
+	// Build excluded types set for fast lookup
+	excludedTypes := make(map[string]struct{}, len(cfg.ExcludedTypes))
+	excludedPrefixes := make([]string, 0)
+	for _, t := range cfg.ExcludedTypes {
+		if strings.HasSuffix(t, "/") {
+			excludedPrefixes = append(excludedPrefixes, t)
+		} else {
+			excludedTypes[t] = struct{}{}
+		}
+	}
+
+	isExcluded := func(contentType string) bool {
+		// Extract MIME type without parameters
+		if idx := strings.IndexByte(contentType, ';'); idx >= 0 {
+			contentType = strings.TrimSpace(contentType[:idx])
+		}
+		if _, ok := excludedTypes[contentType]; ok {
+			return true
+		}
+		for _, prefix := range excludedPrefixes {
+			if strings.HasPrefix(contentType, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Check if the client accepts gzip encoding
-			if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			acceptEncoding := r.Header.Get("Accept-Encoding")
+
+			// Determine which encoding to use
+			acceptsGzip := strings.Contains(acceptEncoding, "gzip")
+			acceptsDeflate := strings.Contains(acceptEncoding, "deflate")
+
+			if !acceptsGzip && !acceptsDeflate {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -149,20 +296,40 @@ func New(config ...Config) aarv.Middleware {
 				return
 			}
 
-			gz := pool.Get().(*gzip.Writer)
-			gz.Reset(w)
+			// Choose encoding: prefer gzip if configured and both are accepted
+			useGzip := acceptsGzip && (cfg.PreferGzip || !acceptsDeflate)
 
-			grw := &gzipResponseWriter{
-				ResponseWriter: w,
-				gzWriter:       gz,
-				pool:           pool,
-				minSize:        cfg.MinSize,
-				statusCode:     http.StatusOK,
+			if useGzip {
+				gz := gzipPool.Get().(*gzip.Writer)
+				gz.Reset(w)
+
+				grw := &gzipResponseWriter{
+					ResponseWriter:   w,
+					gzWriter:         gz,
+					pool:             gzipPool,
+					minSize:          cfg.MinSize,
+					statusCode:       http.StatusOK,
+					isExcludedFunc:   isExcluded,
+				}
+
+				defer grw.finish()
+				next.ServeHTTP(grw, r)
+			} else {
+				fw := deflatePool.Get().(*flate.Writer)
+				fw.Reset(w)
+
+				drw := &deflateResponseWriter{
+					ResponseWriter:   w,
+					deflateWriter:    fw,
+					pool:             deflatePool,
+					minSize:          cfg.MinSize,
+					statusCode:       http.StatusOK,
+					isExcludedFunc:   isExcluded,
+				}
+
+				defer drw.finish()
+				next.ServeHTTP(drw, r)
 			}
-
-			defer grw.finish()
-
-			next.ServeHTTP(grw, r)
 		})
 	}
 }

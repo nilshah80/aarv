@@ -22,28 +22,67 @@ type Config struct {
 	ContentTypeNosniff string
 
 	// XFrameOptions sets the X-Frame-Options header.
-	// Default: "SAMEORIGIN".
+	// Default: "DENY".
 	XFrameOptions string
 
 	// HSTSMaxAge sets the max-age directive of the Strict-Transport-Security header
-	// in seconds. Set to 0 to disable HSTS. Default: 0.
+	// in seconds. Set to 0 to disable HSTS.
+	// Default: 31536000 (1 year).
 	HSTSMaxAge int
 
 	// HSTSIncludeSubdomains adds the includeSubDomains directive to the HSTS header.
 	// Only effective when HSTSMaxAge > 0.
+	// Default: true.
 	HSTSIncludeSubdomains bool
 
+	// HSTSPreload adds the preload directive to the HSTS header.
+	// Only effective when HSTSMaxAge > 0 and HSTSIncludeSubdomains is true.
+	// Default: false.
+	HSTSPreload bool
+
 	// ContentSecurityPolicy sets the Content-Security-Policy header.
-	// Default: "" (not set).
+	// Default: "default-src 'self'".
 	ContentSecurityPolicy string
 
 	// ReferrerPolicy sets the Referrer-Policy header.
-	// Default: "" (not set).
+	// Default: "strict-origin-when-cross-origin".
 	ReferrerPolicy string
+
+	// PermissionsPolicy sets the Permissions-Policy header.
+	// Default: "geolocation=(), microphone=(), camera=()".
+	PermissionsPolicy string
+
+	// CrossOriginOpenerPolicy sets the Cross-Origin-Opener-Policy header.
+	// Default: "same-origin".
+	CrossOriginOpenerPolicy string
+
+	// CrossOriginEmbedderPolicy sets the Cross-Origin-Embedder-Policy header.
+	// Default: "" (not set, as it can break legitimate embeds).
+	CrossOriginEmbedderPolicy string
+
+	// CrossOriginResourcePolicy sets the Cross-Origin-Resource-Policy header.
+	// Default: "same-origin".
+	CrossOriginResourcePolicy string
 }
 
-// DefaultConfig returns the default security headers configuration.
+// DefaultConfig returns the default security headers configuration with strict defaults.
 func DefaultConfig() Config {
+	return Config{
+		XSSProtection:           "1; mode=block",
+		ContentTypeNosniff:      "nosniff",
+		XFrameOptions:           "DENY",
+		HSTSMaxAge:              31536000, // 1 year
+		HSTSIncludeSubdomains:   true,
+		HSTSPreload:             false,
+		ContentSecurityPolicy:   "default-src 'self'",
+		ReferrerPolicy:          "strict-origin-when-cross-origin",
+		PermissionsPolicy:       "geolocation=(), microphone=(), camera=()",
+		CrossOriginOpenerPolicy: "same-origin",
+	}
+}
+
+// RelaxedConfig returns a relaxed configuration for development or internal APIs.
+func RelaxedConfig() Config {
 	return Config{
 		XSSProtection:      "1; mode=block",
 		ContentTypeNosniff: "nosniff",
@@ -65,6 +104,9 @@ func New(config ...Config) aarv.Middleware {
 		hstsValue = fmt.Sprintf("max-age=%d", cfg.HSTSMaxAge)
 		if cfg.HSTSIncludeSubdomains {
 			hstsValue += "; includeSubDomains"
+		}
+		if cfg.HSTSPreload && cfg.HSTSIncludeSubdomains {
+			hstsValue += "; preload"
 		}
 	}
 
@@ -94,6 +136,22 @@ func New(config ...Config) aarv.Middleware {
 
 			if cfg.ReferrerPolicy != "" {
 				h.Set("Referrer-Policy", cfg.ReferrerPolicy)
+			}
+
+			if cfg.PermissionsPolicy != "" {
+				h.Set("Permissions-Policy", cfg.PermissionsPolicy)
+			}
+
+			if cfg.CrossOriginOpenerPolicy != "" {
+				h.Set("Cross-Origin-Opener-Policy", cfg.CrossOriginOpenerPolicy)
+			}
+
+			if cfg.CrossOriginEmbedderPolicy != "" {
+				h.Set("Cross-Origin-Embedder-Policy", cfg.CrossOriginEmbedderPolicy)
+			}
+
+			if cfg.CrossOriginResourcePolicy != "" {
+				h.Set("Cross-Origin-Resource-Policy", cfg.CrossOriginResourcePolicy)
 			}
 
 			next.ServeHTTP(w, r)

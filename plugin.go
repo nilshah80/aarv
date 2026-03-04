@@ -3,15 +3,11 @@ package aarv
 import "log/slog"
 
 // Plugin is the interface for framework plugins.
+// All plugins must implement Name(), Version(), and Register().
 type Plugin interface {
 	Name() string
-	Register(app *PluginContext) error
-}
-
-// PluginWithVersion is an optional interface for plugins that declare a version.
-type PluginWithVersion interface {
-	Plugin
 	Version() string
+	Register(app *PluginContext) error
 }
 
 // PluginWithDeps is an optional interface for plugins that declare dependencies.
@@ -24,18 +20,20 @@ type PluginWithDeps interface {
 type PluginFunc func(app *PluginContext) error
 
 func (f PluginFunc) Name() string                       { return "anonymous" }
+func (f PluginFunc) Version() string                    { return "0.0.0" }
 func (f PluginFunc) Register(app *PluginContext) error { return f(app) }
 
 // PluginContext is a scoped view of the App given to plugins during registration.
 type PluginContext struct {
 	app        *App
+	pluginName string
 	prefix     string
 	group      *RouteGroup
 	decorators map[string]any
 	logger     *slog.Logger
 }
 
-func newPluginContext(app *App, prefix string) *PluginContext {
+func newPluginContext(app *App, pluginName, prefix string) *PluginContext {
 	// Group prefix is empty — PluginContext methods prepend prefix themselves
 	g := &RouteGroup{
 		mux:    app.mux,
@@ -44,10 +42,11 @@ func newPluginContext(app *App, prefix string) *PluginContext {
 	}
 	return &PluginContext{
 		app:        app,
+		pluginName: pluginName,
 		prefix:     prefix,
 		group:      g,
 		decorators: app.decorators,
-		logger:     app.logger.With("plugin", prefix),
+		logger:     app.logger.With("plugin", pluginName),
 	}
 }
 

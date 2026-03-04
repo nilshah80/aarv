@@ -5,6 +5,7 @@ package sonic
 
 import (
 	"io"
+	"reflect"
 
 	"github.com/bytedance/sonic"
 )
@@ -49,4 +50,27 @@ func (c *SonicCodec) MarshalBytes(v any) ([]byte, error) {
 // ContentType returns the MIME type for JSON content.
 func (c *SonicCodec) ContentType() string {
 	return "application/json; charset=utf-8"
+}
+
+// Pretouch pre-compiles the encoder/decoder for the given types.
+// Call this during application startup with your request/response types
+// to eliminate JIT compilation overhead during the first request.
+// Example: codec.Pretouch(MyRequest{}, MyResponse{}, []MyItem{})
+func (c *SonicCodec) Pretouch(types ...any) error {
+	for _, t := range types {
+		if err := sonic.Pretouch(reflect.TypeOf(t)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Pretouch is a package-level function that pre-compiles types using the default config.
+func Pretouch(types ...any) error {
+	for _, t := range types {
+		if err := sonic.Pretouch(reflect.TypeOf(t)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
