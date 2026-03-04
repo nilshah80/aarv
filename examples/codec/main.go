@@ -1,6 +1,26 @@
-// Example: Custom codec — demonstrates the pluggable Codec interface.
-// Shows how to swap the default encoding/json codec for a custom one,
-// and how to write your own Codec from scratch.
+// Example: Pluggable Codec — demonstrates the pluggable Codec interface.
+//
+// Aarv supports pluggable JSON codecs for different performance/feature tradeoffs:
+//
+//   1. Default (encoding/json) - Zero dependencies, standard library
+//   2. PrettyJSONCodec - Custom codec with indented output (shown in this example)
+//   3. segmentio/encoding/json - ~2-3x faster, drop-in replacement
+//   4. bytedance/sonic - ~5-10x faster, JIT-compiled (amd64/arm64)
+//   5. go-json-experiment/json - Future encoding/json/v2
+//
+// To use alternative codecs, import and configure:
+//
+//   import "github.com/nilshah80/aarv/codec/segmentio"
+//   app := aarv.New(aarv.WithCodec(segmentio.New()))
+//
+//   import "github.com/nilshah80/aarv/codec/sonic"
+//   app := aarv.New(aarv.WithCodec(sonic.New()))         // Standard
+//   app := aarv.New(aarv.WithCodec(sonic.NewFastest()))  // Maximum speed
+//
+//   import "github.com/nilshah80/aarv/codec/jsonv2"
+//   app := aarv.New(aarv.WithCodec(jsonv2.New()))
+//
+// The codec is used for all JSON operations: c.JSON(), c.BindJSON(), Bind[Req,Res]()
 package main
 
 import (

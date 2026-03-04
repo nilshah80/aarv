@@ -76,7 +76,8 @@ Build the fastest, zero-dependency Go web framework on top of `net/http` stdlib,
 - [x] Struct tag parsing: `param:""`, `query:""`, `header:""`, `cookie:""`, `form:""`, `default:""`
 - [x] Type coercion (string → int, int64, float64, bool, uuid)
 - [x] Registration-time reflection with pre-computed field maps
-- [x] Zero-reflection hot path
+- [x] Runtime binding uses `reflect.ValueOf` and `FieldByIndex` (minimal reflection)
+- [ ] Zero-reflection hot path via unsafe (not yet implemented)
 
 **Exit Criteria**: ✅ `app.Post("/users", Bind(createUser))` auto-parses JSON body into typed struct and returns typed response.
 
@@ -88,11 +89,13 @@ Build the fastest, zero-dependency Go web framework on top of `net/http` stdlib,
 - [x] Validation tag parser (`validate:"required,min=2,max=100"`)
 - [x] All built-in rules (required, min, max, gte, lte, oneof, email, uuid, url, regex, etc.)
 - [x] Pre-computed validation rules at registration time
-- [x] `unsafe.Pointer` + field offset arithmetic for fast runtime validation
-- [x] Custom validator registration
-- [x] `SelfValidator` interface for user types
+- [x] Reflection-based runtime validation via `FieldByIndex`
+- [x] Custom validator registration via `RegisterRule`
+- [x] `SelfValidator` and `StructLevelValidator` interfaces
 - [x] Validation error response format (422)
 - [x] Integration into `Bind[T]` pipeline
+- [ ] `unsafe.Pointer` + field offset arithmetic fast path (not yet implemented)
+- [ ] Configurable message templates (currently hardcoded)
 
 **Exit Criteria**: ✅ Struct with `validate:""` tags auto-validates before handler, returns structured 422 on failure.
 
@@ -106,9 +109,9 @@ Build the fastest, zero-dependency Go web framework on top of `net/http` stdlib,
 - [x] Framework `func(next HandlerFunc) HandlerFunc` middleware
 - [x] Route groups with prefix + scoped middleware
 - [x] Nested route groups
-- [x] Lifecycle hooks: OnRequest, PreRouting, PreParsing, PreValidation, PreHandler, OnResponse, OnSend, OnError
+- [x] Lifecycle hooks: OnRequest, OnResponse, OnSend, OnError, OnStartup, OnShutdown (wired)
 - [x] Hook priority ordering
-- [x] OnStartup / OnShutdown hooks
+- [ ] Lifecycle hooks: PreRouting, PreParsing, PreValidation, PreHandler (defined but not wired)
 
 **Exit Criteria**: ✅ Can apply middleware at global/group/route level; hooks fire in correct order.
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -23,6 +24,10 @@ type App struct {
 	errorHandler ErrorHandler
 	logger       *slog.Logger
 
+	// Custom handlers
+	notFoundHandler         HandlerFunc
+	methodNotAllowedHandler HandlerFunc
+
 	// Pool
 	ctxPool sync.Pool
 
@@ -34,13 +39,15 @@ type App struct {
 	// Hooks
 	hooks        *hookRegistry
 	hasOnRequest bool // fast check to skip empty hook iteration
+	hasOnSend    bool // fast check for OnSend hooks
 
 	// Plugins
 	plugins    []pluginEntry
 	decorators map[string]any
 
 	// Routes (for introspection)
-	routes []RouteInfo
+	routes      []RouteInfo
+	routesByKey map[string]struct{} // "METHOD /path" for 405 detection
 
 	// Shutdown
 	shutdownHooks []ShutdownHook
@@ -49,12 +56,13 @@ type App struct {
 // New creates a new App with the given options.
 func New(opts ...Option) *App {
 	a := &App{
-		mux:        http.NewServeMux(),
-		config:     defaultConfig(),
-		codec:      StdJSONCodec{},
-		logger:     slog.New(slog.NewTextHandler(os.Stdout, nil)),
-		hooks:      newHookRegistry(),
-		decorators: make(map[string]any),
+		mux:         http.NewServeMux(),
+		config:      defaultConfig(),
+		codec:       StdJSONCodec{},
+		logger:      slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		hooks:       newHookRegistry(),
+		decorators:  make(map[string]any),
+		routesByKey: make(map[string]struct{}),
 	}
 
 	a.ctxPool = sync.Pool{
@@ -68,11 +76,54 @@ func New(opts ...Option) *App {
 	// Default error handler
 	a.errorHandler = a.defaultErrorHandler
 
+	// Default 404 handler
+	a.notFoundHandler = func(c *Context) error {
+		return c.JSON(http.StatusNotFound, errorResponse{
+			Error:     "not_found",
+			Message:   "Resource not found",
+			RequestID: c.RequestID(),
+		})
+	}
+
+	// Default 405 handler
+	a.methodNotAllowedHandler = func(c *Context) error {
+		return c.JSON(http.StatusMethodNotAllowed, errorResponse{
+			Error:     "method_not_allowed",
+			Message:   "Method not allowed",
+			RequestID: c.RequestID(),
+		})
+	}
+
 	for _, opt := range opts {
 		opt(a)
 	}
 
 	return a
+}
+
+// SetNotFoundHandler sets a custom 404 handler.
+func (a *App) SetNotFoundHandler(h HandlerFunc) *App {
+	a.notFoundHandler = h
+	return a
+}
+
+// SetMethodNotAllowedHandler sets a custom 405 handler.
+func (a *App) SetMethodNotAllowedHandler(h HandlerFunc) *App {
+	a.methodNotAllowedHandler = h
+	return a
+}
+
+// AcquireContext gets a Context from the pool. Must be followed by ReleaseContext.
+func (a *App) AcquireContext(w http.ResponseWriter, r *http.Request) *Context {
+	c := a.ctxPool.Get().(*Context)
+	c.reset(w, r)
+	c.app = a
+	return c
+}
+
+// ReleaseContext returns a Context to the pool.
+func (a *App) ReleaseContext(c *Context) {
+	a.ctxPool.Put(c)
 }
 
 // --- Route Registration ---
@@ -85,6 +136,12 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 
 	h := adaptHandler(handler)
 
+	// Apply per-route body limit if configured
+	routeBodyLimit := rc.maxBodySize
+	if routeBodyLimit == 0 {
+		routeBodyLimit = a.config.MaxBodySize
+	}
+
 	var httpHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, ok := r.Context().Value(ctxKey{}).(*Context)
 		if !ok {
@@ -95,6 +152,12 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 		// and response writes go through middleware wrappers (logger, etag, etc.).
 		ctx.req = r
 		ctx.res = w
+
+		// Enforce body limit
+		if routeBodyLimit > 0 && r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, routeBodyLimit)
+		}
+
 		if err := h(ctx); err != nil {
 			ctx.app.handleError(ctx, err)
 		}
@@ -106,6 +169,9 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 
 	muxPattern := method + " " + pattern
 	a.mux.Handle(muxPattern, httpHandler)
+
+	// Track route for 405 detection
+	a.routesByKey[muxPattern] = struct{}{}
 
 	a.routes = append(a.routes, RouteInfo{
 		Method:      method,
@@ -237,7 +303,7 @@ func (a *App) Register(plugin Plugin, opts ...PluginOption) *App {
 		opt(&prefix)
 	}
 
-	pc := newPluginContext(a, prefix)
+	pc := newPluginContext(a, plugin.Name(), prefix)
 	if err := plugin.Register(pc); err != nil {
 		panic(fmt.Sprintf("aarv: plugin %q registration failed: %v", plugin.Name(), err))
 	}
@@ -265,7 +331,89 @@ func WithPrefix(prefix string) PluginOption {
 
 // buildHandler pre-builds the middleware chain. Called once.
 func (a *App) buildHandler() http.Handler {
-	return buildChain(a.mux, a.globalMiddleware)
+	// Wrap mux to intercept 404/405 responses
+	wrappedMux := &routingMux{
+		mux:         a.mux,
+		app:         a,
+		routesByKey: a.routesByKey,
+	}
+	return buildChain(wrappedMux, a.globalMiddleware)
+}
+
+// routingMux wraps http.ServeMux to intercept 404/405 and call custom handlers.
+type routingMux struct {
+	mux         *http.ServeMux
+	app         *App
+	routesByKey map[string]struct{}
+}
+
+func (m *routingMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Check if any route matches this path with any method
+	path := r.URL.Path
+	var hasPathMatch bool
+	var hasExactMatch bool
+
+	for key := range m.routesByKey {
+		parts := strings.SplitN(key, " ", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		method, pattern := parts[0], parts[1]
+		if matchesPattern(pattern, path) {
+			hasPathMatch = true
+			if method == r.Method {
+				hasExactMatch = true
+				break
+			}
+		}
+	}
+
+	// If exact match exists, let mux handle it
+	if hasExactMatch {
+		m.mux.ServeHTTP(w, r)
+		return
+	}
+
+	// If path matches but method doesn't -> 405
+	if hasPathMatch {
+		c, _ := r.Context().Value(ctxKey{}).(*Context)
+		if c != nil {
+			if err := m.app.methodNotAllowedHandler(c); err != nil {
+				m.app.handleError(c, err)
+			}
+			return
+		}
+	}
+
+	// Use a probe writer to detect if mux writes a response
+	probe := &probeResponseWriter{ResponseWriter: w}
+	m.mux.ServeHTTP(probe, r)
+
+	// If mux didn't write anything (404 from ServeMux), call custom 404 handler
+	if !probe.written {
+		c, _ := r.Context().Value(ctxKey{}).(*Context)
+		if c != nil {
+			if err := m.app.notFoundHandler(c); err != nil {
+				m.app.handleError(c, err)
+			}
+		}
+	}
+}
+
+// probeResponseWriter detects if anything was written.
+type probeResponseWriter struct {
+	http.ResponseWriter
+	written bool
+}
+
+func (p *probeResponseWriter) WriteHeader(code int) {
+	p.written = true
+	p.ResponseWriter.WriteHeader(code)
+}
+
+func (p *probeResponseWriter) Write(b []byte) (int, error) {
+	p.written = true
+	return p.ResponseWriter.Write(b)
 }
 
 // --- ServeHTTP (the main entry point) ---
@@ -276,7 +424,40 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.hooks.finalize()
 		a.handler = a.buildHandler()
 		a.hasOnRequest = len(a.hooks.hooks[OnRequest]) > 0
+		a.hasOnSend = len(a.hooks.hooks[OnSend]) > 0
 	})
+
+	// Handle trailing slash redirect if enabled
+	if a.config.RedirectTrailingSlash && len(r.URL.Path) > 1 {
+		if a.shouldRedirectTrailingSlash(r) {
+			var target string
+			if strings.HasSuffix(r.URL.Path, "/") {
+				target = strings.TrimSuffix(r.URL.Path, "/")
+			} else {
+				target = r.URL.Path + "/"
+			}
+			if r.URL.RawQuery != "" {
+				target += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, target, http.StatusMovedPermanently)
+			return
+		}
+	}
+
+	// Use buffered response writer if OnSend hooks are registered
+	var bw *bufferedResponseWriter
+	if a.hasOnSend {
+		bw = acquireBufferedWriter(w)
+		defer func() {
+			// Run OnSend hooks before flushing
+			if c, ok := r.Context().Value(ctxKey{}).(*Context); ok {
+				_ = a.hooks.run(OnSend, c)
+			}
+			bw.flush()
+			releaseBufferedWriter(bw)
+		}()
+		w = bw
+	}
 
 	// Acquire context from pool
 	c := a.ctxPool.Get().(*Context)
@@ -301,8 +482,82 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Execute pre-built handler chain
+	// Execute pre-built handler chain (middleware + routing mux)
+	// The routingMux wrapper handles 404/405 detection after middleware runs
 	a.handler.ServeHTTP(w, r)
+
+	// Run OnResponse hooks after handler completes
+	if len(a.hooks.hooks[OnResponse]) > 0 {
+		_ = a.hooks.run(OnResponse, c)
+	}
+}
+
+// shouldRedirectTrailingSlash checks if we should redirect based on trailing slash.
+func (a *App) shouldRedirectTrailingSlash(r *http.Request) bool {
+	path := r.URL.Path
+	hasSlash := strings.HasSuffix(path, "/")
+
+	// Check if the opposite version exists
+	var altPath string
+	if hasSlash {
+		altPath = strings.TrimSuffix(path, "/")
+	} else {
+		altPath = path + "/"
+	}
+
+	// Check if any route matches the alternative path
+	for _, route := range a.routes {
+		if matchesPattern(route.Pattern, altPath) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesPattern checks if a path matches a pattern (simple matching).
+func matchesPattern(pattern, path string) bool {
+	// Exact match
+	if pattern == path {
+		return true
+	}
+
+	// Handle wildcard patterns like /users/{id}
+	patternParts := strings.Split(pattern, "/")
+	pathParts := strings.Split(path, "/")
+
+	if len(patternParts) != len(pathParts) {
+		// Check for ... wildcard at end
+		if len(patternParts) > 0 && strings.HasSuffix(patternParts[len(patternParts)-1], "...}") {
+			if len(pathParts) >= len(patternParts)-1 {
+				// Check prefix matches
+				for i := 0; i < len(patternParts)-1; i++ {
+					if !matchPatternPart(patternParts[i], pathParts[i]) {
+						return false
+					}
+				}
+				return true
+			}
+		}
+		return false
+	}
+
+	for i, pp := range patternParts {
+		if !matchPatternPart(pp, pathParts[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func matchPatternPart(pattern, path string) bool {
+	if pattern == path {
+		return true
+	}
+	// {param} matches anything
+	if strings.HasPrefix(pattern, "{") && strings.HasSuffix(pattern, "}") {
+		return true
+	}
+	return false
 }
 
 // --- Error Handling ---
@@ -401,6 +656,11 @@ func (a *App) ListenTLS(addr, certFile, keyFile string) error {
 		}
 	}
 
+	// Disable HTTP/2 if configured
+	if a.config.DisableHTTP2 {
+		tlsCfg.NextProtos = []string{"http/1.1"}
+	}
+
 	a.server = &http.Server{
 		Addr:              addr,
 		Handler:           a,
@@ -440,6 +700,11 @@ func (a *App) ListenMutualTLS(addr, certFile, keyFile, clientCAFile string) erro
 	}
 	tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
 
+	// Disable HTTP/2 if configured
+	if a.config.DisableHTTP2 {
+		tlsCfg.NextProtos = []string{"http/1.1"}
+	}
+
 	// Use crypto/x509 to parse the client CA
 	pool := tlsCfg.ClientCAs
 	if pool == nil {
@@ -457,6 +722,10 @@ func (a *App) ListenMutualTLS(addr, certFile, keyFile, clientCAFile string) erro
 		WriteTimeout:      a.config.WriteTimeout,
 		IdleTimeout:       a.config.IdleTimeout,
 		MaxHeaderBytes:    a.config.MaxHeaderBytes,
+	}
+
+	if err := a.hooks.run(OnStartup, nil); err != nil {
+		return fmt.Errorf("aarv: startup hook failed: %w", err)
 	}
 
 	if a.config.Banner {
@@ -501,7 +770,13 @@ func (a *App) listenAndShutdown(serve func() error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), a.config.ShutdownTimeout)
 	defer cancel()
 
-	// Run shutdown hooks
+	// Run OnShutdown hooks registered via AddHook
+	if len(a.hooks.hooks[OnShutdown]) > 0 {
+		// OnShutdown hooks receive nil context (they can use the shutdown ctx via closure)
+		_ = a.hooks.run(OnShutdown, nil)
+	}
+
+	// Run legacy shutdown hooks registered via OnShutdown()
 	for _, hook := range a.shutdownHooks {
 		if err := hook(ctx); err != nil {
 			a.logger.Error("shutdown hook error", "error", err)

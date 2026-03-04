@@ -1,4 +1,4 @@
-package aarv
+package bench
 
 import (
 	"bytes"
@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nilshah80/aarv"
 )
 
 func TestRPS(t *testing.T) {
@@ -23,17 +25,17 @@ func TestRPS(t *testing.T) {
 	}
 
 	scenarios := []struct {
-		name  string
-		setup func() *App
+		name   string
+		setup  func() *aarv.App
 		method string
 		path   string
 		body   []byte
 	}{
 		{
 			name: "Static Text",
-			setup: func() *App {
-				app := New(WithBanner(false))
-				app.Get("/hello", func(c *Context) error {
+			setup: func() *aarv.App {
+				app := aarv.New(aarv.WithBanner(false))
+				app.Get("/hello", func(c *aarv.Context) error {
 					return c.Text(200, "ok")
 				})
 				return app
@@ -43,9 +45,9 @@ func TestRPS(t *testing.T) {
 		},
 		{
 			name: "JSON Response",
-			setup: func() *App {
-				app := New(WithBanner(false))
-				app.Get("/json", func(c *Context) error {
+			setup: func() *aarv.App {
+				app := aarv.New(aarv.WithBanner(false))
+				app.Get("/json", func(c *aarv.Context) error {
 					return c.JSON(200, map[string]string{"message": "hello"})
 				})
 				return app
@@ -55,9 +57,9 @@ func TestRPS(t *testing.T) {
 		},
 		{
 			name: "Path Param",
-			setup: func() *App {
-				app := New(WithBanner(false))
-				app.Get("/users/{id}", func(c *Context) error {
+			setup: func() *aarv.App {
+				app := aarv.New(aarv.WithBanner(false))
+				app.Get("/users/{id}", func(c *aarv.Context) error {
 					return c.JSON(200, map[string]string{"id": c.Param("id")})
 				})
 				return app
@@ -67,9 +69,9 @@ func TestRPS(t *testing.T) {
 		},
 		{
 			name: "Bind+Validate+JSON",
-			setup: func() *App {
-				app := New(WithBanner(false))
-				app.Post("/users", Bind(func(c *Context, req Req) (Res, error) {
+			setup: func() *aarv.App {
+				app := aarv.New(aarv.WithBanner(false))
+				app.Post("/users", aarv.Bind(func(c *aarv.Context, req Req) (Res, error) {
 					return Res{ID: "1", Name: req.Name, Email: req.Email}, nil
 				}))
 				return app
@@ -80,14 +82,14 @@ func TestRPS(t *testing.T) {
 		},
 		{
 			name: "Full Stack (MW+Hook+Bind+Validate)",
-			setup: func() *App {
-				app := New(WithBanner(false))
-				app.Use(Recovery(), Logger())
-				app.AddHook(OnRequest, func(c *Context) error {
+			setup: func() *aarv.App {
+				app := aarv.New(aarv.WithBanner(false))
+				app.Use(aarv.Recovery(), aarv.Logger())
+				app.AddHook(aarv.OnRequest, func(c *aarv.Context) error {
 					c.Set("requestId", "rid-123")
 					return nil
 				})
-				app.Post("/users", Bind(func(c *Context, req Req) (Res, error) {
+				app.Post("/users", aarv.Bind(func(c *aarv.Context, req Req) (Res, error) {
 					return Res{ID: "1", Name: req.Name, Email: req.Email}, nil
 				}))
 				return app
@@ -97,8 +99,8 @@ func TestRPS(t *testing.T) {
 			body:   []byte(`{"name":"alice","email":"alice@test.com"}`),
 		},
 		{
-			name: "Raw net/http (baseline)",
-			setup: func() *App { return nil },
+			name:   "Raw net/http (baseline)",
+			setup:  func() *aarv.App { return nil },
 			method: "GET",
 			path:   "/hello",
 		},

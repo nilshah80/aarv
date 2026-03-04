@@ -8,7 +8,7 @@
 
 ### 1.1 Project Scaffolding ✅
 - [x] Initialize Go module: `go mod init github.com/nilshah80/aarv`
-- [x] Set `go 1.23` in `go.mod`
+- [x] Set `go 1.26.0` in `go.mod`
 - [x] Create directory structure (see spec for layout)
 - [x] Add `LICENSE` (MIT)
 - [ ] Add `.gitignore`, `Makefile`
@@ -61,7 +61,7 @@
 - [x] Set `Content-Length` header from buffer length
 - [x] Implement `Hijack()`, `Flush()`, `Push()` interface passthrough
 - [x] Opt-out: `c.Stream()` bypasses buffer for streaming responses
-- [x] Unit tests: buffering, Content-Length, hijack passthrough
+- [ ] Unit tests: buffering, Content-Length, hijack passthrough
 
 ### 1.6 Router ✅
 - [x] Create internal `router` struct wrapping `*http.ServeMux`
@@ -70,10 +70,11 @@
 - [x] Implement `Any` — registers handler for all common methods
 - [x] Implement `Mount(prefix, http.Handler)` for sub-app mounting
 - [x] Implement `Routes() []RouteInfo` — returns all registered routes
-- [x] Implement custom 404 handler: wrap ServeMux to intercept unmatched routes
+- [x] Implement custom 404 handler: `routingMux` wrapper intercepts unmatched routes after middleware runs
 - [x] Implement custom 405 handler: detect method mismatch and serve custom response
 - [x] Implement trailing slash redirect (configurable)
-- [x] Unit tests: route matching, path params, wildcards, method filtering, 404, 405
+- [x] Unit tests: route matching, path params, wildcards, method filtering
+- [ ] Unit tests: custom 404/405 handler invocation
 - [x] Integration test: register 50+ routes, verify no conflicts
 
 ### 1.7 Route Groups ✅
@@ -82,8 +83,8 @@
 - [x] Implement nested groups: `Group` on `RouteGroup`
 - [x] Internal: nested `http.ServeMux` + `http.StripPrefix` composition
 - [x] Scoped middleware: group middleware only applies to group routes
-- [x] Implement `RouteOption`: `WithName`, `WithTags`, `WithDescription`, `WithMiddleware`, `WithMaxBodySize`
-- [x] Unit tests: group prefix, nested groups, scoped middleware isolation
+- [x] Implement `RouteOption`: `WithName`, `WithTags`, `WithDescription`, `WithRouteMiddleware`, `WithRouteMaxBodySize`
+- [ ] Unit tests: group prefix, nested groups, scoped middleware isolation
 
 ### 1.8 Handler Adapters ✅
 - [x] Define internal `HandlerFunc = func(*Context) error`
@@ -190,24 +191,25 @@
 - [x] `contains=str` / `startswith=str` / `endswith=str` / `excludes=str`
 - [x] `unique` — slice uniqueness check
 - [x] `dive` — validate each element of slice/map
-- [x] Unit tests: every rule, edge cases (empty string, nil pointer, zero value)
+- [ ] Unit tests: every rule, edge cases (empty string, nil pointer, zero value)
 
 ### 3.3 Validator Core ✅
-- [x] Implement `buildValidator[T]()` — registration-time rule compilation
-- [x] Pre-compute field offsets via `reflect.StructField.Offset`
-- [x] Build `[]fieldRule{index, offset, kind, rules}` slice
-- [x] Implement `Validate(ptr any) []ValidationError` using `unsafe.Pointer` + offset
-- [x] Implement reflect-based fallback validator (safe mode, no unsafe)
-- [x] Custom rule registration: `RegisterRule(name, func(value any, param string) bool)`
+- [x] Implement `buildStructValidator()` — registration-time rule compilation
+- [x] Pre-compute field indices via `reflect.StructField.Index`
+- [x] Build `[]fieldValidator{index, kind, rules}` slice
+- [x] Implement `validate(ptr any) []ValidationError` using `reflect.FieldByIndex`
+- [x] Custom rule registration: `RegisterRule(name, func(field reflect.Value, param string) bool)`
 - [x] `SelfValidator` interface: if type implements `Validate() []ValidationError`, call it
-- [x] Struct-level validation: `RegisterStructValidation(fn, types)`
-- [x] Unit tests: validator performance, custom rules, self-validator, nested structs
-- [x] Benchmark: unsafe validator vs reflect validator vs go-playground/validator
+- [x] `StructLevelValidator` interface for struct-level validation
+- [x] `RegisterStructValidation(type, fn)` for external struct-level validators
+- [ ] Implement `unsafe.Pointer` + offset fast path (currently uses reflect)
+- [ ] Unit tests: validator performance, custom rules, self-validator, nested structs
+- [ ] Benchmark: reflect validator vs go-playground/validator
 
 ### 3.4 Error Formatting ✅
 - [x] Implement `ValidationError` struct: Field, Tag, Param, Value, Message
-- [x] Auto-generate human-readable messages per rule
-- [x] Configurable message templates
+- [x] Auto-generate human-readable messages per rule (hardcoded in `formatMessage`)
+- [ ] Configurable message templates
 - [x] JSON serialization as 422 response
 - [x] Integration with error handler
 
@@ -229,15 +231,17 @@
 - [x] Implement `HookRegistry`: store hooks per phase with priority
 - [x] Implement `AddHook(phase, hook)` and `AddHookWithPriority(phase, priority, hook)`
 - [x] Implement hook execution: run all hooks for a phase in priority order
-- [x] Hook error handling: if hook returns error, skip to OnError phase
-- [x] Wire hooks into request lifecycle (in `App.ServeHTTP`)
-- [x] Unit tests: hook ordering, error short-circuit, all phases fire correctly
+- [x] Hook error handling: OnRequest errors trigger error handler; OnResponse/OnSend errors ignored
+- [x] Wire hooks into request lifecycle: OnRequest, OnResponse, OnSend, OnError, OnStartup, OnShutdown
+- [ ] Hook error handling: full error propagation to OnError phase for all hooks
+- [ ] Wire PreRouting, PreParsing, PreValidation, PreHandler phases (defined but not invoked)
+- [ ] Unit tests: hook ordering, error short-circuit, all phases fire correctly
 
 ### 4.3 Route Group Middleware ✅
 - [x] Wire group-level `Use()` to apply middleware only to group routes
 - [x] Verify isolation: group middleware doesn't leak to sibling groups
-- [x] Route-level middleware via `WithMiddleware` option
-- [x] Integration test: global + group + route middleware ordering
+- [x] Route-level middleware via `WithRouteMiddleware` option
+- [ ] Integration test: global + group + route middleware ordering
 
 ---
 
@@ -247,23 +251,25 @@
 - [x] Catch panics via `defer recover()`
 - [x] Log stack trace to `slog.Error`
 - [x] Return 500 with generic error response
-- [x] Configurable: custom panic handler, stack trace depth, include stack in response (debug mode)
-- [x] Unit tests: panic in handler, panic in middleware, nested panic
+- [x] Configurable: stack trace depth, disable stack logging
+- [ ] Configurable: custom panic handler, include stack in response (debug mode)
+- [ ] Unit tests: panic in handler, panic in middleware, nested panic
 
 ### 5.2 Request ID Plugin ✅
 - [x] Generate ULID (monotonic, sortable) using `crypto/rand` + `time`
 - [x] Read existing `X-Request-ID` from request header (propagate)
 - [x] Set `X-Request-ID` on response header
 - [x] Store in Context via `c.Set("requestId", id)`
-- [x] Configurable: header name, generator function, prefix
-- [x] Unit tests: generation, propagation, custom generator
+- [x] Configurable: header name, generator function
+- [ ] Configurable: prefix for generated IDs
+- [ ] Unit tests: generation, propagation, custom generator
 
 ### 5.3 Logger Plugin ✅
 - [x] Log on request start + completion using `log/slog`
 - [x] Fields: method, path, status, latency, request_id, client_ip, user_agent, bytes_out
 - [x] Skip paths: configurable (e.g., skip /health)
 - [x] Log level: configurable (Info default, Debug for verbose)
-- [x] Unit tests: log output format, skip paths, latency measurement
+- [ ] Unit tests: log output format, skip paths, latency measurement
 
 ### 5.4 CORS Plugin ✅
 - [x] Handle preflight `OPTIONS` requests
@@ -275,26 +281,26 @@
 - [x] Set `Access-Control-Max-Age` (preflight cache)
 - [x] Configurable: `AllowOriginFunc` for dynamic origin checking
 - [x] Security: reject wildcard origin with credentials
-- [x] Unit tests: preflight, simple request, credentials, dynamic origin
+- [ ] Unit tests: preflight, simple request, credentials, dynamic origin
 
 ### 5.5 Secure Headers Plugin ✅
 - [x] Set all headers from `SecureConfig` struct
-- [x] Defaults: XSS protection, nosniff, SAMEORIGIN, HSTS 1yr, strict referrer
+- [x] Defaults: XSS protection, nosniff, DENY, HSTS 1yr, strict referrer, CSP, Permissions-Policy
 - [x] Configurable per-header
-- [x] Unit tests: every header set correctly, custom overrides
+- [ ] Unit tests: every header set correctly, custom overrides
 
 ### 5.6 Body Limit Plugin ✅
 - [x] Wrap `r.Body` with `http.MaxBytesReader`
-- [x] Configurable global default + per-route override
-- [x] Return 413 Payload Too Large on exceed
-- [x] Unit tests: under limit, at limit, over limit
+- [x] Configurable max bytes
+- [x] Return 413 Payload Too Large on exceed (via `NewWithResponse`)
+- [ ] Unit tests: under limit, at limit, over limit
 
 ### 5.7 Timeout Plugin ✅
 - [x] Wrap handler with `context.WithTimeout`
-- [x] Configurable global default + per-route override
+- [x] Configurable timeout duration
 - [x] Return 504 Gateway Timeout on exceed
 - [x] Ensure context cancellation propagates
-- [x] Unit tests: fast handler, slow handler, exact timeout
+- [ ] Unit tests: fast handler, slow handler, exact timeout
 
 ### 5.8 Compress Plugin ✅
 - [x] Check `Accept-Encoding` header for gzip/deflate support
@@ -303,17 +309,18 @@
 - [x] Set `Vary: Accept-Encoding` header
 - [x] Skip compression for small responses (configurable threshold)
 - [x] Skip compression for already-compressed content types (images, video)
-- [x] Configurable: compression level, min size, excluded content types
-- [x] Pool gzip writers via `sync.Pool`
-- [x] Unit tests: compression, skip small, skip images, Content-Encoding header
+- [x] Configurable: compression level, min size, excluded content types, prefer gzip
+- [x] Pool gzip/deflate writers via `sync.Pool`
+- [ ] Unit tests: compression, skip small, skip images, Content-Encoding header
 
 ### 5.9 ETag Plugin ✅
-- [x] Compute ETag from response body hash (SHA256 truncated or CRC32)
+- [x] Compute ETag from response body hash (CRC32)
 - [x] Set `ETag` header
 - [x] Check `If-None-Match` request header → return 304 Not Modified
 - [x] Weak vs strong ETag support
-- [x] Configurable: hash function, weak mode
-- [x] Unit tests: ETag generation, 304 response, weak ETag
+- [x] Configurable: weak mode
+- [ ] Configurable: hash function selection
+- [ ] Unit tests: ETag generation, 304 response, weak ETag
 
 ### 5.10 Static Files Plugin ✅
 - [x] Wrap `http.FileServer` with configurable root
@@ -322,14 +329,15 @@
 - [x] Cache-Control headers (configurable max-age)
 - [x] Directory listing toggle (default: disabled)
 - [x] Configurable: root dir, index file, prefix strip, browse
-- [x] Unit tests: serve file, index, 404, SPA fallback, cache headers
+- [ ] Unit tests: serve file, index, 404, SPA fallback, cache headers
 
 ### 5.11 Health Check Plugin ✅
 - [x] Register `/health` → returns `{"status": "ok"}` with 200
 - [x] Register `/ready` → calls readiness callback, returns 200 or 503
 - [x] Register `/live` → calls liveness callback, returns 200 or 503
-- [x] Configurable: paths, callbacks, additional info
-- [x] Unit tests: healthy, unhealthy, custom callbacks
+- [x] Configurable: paths, callbacks
+- [ ] Configurable: additional info in response
+- [ ] Unit tests: healthy, unhealthy, custom callbacks
 
 ---
 

@@ -111,8 +111,9 @@ func (p *RateLimiterPlugin) Register(pc *aarv.PluginContext) error {
 // MetricsPlugin depends on the rate-limiter plugin.
 type MetricsPlugin struct{}
 
-func (p *MetricsPlugin) Name() string              { return "metrics" }
-func (p *MetricsPlugin) Dependencies() []string     { return []string{"rate-limiter"} }
+func (p *MetricsPlugin) Name() string            { return "metrics" }
+func (p *MetricsPlugin) Version() string         { return "1.0.0" }
+func (p *MetricsPlugin) Dependencies() []string  { return []string{"rate-limiter"} }
 
 func (p *MetricsPlugin) Register(pc *aarv.PluginContext) error {
 	// Resolve a value decorated by the rate-limiter plugin

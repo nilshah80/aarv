@@ -25,6 +25,7 @@ type Context struct {
 	bodyCache    []byte
 	bodyRead     bool
 	written      bool
+	statusCode   int // pending status code for chaining
 	cachedLogger *slog.Logger
 }
 
@@ -34,6 +35,7 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.bodyCache = nil
 	c.bodyRead = false
 	c.written = false
+	c.statusCode = http.StatusOK
 	c.query = nil
 	c.cachedLogger = nil
 	// Allocate fresh map — faster than delete loop for small maps
@@ -81,7 +83,20 @@ func (c *Context) IsTLS() bool { return c.req.TLS != nil }
 func (c *Context) Protocol() string { return c.req.Proto }
 
 // RealIP extracts the client IP, respecting X-Real-IP and X-Forwarded-For headers.
+// It only trusts proxy headers if the direct client IP is in the TrustedProxies list.
 func (c *Context) RealIP() string {
+	directIP, _, _ := net.SplitHostPort(c.req.RemoteAddr)
+	if directIP == "" {
+		directIP = c.req.RemoteAddr
+	}
+
+	// Only trust proxy headers if the direct connection is from a trusted proxy
+	if c.app != nil && len(c.app.config.TrustedProxies) > 0 {
+		if !c.isTrustedProxy(directIP) {
+			return directIP
+		}
+	}
+
 	if ip := c.req.Header.Get("X-Real-IP"); ip != "" {
 		return ip
 	}
@@ -91,8 +106,32 @@ func (c *Context) RealIP() string {
 		}
 		return xff
 	}
-	ip, _, _ := net.SplitHostPort(c.req.RemoteAddr)
-	return ip
+	return directIP
+}
+
+// isTrustedProxy checks if the given IP is in the trusted proxies list.
+func (c *Context) isTrustedProxy(ip string) bool {
+	if c.app == nil || len(c.app.config.TrustedProxies) == 0 {
+		return true // trust all if no proxies configured
+	}
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return false
+	}
+	for _, cidr := range c.app.config.TrustedProxies {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			// Not a CIDR, try as plain IP
+			if cidr == ip {
+				return true
+			}
+			continue
+		}
+		if network.Contains(parsedIP) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Path Parameters ---
@@ -297,8 +336,15 @@ func (c *Context) FormFile(name string) (*multipart.FileHeader, error) {
 // --- Response Helpers ---
 
 // JSON serializes v as JSON and writes it with the given status code.
+// If status is 0, uses the status set by Status() or defaults to 200.
 func (c *Context) JSON(status int, v any) error {
+	if c.written {
+		return ErrResponseAlreadyWritten
+	}
 	c.written = true
+	if status == 0 {
+		status = c.statusCode
+	}
 	c.SetHeader("Content-Type", c.app.codec.ContentType())
 	c.res.WriteHeader(status)
 	return c.app.codec.Encode(c.res, v)
@@ -354,8 +400,13 @@ func (c *Context) Blob(status int, contentType string, data []byte) error {
 }
 
 // Stream copies from reader directly to the response writer.
+// It bypasses the buffered response writer for streaming responses.
 func (c *Context) Stream(status int, contentType string, reader io.Reader) error {
 	c.written = true
+	// Bypass buffered writer if present (for streaming)
+	if bw, ok := c.res.(*bufferedResponseWriter); ok {
+		bw.Bypass()
+	}
 	c.SetHeader("Content-Type", contentType)
 	c.res.WriteHeader(status)
 	_, err := io.Copy(c.res, reader)
@@ -376,8 +427,48 @@ func (c *Context) NoContent(status int) error {
 	return nil
 }
 
+// Status sets the response status code for chaining.
+// Use with JSON, Text, etc. to set status before writing.
+// Example: c.Status(201).JSON(data)
+func (c *Context) Status(code int) *Context {
+	c.statusCode = code
+	return c
+}
+
+// File sends a file as the response.
+func (c *Context) File(filepath string) error {
+	c.written = true
+	http.ServeFile(c.res, c.req, filepath)
+	return nil
+}
+
+// Attachment sends a file as an attachment (download).
+func (c *Context) Attachment(filepath, filename string) error {
+	c.written = true
+	if filename == "" {
+		// Extract filename from path
+		for i := len(filepath) - 1; i >= 0; i-- {
+			if filepath[i] == '/' || filepath[i] == '\\' {
+				filename = filepath[i+1:]
+				break
+			}
+		}
+		if filename == "" {
+			filename = filepath
+		}
+	}
+	c.SetHeader("Content-Disposition", "attachment; filename=\""+filename+"\"")
+	http.ServeFile(c.res, c.req, filepath)
+	return nil
+}
+
 // Written returns true if a response has already been written.
 func (c *Context) Written() bool { return c.written }
+
+// SendStatus writes only the status code with no body (alias for NoContent).
+func (c *Context) SendStatus(code int) error {
+	return c.NoContent(code)
+}
 
 // --- Request-Scoped Store ---
 

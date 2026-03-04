@@ -19,6 +19,12 @@ type Config struct {
 	// Root is the directory to serve files from. Required.
 	Root string
 
+	// Prefix is the URL path prefix to strip before looking up files.
+	// For example, if Prefix is "/static" and a request comes in for
+	// "/static/js/app.js", the middleware will look for "js/app.js" in Root.
+	// Default: "" (no prefix stripping).
+	Prefix string
+
 	// Index is the name of the index file to serve for directory requests.
 	// Default: "index.html".
 	Index string
@@ -99,6 +105,8 @@ func New(config Config) aarv.Middleware {
 
 	fileServer := http.FileServer(http.Dir(root))
 
+	prefix := config.Prefix
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Only serve GET and HEAD requests
@@ -111,6 +119,18 @@ func New(config Config) aarv.Middleware {
 			upath := r.URL.Path
 			if !strings.HasPrefix(upath, "/") {
 				upath = "/" + upath
+			}
+
+			// Strip prefix if configured
+			if prefix != "" {
+				if !strings.HasPrefix(upath, prefix) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				upath = strings.TrimPrefix(upath, prefix)
+				if upath == "" || upath[0] != '/' {
+					upath = "/" + upath
+				}
 			}
 
 			// Check if the file exists

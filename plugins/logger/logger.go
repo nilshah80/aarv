@@ -32,11 +32,12 @@ func DefaultConfig() Config {
 	}
 }
 
-// responseWriter wraps http.ResponseWriter to capture the status code.
+// responseWriter wraps http.ResponseWriter to capture the status code and bytes written.
 type responseWriter struct {
 	http.ResponseWriter
-	statusCode int
-	written    bool
+	statusCode   int
+	bytesWritten int64
+	written      bool
 }
 
 func newResponseWriter(w http.ResponseWriter) *responseWriter {
@@ -58,7 +59,9 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	if !rw.written {
 		rw.written = true
 	}
-	return rw.ResponseWriter.Write(b)
+	n, err := rw.ResponseWriter.Write(b)
+	rw.bytesWritten += int64(n)
+	return n, err
 }
 
 // Unwrap returns the underlying http.ResponseWriter for interface checks.
@@ -107,16 +110,35 @@ func New(config ...Config) aarv.Middleware {
 			start := time.Now()
 			rw := newResponseWriter(w)
 
+			// Get request ID if available
+			requestID := ""
+			if c, ok := aarv.FromRequest(r); ok {
+				requestID = c.RequestID()
+			}
+
+			// Log request start
+			slog.Log(r.Context(), cfg.Level, "request_start",
+				"method", r.Method,
+				"path", path,
+				"client_ip", clientIP(r),
+				"user_agent", r.UserAgent(),
+				"request_id", requestID,
+			)
+
 			next.ServeHTTP(rw, r)
 
 			latency := time.Since(start)
 
+			// Log request completion with all fields
 			slog.Log(r.Context(), cfg.Level, "request",
 				"method", r.Method,
 				"path", path,
 				"status", rw.statusCode,
 				"latency", latency.String(),
 				"client_ip", clientIP(r),
+				"user_agent", r.UserAgent(),
+				"bytes_out", rw.bytesWritten,
+				"request_id", requestID,
 			)
 		})
 	}

@@ -1,8 +1,16 @@
 package aarv
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+)
+
+// Sentinel errors for common conditions.
+var (
+	// ErrResponseAlreadyWritten is returned when attempting to write to a response
+	// that has already been written to.
+	ErrResponseAlreadyWritten = errors.New("aarv: response already written")
 )
 
 // AppError is a structured HTTP error with status code, machine-readable code, and message.

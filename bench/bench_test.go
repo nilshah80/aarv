@@ -1,17 +1,19 @@
-package aarv
+package bench
 
 import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/nilshah80/aarv"
 )
 
 // --- Router Benchmarks ---
 
 func BenchmarkRouterStatic(b *testing.B) {
-	app := New(WithBanner(false))
-	app.Get("/hello", func(c *Context) error {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Get("/hello", func(c *aarv.Context) error {
 		return c.Text(200, "ok")
 	})
 
@@ -25,8 +27,8 @@ func BenchmarkRouterStatic(b *testing.B) {
 }
 
 func BenchmarkRouterParam(b *testing.B) {
-	app := New(WithBanner(false))
-	app.Get("/users/{id}", func(c *Context) error {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Get("/users/{id}", func(c *aarv.Context) error {
 		_ = c.Param("id")
 		return c.Text(200, "ok")
 	})
@@ -41,8 +43,8 @@ func BenchmarkRouterParam(b *testing.B) {
 }
 
 func BenchmarkRouterParamMulti(b *testing.B) {
-	app := New(WithBanner(false))
-	app.Get("/users/{userId}/posts/{postId}", func(c *Context) error {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Get("/users/{userId}/posts/{postId}", func(c *aarv.Context) error {
 		_ = c.Param("userId")
 		_ = c.Param("postId")
 		return c.Text(200, "ok")
@@ -60,12 +62,12 @@ func BenchmarkRouterParamMulti(b *testing.B) {
 // --- JSON Response Benchmarks ---
 
 func BenchmarkContextJSON_Small(b *testing.B) {
-	app := New(WithBanner(false))
+	app := aarv.New(aarv.WithBanner(false))
 	type smallResp struct {
 		ID   int    `json:"id"`
 		Name string `json:"name"`
 	}
-	app.Get("/json", func(c *Context) error {
+	app.Get("/json", func(c *aarv.Context) error {
 		return c.JSON(200, smallResp{ID: 1, Name: "alice"})
 	})
 
@@ -79,7 +81,7 @@ func BenchmarkContextJSON_Small(b *testing.B) {
 }
 
 func BenchmarkContextJSON_Medium(b *testing.B) {
-	app := New(WithBanner(false))
+	app := aarv.New(aarv.WithBanner(false))
 	type medResp struct {
 		ID      int      `json:"id"`
 		Name    string   `json:"name"`
@@ -101,7 +103,7 @@ func BenchmarkContextJSON_Medium(b *testing.B) {
 	resp.Address.City = "Springfield"
 	resp.Address.Zip = "62704"
 
-	app.Get("/json", func(c *Context) error {
+	app.Get("/json", func(c *aarv.Context) error {
 		return c.JSON(200, resp)
 	})
 
@@ -115,8 +117,8 @@ func BenchmarkContextJSON_Medium(b *testing.B) {
 }
 
 func BenchmarkContextText(b *testing.B) {
-	app := New(WithBanner(false))
-	app.Get("/text", func(c *Context) error {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Get("/text", func(c *aarv.Context) error {
 		return c.Text(200, "Hello, World!")
 	})
 
@@ -141,8 +143,8 @@ func BenchmarkBind_SmallStruct(b *testing.B) {
 		Name string `json:"name"`
 	}
 
-	app := New(WithBanner(false))
-	app.Post("/users", Bind(func(c *Context, req Req) (Res, error) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Post("/users", aarv.Bind(func(c *aarv.Context, req Req) (Res, error) {
 		return Res{ID: "1", Name: req.Name}, nil
 	}))
 
@@ -159,29 +161,29 @@ func BenchmarkBind_SmallStruct(b *testing.B) {
 
 func BenchmarkBind_LargeStruct(b *testing.B) {
 	type Req struct {
-		Name      string `json:"name"`
-		Email     string `json:"email"`
-		Age       int    `json:"age"`
-		Phone     string `json:"phone"`
-		Street    string `json:"street"`
-		City      string `json:"city"`
-		State     string `json:"state"`
-		Zip       string `json:"zip"`
-		Country   string `json:"country"`
-		Company   string `json:"company"`
-		Title     string `json:"title"`
-		Bio       string `json:"bio"`
-		Website   string `json:"website"`
-		Twitter   string `json:"twitter"`
-		Github    string `json:"github"`
+		Name    string `json:"name"`
+		Email   string `json:"email"`
+		Age     int    `json:"age"`
+		Phone   string `json:"phone"`
+		Street  string `json:"street"`
+		City    string `json:"city"`
+		State   string `json:"state"`
+		Zip     string `json:"zip"`
+		Country string `json:"country"`
+		Company string `json:"company"`
+		Title   string `json:"title"`
+		Bio     string `json:"bio"`
+		Website string `json:"website"`
+		Twitter string `json:"twitter"`
+		Github  string `json:"github"`
 	}
 	type Res struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
 
-	app := New(WithBanner(false))
-	app.Post("/users", Bind(func(c *Context, req Req) (Res, error) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Post("/users", aarv.Bind(func(c *aarv.Context, req Req) (Res, error) {
 		return Res{ID: "1", Name: req.Name}, nil
 	}))
 
@@ -198,14 +200,14 @@ func BenchmarkBind_LargeStruct(b *testing.B) {
 
 func BenchmarkBindReq_ParamQuery(b *testing.B) {
 	type Req struct {
-		ID     string `param:"id"`
-		Page   int    `query:"page" default:"1"`
-		Limit  int    `query:"limit" default:"20"`
-		Sort   string `query:"sort" default:"created_at"`
+		ID    string `param:"id"`
+		Page  int    `query:"page" default:"1"`
+		Limit int    `query:"limit" default:"20"`
+		Sort  string `query:"sort" default:"created_at"`
 	}
 
-	app := New(WithBanner(false))
-	app.Get("/users/{id}", BindReq(func(c *Context, req Req) error {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Get("/users/{id}", aarv.BindReq(func(c *aarv.Context, req Req) error {
 		return c.Text(200, "ok")
 	}))
 
@@ -230,8 +232,8 @@ func BenchmarkValidation_Small(b *testing.B) {
 		ID string `json:"id"`
 	}
 
-	app := New(WithBanner(false))
-	app.Post("/users", Bind(func(c *Context, req Req) (Res, error) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Post("/users", aarv.Bind(func(c *aarv.Context, req Req) (Res, error) {
 		return Res{ID: "1"}, nil
 	}))
 
@@ -263,8 +265,8 @@ func BenchmarkValidation_10Fields(b *testing.B) {
 		ID string `json:"id"`
 	}
 
-	app := New(WithBanner(false))
-	app.Post("/users", Bind(func(c *Context, req Req) (Res, error) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Post("/users", aarv.Bind(func(c *aarv.Context, req Req) (Res, error) {
 		return Res{ID: "1"}, nil
 	}))
 
@@ -288,8 +290,8 @@ func noopMiddleware(next http.Handler) http.Handler {
 }
 
 func BenchmarkMiddlewareChain_0(b *testing.B) {
-	app := New(WithBanner(false))
-	app.Get("/test", func(c *Context) error {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Get("/test", func(c *aarv.Context) error {
 		return c.Text(200, "ok")
 	})
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -302,9 +304,9 @@ func BenchmarkMiddlewareChain_0(b *testing.B) {
 }
 
 func BenchmarkMiddlewareChain_1(b *testing.B) {
-	app := New(WithBanner(false))
+	app := aarv.New(aarv.WithBanner(false))
 	app.Use(noopMiddleware)
-	app.Get("/test", func(c *Context) error {
+	app.Get("/test", func(c *aarv.Context) error {
 		return c.Text(200, "ok")
 	})
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -317,11 +319,11 @@ func BenchmarkMiddlewareChain_1(b *testing.B) {
 }
 
 func BenchmarkMiddlewareChain_5(b *testing.B) {
-	app := New(WithBanner(false))
+	app := aarv.New(aarv.WithBanner(false))
 	for i := 0; i < 5; i++ {
 		app.Use(noopMiddleware)
 	}
-	app.Get("/test", func(c *Context) error {
+	app.Get("/test", func(c *aarv.Context) error {
 		return c.Text(200, "ok")
 	})
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -334,11 +336,11 @@ func BenchmarkMiddlewareChain_5(b *testing.B) {
 }
 
 func BenchmarkMiddlewareChain_10(b *testing.B) {
-	app := New(WithBanner(false))
+	app := aarv.New(aarv.WithBanner(false))
 	for i := 0; i < 10; i++ {
 		app.Use(noopMiddleware)
 	}
-	app.Get("/test", func(c *Context) error {
+	app.Get("/test", func(c *aarv.Context) error {
 		return c.Text(200, "ok")
 	})
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -363,16 +365,16 @@ func BenchmarkFullStack(b *testing.B) {
 		Email string `json:"email"`
 	}
 
-	app := New(WithBanner(false))
+	app := aarv.New(aarv.WithBanner(false))
 	app.Use(noopMiddleware) // simulate recovery
 	app.Use(noopMiddleware) // simulate logger
 
-	app.AddHook(OnRequest, func(c *Context) error {
+	app.AddHook(aarv.OnRequest, func(c *aarv.Context) error {
 		c.Set("requestId", "bench-id")
 		return nil
 	})
 
-	app.Post("/users", Bind(func(c *Context, req Req) (Res, error) {
+	app.Post("/users", aarv.Bind(func(c *aarv.Context, req Req) (Res, error) {
 		return Res{ID: "1", Name: req.Name, Email: req.Email}, nil
 	}))
 
@@ -409,8 +411,8 @@ func BenchmarkRawNetHTTP(b *testing.B) {
 // --- Parallel Benchmarks ---
 
 func BenchmarkRouterStatic_Parallel(b *testing.B) {
-	app := New(WithBanner(false))
-	app.Get("/hello", func(c *Context) error {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Get("/hello", func(c *aarv.Context) error {
 		return c.Text(200, "ok")
 	})
 
@@ -436,9 +438,9 @@ func BenchmarkFullStack_Parallel(b *testing.B) {
 		Email string `json:"email"`
 	}
 
-	app := New(WithBanner(false))
+	app := aarv.New(aarv.WithBanner(false))
 	app.Use(noopMiddleware)
-	app.Post("/users", Bind(func(c *Context, req Req) (Res, error) {
+	app.Post("/users", aarv.Bind(func(c *aarv.Context, req Req) (Res, error) {
 		return Res{ID: "1", Name: req.Name, Email: req.Email}, nil
 	}))
 

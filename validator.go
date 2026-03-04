@@ -1,6 +1,7 @@
 package aarv
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -15,6 +16,39 @@ import (
 // SelfValidator can be implemented by types to provide custom validation.
 type SelfValidator interface {
 	Validate() []ValidationError
+}
+
+// StructLevelValidator can be implemented by types to provide struct-level validation
+// that runs after field validation.
+type StructLevelValidator interface {
+	ValidateStruct() []ValidationError
+}
+
+// CustomRuleFunc is a function signature for custom validation rules.
+// The function receives the field value and the rule parameter, and returns true if valid.
+type CustomRuleFunc func(field reflect.Value, param string) bool
+
+// customRules stores registered custom validation rules.
+var customRules sync.Map
+
+// RegisterRule registers a custom validation rule.
+// The rule can then be used in validate tags like: validate:"myrule=param"
+func RegisterRule(name string, fn CustomRuleFunc) {
+	customRules.Store(name, fn)
+}
+
+// StructLevelFunc is a function that performs struct-level validation.
+type StructLevelFunc func(v any) []ValidationError
+
+// structLevelValidators stores registered struct-level validators.
+var structLevelValidators sync.Map
+
+// RegisterStructValidation registers a struct-level validation function for a specific type.
+func RegisterStructValidation(t reflect.Type, fn StructLevelFunc) {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	structLevelValidators.Store(t, fn)
 }
 
 type validationRule struct {
@@ -230,6 +264,17 @@ func (sv *structValidator) validate(dest any) []ValidationError {
 		}
 	}
 
+	// Check StructLevelValidator interface
+	if slv, ok := dest.(StructLevelValidator); ok {
+		errs = append(errs, slv.ValidateStruct()...)
+	}
+
+	// Check registered struct-level validators
+	t := v.Type()
+	if fn, ok := structLevelValidators.Load(t); ok {
+		errs = append(errs, fn.(StructLevelFunc)(dest)...)
+	}
+
 	return errs
 }
 
@@ -295,9 +340,7 @@ func checkRule(field reflect.Value, kind reflect.Kind, rule validationRule) bool
 		if field.Kind() != reflect.String {
 			return true
 		}
-		s := strings.TrimSpace(field.String())
-		return (strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}")) ||
-			(strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]"))
+		return json.Valid([]byte(field.String()))
 	case "datetime":
 		if field.Kind() != reflect.String {
 			return true
@@ -319,6 +362,11 @@ func checkRule(field reflect.Value, kind reflect.Kind, rule validationRule) bool
 		return field.Kind() != reflect.String || !strings.Contains(field.String(), rule.param)
 	case "unique":
 		return checkUnique(field)
+	default:
+		// Check for custom registered rules
+		if fn, ok := customRules.Load(rule.tag); ok {
+			return fn.(CustomRuleFunc)(field, rule.param)
+		}
 	}
 	return true
 }
