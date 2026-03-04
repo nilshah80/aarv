@@ -64,7 +64,6 @@ type fieldValidator struct {
 	rules      []validationRule
 	nested     *structValidator // for nested structs
 	dive       *structValidator // for slice elements
-	diveRules  []validationRule // rules for individual elements after dive
 }
 
 type structValidator struct {
@@ -394,7 +393,7 @@ func isZero(v reflect.Value) bool {
 
 func parseNum(s string) float64 {
 	var f float64
-	fmt.Sscanf(s, "%f", &f)
+	_, _ = fmt.Sscanf(s, "%f", &f)
 	return f
 }
 

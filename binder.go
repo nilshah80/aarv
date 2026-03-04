@@ -90,7 +90,7 @@ func buildStructBinder(t reflect.Type) *structBinder {
 		}
 
 		// Check if the field type implements ParamParser
-		if f.Type.Implements(paramParserType) || reflect.PtrTo(f.Type).Implements(paramParserType) {
+		if f.Type.Implements(paramParserType) || reflect.PointerTo(f.Type).Implements(paramParserType) {
 			fb.hasParamParser = true
 		}
 

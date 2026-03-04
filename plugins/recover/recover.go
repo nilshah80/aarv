@@ -78,7 +78,7 @@ func New(config ...Config) aarv.Middleware {
 					// Write 500 JSON error response
 					w.Header().Set("Content-Type", "application/json; charset=utf-8")
 					w.WriteHeader(http.StatusInternalServerError)
-					json.NewEncoder(w).Encode(map[string]string{
+					_ = json.NewEncoder(w).Encode(map[string]string{
 						"error":   "internal_error",
 						"message": "Internal server error",
 					})

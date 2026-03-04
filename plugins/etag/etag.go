@@ -82,7 +82,7 @@ func New(config ...Config) aarv.Middleware {
 			if cw.statusCode < 200 || cw.statusCode >= 300 || len(body) == 0 {
 				w.WriteHeader(cw.statusCode)
 				if len(body) > 0 {
-					w.Write(body)
+					_, _ = w.Write(body)
 				}
 				return
 			}
@@ -108,7 +108,7 @@ func New(config ...Config) aarv.Middleware {
 
 			// Send the full response
 			w.WriteHeader(cw.statusCode)
-			w.Write(body)
+			_, _ = w.Write(body)
 		})
 	}
 }

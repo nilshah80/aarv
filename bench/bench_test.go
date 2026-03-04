@@ -2,11 +2,16 @@ package bench
 
 import (
 	"bytes"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/nilshah80/aarv"
+	"github.com/nilshah80/aarv/plugins/verboselog"
+	"github.com/nilshah80/aarv/plugins/encrypt"
+	"github.com/nilshah80/aarv/plugins/logger"
 )
 
 // --- Router Benchmarks ---
@@ -455,4 +460,211 @@ func BenchmarkFullStack_Parallel(b *testing.B) {
 			app.ServeHTTP(rec, req)
 		}
 	})
+}
+
+// --- Encryption Benchmarks ---
+
+func BenchmarkEncrypt_Response(b *testing.B) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+
+	app := aarv.New(aarv.WithBanner(false))
+	encMiddleware, _ := encrypt.New(key)
+	app.Use(encMiddleware)
+
+	app.Get("/users", func(c *aarv.Context) error {
+		return c.JSON(200, map[string]any{
+			"id": "1", "name": "alice", "email": "alice@test.com",
+		})
+	})
+
+	req := httptest.NewRequest("GET", "/users", nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkEncrypt_RequestResponse(b *testing.B) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+
+	enc, _ := encrypt.NewEncryptor(key)
+	plainBody := []byte(`{"name":"alice","email":"alice@test.com"}`)
+	encryptedBody, _ := enc.Encrypt(plainBody)
+
+	app := aarv.New(aarv.WithBanner(false))
+	encMiddleware, _ := encrypt.New(key)
+	app.Use(encMiddleware)
+
+	app.Post("/users", func(c *aarv.Context) error {
+		return c.JSON(201, map[string]string{"id": "1", "status": "created"})
+	})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest("POST", "/users", bytes.NewReader(encryptedBody))
+		req.Header.Set("Content-Type", encrypt.EncryptedContentType)
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkEncrypt_Disabled(b *testing.B) {
+	// Baseline: same endpoint without encryption for comparison
+	app := aarv.New(aarv.WithBanner(false))
+	app.Get("/users", func(c *aarv.Context) error {
+		return c.JSON(200, map[string]any{
+			"id": "1", "name": "alice", "email": "alice@test.com",
+		})
+	})
+
+	req := httptest.NewRequest("GET", "/users", nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+	}
+}
+
+// --- Logger Benchmarks ---
+
+func BenchmarkLogger_Standard(b *testing.B) {
+	// Discard log output during benchmark
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(logger.New())
+
+	app.Post("/users", func(c *aarv.Context) error {
+		return c.JSON(200, map[string]string{"id": "1", "name": "alice"})
+	})
+
+	body := []byte(`{"name":"alice","email":"alice@test.com"}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest("POST", "/users", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkLogger_JSON(b *testing.B) {
+	// JSON handler output
+	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(logger.New())
+
+	app.Post("/users", func(c *aarv.Context) error {
+		return c.JSON(200, map[string]string{"id": "1", "name": "alice"})
+	})
+
+	body := []byte(`{"name":"alice","email":"alice@test.com"}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest("POST", "/users", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkLogger_DumpFull(b *testing.B) {
+	// Full dump logger with body capture
+	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(verboselog.New())
+
+	app.Post("/users", func(c *aarv.Context) error {
+		return c.JSON(200, map[string]string{"id": "1", "name": "alice"})
+	})
+
+	body := []byte(`{"name":"alice","email":"alice@test.com"}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest("POST", "/users", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkLogger_DumpMetadataOnly(b *testing.B) {
+	// Dump logger with body logging disabled
+	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(verboselog.New(verboselog.Config{
+		LogRequestBody:  false,
+		LogResponseBody: false,
+	}))
+
+	app.Post("/users", func(c *aarv.Context) error {
+		return c.JSON(200, map[string]string{"id": "1", "name": "alice"})
+	})
+
+	body := []byte(`{"name":"alice","email":"alice@test.com"}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest("POST", "/users", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkLogger_NoLogging(b *testing.B) {
+	// Baseline: no logging middleware
+	app := aarv.New(aarv.WithBanner(false))
+
+	app.Post("/users", func(c *aarv.Context) error {
+		return c.JSON(200, map[string]string{"id": "1", "name": "alice"})
+	})
+
+	body := []byte(`{"name":"alice","email":"alice@test.com"}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest("POST", "/users", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkLogger_VerboseMinimal(b *testing.B) {
+	// Minimal verboselog config - maximum performance
+	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(verboselog.New(verboselog.MinimalConfig()))
+
+	app.Post("/users", func(c *aarv.Context) error {
+		return c.JSON(200, map[string]string{"id": "1", "name": "alice"})
+	})
+
+	body := []byte(`{"name":"alice","email":"alice@test.com"}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest("POST", "/users", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+	}
 }

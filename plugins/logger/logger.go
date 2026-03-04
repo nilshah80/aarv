@@ -110,24 +110,15 @@ func New(config ...Config) aarv.Middleware {
 			start := time.Now()
 			rw := newResponseWriter(w)
 
+			next.ServeHTTP(rw, r)
+
+			latency := time.Since(start)
+
 			// Get request ID if available
 			requestID := ""
 			if c, ok := aarv.FromRequest(r); ok {
 				requestID = c.RequestID()
 			}
-
-			// Log request start
-			slog.Log(r.Context(), cfg.Level, "request_start",
-				"method", r.Method,
-				"path", path,
-				"client_ip", clientIP(r),
-				"user_agent", r.UserAgent(),
-				"request_id", requestID,
-			)
-
-			next.ServeHTTP(rw, r)
-
-			latency := time.Since(start)
 
 			// Log request completion with all fields
 			slog.Log(r.Context(), cfg.Level, "request",

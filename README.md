@@ -5,6 +5,7 @@
 
 <p align="center">
   <a href="https://pkg.go.dev/github.com/nilshah80/aarv"><img src="https://pkg.go.dev/badge/github.com/nilshah80/aarv.svg" alt="Go Reference"></a>
+  <a href="https://github.com/nilshah80/aarv/actions/workflows/test.yml"><img src="https://github.com/nilshah80/aarv/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
   <a href="https://github.com/nilshah80/aarv/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://goreportcard.com/report/github.com/nilshah80/aarv"><img src="https://goreportcard.com/badge/github.com/nilshah80/aarv" alt="Go Report Card"></a>
 </p>
@@ -133,6 +134,45 @@ app.Register(aarv.PluginFunc(func(p *aarv.PluginContext) error {
 import "github.com/nilshah80/aarv/codec/segmentio"
 
 app := aarv.New(aarv.WithCodec(segmentio.New()))
+```
+
+## Performance
+
+Aarv includes built-in request ID generation and context propagation. When comparing frameworks with **identical functionality**, Aarv matches or outperforms alternatives.
+
+### Fair Comparison (500K requests, 100 concurrent connections, real TCP)
+
+All frameworks implementing identical request ID generation + context storage + retrieval:
+
+| Scenario | Aarv | Mach | Gin |
+|----------|------|------|-----|
+| **Logger Middleware** | | | |
+| Throughput | 154K RPS | 154K RPS | 154K RPS |
+| P50 Latency | **553µs** | 559µs | 557µs |
+| P99 Latency | 1.90ms | 1.88ms | 1.90ms |
+| allocs/op | **82** | 88 | 86 |
+| **Encryption Middleware** | | | |
+| Throughput | 151K RPS | **152K RPS** | 151K RPS |
+| P50 Latency | 559µs | **557µs** | 558µs |
+| P99 Latency | **1.91ms** | 1.93ms | 1.97ms |
+| allocs/op | **78** | 83 | 83 |
+
+### Understanding Vanilla Benchmarks
+
+In "vanilla" benchmarks (no middleware), Aarv shows ~5 extra allocations compared to Mach/Gin. This is because Aarv automatically provides:
+
+- **Request ID generation** (ULID) on every request
+- **Context propagation** via `context.WithValue` + `r.WithContext`
+- **Request ID retrieval** via `aarv.FromRequest(r).RequestID()`
+
+When other frameworks implement these same features, they incur the same costs — and Aarv often comes out ahead due to its optimized implementation.
+
+**Bottom line**: The "overhead" in vanilla benchmarks is actually useful work. In production scenarios with middleware, Aarv is fastest or tied.
+
+Run benchmarks yourself:
+```bash
+cd bench && go test -bench=BenchmarkFair -benchmem
+cd bench && go test -v -run TestFairLoadTest -timeout 30m
 ```
 
 ## Architecture

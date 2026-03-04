@@ -580,14 +580,14 @@ func (a *App) defaultErrorHandler(c *Context, err error) {
 
 	switch {
 	case errors.As(err, &valErr):
-		c.JSON(http.StatusUnprocessableEntity, map[string]any{
+		_ = c.JSON(http.StatusUnprocessableEntity, map[string]any{
 			"error":      "validation_failed",
 			"message":    "Request validation failed",
 			"details":    valErr.Errors,
 			"request_id": c.RequestID(),
 		})
 	case errors.As(err, &bindErr):
-		c.JSON(http.StatusBadRequest, errorResponse{
+		_ = c.JSON(http.StatusBadRequest, errorResponse{
 			Error:     "bad_request",
 			Message:   bindErr.Error(),
 			RequestID: c.RequestID(),
@@ -605,13 +605,13 @@ func (a *App) defaultErrorHandler(c *Context, err error) {
 				"request_id", c.RequestID(),
 			)
 		}
-		c.JSON(appErr.StatusCode(), resp)
+		_ = c.JSON(appErr.StatusCode(), resp)
 	default:
 		a.logger.Error("unhandled error",
 			"error", err,
 			"request_id", c.RequestID(),
 		)
-		c.JSON(http.StatusInternalServerError, errorResponse{
+		_ = c.JSON(http.StatusInternalServerError, errorResponse{
 			Error:     "internal_error",
 			Message:   "Internal server error",
 			RequestID: c.RequestID(),

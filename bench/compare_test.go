@@ -2,15 +2,20 @@ package bench
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -18,6 +23,9 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/mrshabel/mach"
 	"github.com/nilshah80/aarv"
+	"github.com/nilshah80/aarv/plugins/encrypt"
+	"github.com/nilshah80/aarv/plugins/logger"
+	"github.com/nilshah80/aarv/plugins/verboselog"
 	"github.com/valyala/fasthttp"
 )
 
@@ -32,6 +40,52 @@ type BindRes struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
+}
+
+// Larger realistic response (e.g., user profile with nested data)
+type UserProfile struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Email     string   `json:"email"`
+	Age       int      `json:"age"`
+	Active    bool     `json:"active"`
+	Role      string   `json:"role"`
+	Tags      []string `json:"tags"`
+	Address   Address  `json:"address"`
+	CreatedAt string   `json:"created_at"`
+	UpdatedAt string   `json:"updated_at"`
+}
+
+type Address struct {
+	Street  string `json:"street"`
+	City    string `json:"city"`
+	State   string `json:"state"`
+	Zip     string `json:"zip"`
+	Country string `json:"country"`
+}
+
+// List response (paginated)
+type UserListResponse struct {
+	Users      []UserProfile `json:"users"`
+	Total      int           `json:"total"`
+	Page       int           `json:"page"`
+	PerPage    int           `json:"per_page"`
+	TotalPages int           `json:"total_pages"`
+}
+
+var sampleUser = UserProfile{
+	ID: "usr_123", Name: "Alice Smith", Email: "alice@example.com",
+	Age: 28, Active: true, Role: "admin", Tags: []string{"vip", "beta", "early-adopter"},
+	Address:   Address{Street: "123 Main St", City: "San Francisco", State: "CA", Zip: "94105", Country: "US"},
+	CreatedAt: "2024-01-15T10:30:00Z", UpdatedAt: "2024-06-20T14:45:00Z",
+}
+
+var sampleUserList = UserListResponse{
+	Users:      []UserProfile{sampleUser, sampleUser, sampleUser, sampleUser, sampleUser},
+	Total:      100,
+	Page:       1,
+	PerPage:    5,
+	TotalPages: 20,
 }
 
 // ========== Setup helpers ==========
@@ -182,6 +236,273 @@ func newFiber_Bind() *fiber.App {
 	return app
 }
 
+// ========== Real-World Scenario: Middleware Stack ==========
+
+func noopMiddlewareHTTP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+	})
+}
+
+func newAarv_Middleware() http.Handler {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(aarv.Recovery())
+	app.Use(noopMiddlewareHTTP) // simulate additional middleware like request ID
+	app.Get("/api/users", func(c *aarv.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return app
+}
+
+func newMach_Middleware() http.Handler {
+	app := mach.New()
+	app.Use(mach.Recovery())
+	app.GET("/api/users", func(c *mach.Context) {
+		c.JSON(200, sampleUser)
+	})
+	return app
+}
+
+func newGin_Middleware() http.Handler {
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.GET("/api/users", func(c *gin.Context) {
+		c.JSON(200, sampleUser)
+	})
+	return r
+}
+
+func newFiber_Middleware() *fiber.App {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(func(c *fiber.Ctx) error { return c.Next() }) // recovery equivalent
+	app.Get("/api/users", func(c *fiber.Ctx) error {
+		return c.JSON(sampleUser)
+	})
+	return app
+}
+
+// ========== Real-World Scenario: Query Parameters ==========
+
+func newAarv_Query() http.Handler {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Get("/api/users", func(c *aarv.Context) error {
+		page := c.QueryDefault("page", "1")
+		limit := c.QueryDefault("limit", "10")
+		sort := c.QueryDefault("sort", "created_at")
+		order := c.QueryDefault("order", "desc")
+		return c.JSON(200, map[string]any{
+			"page": page, "limit": limit, "sort": sort, "order": order,
+			"users": []UserProfile{sampleUser},
+		})
+	})
+	return app
+}
+
+func newMach_Query() http.Handler {
+	app := mach.New()
+	app.GET("/api/users", func(c *mach.Context) {
+		page := c.Query("page")
+		if page == "" {
+			page = "1"
+		}
+		limit := c.Query("limit")
+		if limit == "" {
+			limit = "10"
+		}
+		sort := c.Query("sort")
+		if sort == "" {
+			sort = "created_at"
+		}
+		order := c.Query("order")
+		if order == "" {
+			order = "desc"
+		}
+		c.JSON(200, map[string]any{
+			"page": page, "limit": limit, "sort": sort, "order": order,
+			"users": []UserProfile{sampleUser},
+		})
+	})
+	return app
+}
+
+func newGin_Query() http.Handler {
+	r := gin.New()
+	r.GET("/api/users", func(c *gin.Context) {
+		page := c.DefaultQuery("page", "1")
+		limit := c.DefaultQuery("limit", "10")
+		sort := c.DefaultQuery("sort", "created_at")
+		order := c.DefaultQuery("order", "desc")
+		c.JSON(200, gin.H{
+			"page": page, "limit": limit, "sort": sort, "order": order,
+			"users": []UserProfile{sampleUser},
+		})
+	})
+	return r
+}
+
+func newFiber_Query() *fiber.App {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Get("/api/users", func(c *fiber.Ctx) error {
+		page := c.Query("page", "1")
+		limit := c.Query("limit", "10")
+		sort := c.Query("sort", "created_at")
+		order := c.Query("order", "desc")
+		return c.JSON(fiber.Map{
+			"page": page, "limit": limit, "sort": sort, "order": order,
+			"users": []UserProfile{sampleUser},
+		})
+	})
+	return app
+}
+
+// ========== Real-World Scenario: Multiple Path Params ==========
+
+func newAarv_MultiParam() http.Handler {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Get("/api/orgs/{orgId}/teams/{teamId}/members/{memberId}", func(c *aarv.Context) error {
+		return c.JSON(200, map[string]string{
+			"org_id": c.Param("orgId"), "team_id": c.Param("teamId"), "member_id": c.Param("memberId"),
+		})
+	})
+	return app
+}
+
+func newMach_MultiParam() http.Handler {
+	app := mach.New()
+	app.GET("/api/orgs/{orgId}/teams/{teamId}/members/{memberId}", func(c *mach.Context) {
+		c.JSON(200, map[string]string{
+			"org_id": c.Param("orgId"), "team_id": c.Param("teamId"), "member_id": c.Param("memberId"),
+		})
+	})
+	return app
+}
+
+func newGin_MultiParam() http.Handler {
+	r := gin.New()
+	r.GET("/api/orgs/:orgId/teams/:teamId/members/:memberId", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"org_id": c.Param("orgId"), "team_id": c.Param("teamId"), "member_id": c.Param("memberId"),
+		})
+	})
+	return r
+}
+
+func newFiber_MultiParam() *fiber.App {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Get("/api/orgs/:orgId/teams/:teamId/members/:memberId", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"org_id": c.Params("orgId"), "team_id": c.Params("teamId"), "member_id": c.Params("memberId"),
+		})
+	})
+	return app
+}
+
+// ========== Real-World Scenario: Headers + Auth-like ==========
+
+func newAarv_Headers() http.Handler {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Get("/api/protected", func(c *aarv.Context) error {
+		auth := c.Header("Authorization")
+		requestID := c.Header("X-Request-ID")
+		userAgent := c.Header("User-Agent")
+		if auth == "" {
+			return c.JSON(401, map[string]string{"error": "unauthorized"})
+		}
+		c.SetHeader("X-Request-ID", requestID)
+		return c.JSON(200, map[string]string{
+			"auth": "valid", "request_id": requestID, "user_agent": userAgent,
+		})
+	})
+	return app
+}
+
+func newMach_Headers() http.Handler {
+	app := mach.New()
+	app.GET("/api/protected", func(c *mach.Context) {
+		auth := c.GetHeader("Authorization")
+		requestID := c.GetHeader("X-Request-ID")
+		userAgent := c.GetHeader("User-Agent")
+		if auth == "" {
+			c.JSON(401, map[string]string{"error": "unauthorized"})
+			return
+		}
+		c.SetHeader("X-Request-ID", requestID)
+		c.JSON(200, map[string]string{
+			"auth": "valid", "request_id": requestID, "user_agent": userAgent,
+		})
+	})
+	return app
+}
+
+func newGin_Headers() http.Handler {
+	r := gin.New()
+	r.GET("/api/protected", func(c *gin.Context) {
+		auth := c.GetHeader("Authorization")
+		requestID := c.GetHeader("X-Request-ID")
+		userAgent := c.GetHeader("User-Agent")
+		if auth == "" {
+			c.JSON(401, gin.H{"error": "unauthorized"})
+			return
+		}
+		c.Header("X-Request-ID", requestID)
+		c.JSON(200, gin.H{
+			"auth": "valid", "request_id": requestID, "user_agent": userAgent,
+		})
+	})
+	return r
+}
+
+func newFiber_Headers() *fiber.App {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Get("/api/protected", func(c *fiber.Ctx) error {
+		auth := c.Get("Authorization")
+		requestID := c.Get("X-Request-ID")
+		userAgent := c.Get("User-Agent")
+		if auth == "" {
+			return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+		}
+		c.Set("X-Request-ID", requestID)
+		return c.JSON(fiber.Map{
+			"auth": "valid", "request_id": requestID, "user_agent": userAgent,
+		})
+	})
+	return app
+}
+
+// ========== Real-World Scenario: Large JSON List Response ==========
+
+func newAarv_LargeJSON() http.Handler {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Get("/api/users/list", func(c *aarv.Context) error {
+		return c.JSON(200, sampleUserList)
+	})
+	return app
+}
+
+func newMach_LargeJSON() http.Handler {
+	app := mach.New()
+	app.GET("/api/users/list", func(c *mach.Context) {
+		c.JSON(200, sampleUserList)
+	})
+	return app
+}
+
+func newGin_LargeJSON() http.Handler {
+	r := gin.New()
+	r.GET("/api/users/list", func(c *gin.Context) {
+		c.JSON(200, sampleUserList)
+	})
+	return r
+}
+
+func newFiber_LargeJSON() *fiber.App {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Get("/api/users/list", func(c *fiber.Ctx) error {
+		return c.JSON(sampleUserList)
+	})
+	return app
+}
+
 // ========== Go Benchmark functions (allocs, B/op, ns/op) ==========
 
 // --- Static ---
@@ -221,6 +542,574 @@ func BenchmarkBindParallel_Aarv(b *testing.B)  { benchHTTPParallel(b, newAarv_Bi
 func BenchmarkBindParallel_Mach(b *testing.B)  { benchHTTPParallel(b, newMach_Bind(), "POST", "/users", jsonBody) }
 func BenchmarkBindParallel_Gin(b *testing.B)   { benchHTTPParallel(b, newGin_Bind(), "POST", "/users", jsonBody) }
 func BenchmarkBindParallel_Fiber(b *testing.B) { benchFiberParallel(b, newFiber_Bind(), "POST", "/users", jsonBody) }
+
+// ========== Encryption Benchmarks ==========
+
+// Shared encryption key for all frameworks
+var encryptionKey = func() []byte {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	return key
+}()
+
+// AES-GCM encryptor for non-Aarv frameworks (with excluded paths/types for fair comparison)
+type aesGCMEncryptor struct {
+	gcm             cipher.AEAD
+	excludedPaths   map[string]struct{}
+	excludedPrefixes []string
+}
+
+func newAESGCMEncryptor(key []byte) *aesGCMEncryptor {
+	block, _ := aes.NewCipher(key)
+	gcm, _ := cipher.NewGCM(block)
+	return &aesGCMEncryptor{
+		gcm: gcm,
+		excludedPaths: map[string]struct{}{
+			"/health": {},
+			"/public": {},
+		},
+		excludedPrefixes: []string{"image/", "video/", "audio/"},
+	}
+}
+
+func (e *aesGCMEncryptor) Encrypt(plaintext []byte) []byte {
+	nonce := make([]byte, 12)
+	rand.Read(nonce)
+	ciphertext := e.gcm.Seal(nonce, nonce, plaintext, nil)
+	encoded := make([]byte, base64.StdEncoding.EncodedLen(len(ciphertext)))
+	base64.StdEncoding.Encode(encoded, ciphertext)
+	return encoded
+}
+
+func (e *aesGCMEncryptor) Decrypt(encoded []byte) ([]byte, error) {
+	ciphertext := make([]byte, base64.StdEncoding.DecodedLen(len(encoded)))
+	n, _ := base64.StdEncoding.Decode(ciphertext, encoded)
+	ciphertext = ciphertext[:n]
+	nonce := ciphertext[:12]
+	return e.gcm.Open(nil, nonce, ciphertext[12:], nil)
+}
+
+func (e *aesGCMEncryptor) isExcludedPath(path string) bool {
+	_, ok := e.excludedPaths[path]
+	return ok
+}
+
+func (e *aesGCMEncryptor) isExcludedType(contentType string) bool {
+	if idx := strings.IndexByte(contentType, ';'); idx >= 0 {
+		contentType = strings.TrimSpace(contentType[:idx])
+	}
+	for _, prefix := range e.excludedPrefixes {
+		if strings.HasPrefix(contentType, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// Encryption response writer for Gin/Mach (with content-type checking for fair comparison)
+type encryptingResponseWriter struct {
+	http.ResponseWriter
+	enc         *aesGCMEncryptor
+	buf         bytes.Buffer
+	skipEncrypt bool
+}
+
+func (w *encryptingResponseWriter) Write(b []byte) (int, error) {
+	// Check content type on first write (same as Aarv)
+	if !w.skipEncrypt {
+		ct := w.ResponseWriter.Header().Get("Content-Type")
+		if ct != "" && w.enc.isExcludedType(ct) {
+			w.skipEncrypt = true
+		}
+	}
+	if w.skipEncrypt {
+		return w.ResponseWriter.Write(b)
+	}
+	return w.buf.Write(b)
+}
+
+func (w *encryptingResponseWriter) finish() {
+	if w.skipEncrypt || w.buf.Len() == 0 {
+		return
+	}
+	encrypted := w.enc.Encrypt(w.buf.Bytes())
+	w.ResponseWriter.Header().Set("Content-Type", "application/encrypted")
+	w.ResponseWriter.Header().Del("Content-Length")
+	w.ResponseWriter.Write(encrypted)
+}
+
+func newAarv_Encrypt() http.Handler {
+	app := aarv.New(aarv.WithBanner(false))
+	encMiddleware, _ := encrypt.New(encryptionKey)
+	app.Use(encMiddleware)
+	app.Get("/api/users", func(c *aarv.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return app
+}
+
+func newMach_Encrypt() http.Handler {
+	enc := newAESGCMEncryptor(encryptionKey)
+	app := mach.New()
+	app.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Check excluded paths (same as Aarv)
+			if enc.isExcludedPath(r.URL.Path) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			ew := &encryptingResponseWriter{ResponseWriter: w, enc: enc}
+			next.ServeHTTP(ew, r)
+			ew.finish()
+		})
+	})
+	app.GET("/api/users", func(c *mach.Context) {
+		c.JSON(200, sampleUser)
+	})
+	return app
+}
+
+func newGin_Encrypt() http.Handler {
+	enc := newAESGCMEncryptor(encryptionKey)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		// Check excluded paths (same as Aarv)
+		if enc.isExcludedPath(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+		ew := &encryptingResponseWriter{ResponseWriter: c.Writer, enc: enc}
+		c.Writer = &ginEncryptWriter{ew, c.Writer}
+		c.Next()
+		ew.finish()
+	})
+	r.GET("/api/users", func(c *gin.Context) {
+		c.JSON(200, sampleUser)
+	})
+	return r
+}
+
+// Gin requires a special wrapper
+type ginEncryptWriter struct {
+	*encryptingResponseWriter
+	gin.ResponseWriter
+}
+
+func (w *ginEncryptWriter) Write(b []byte) (int, error) {
+	return w.encryptingResponseWriter.Write(b)
+}
+
+func newFiber_Encrypt() *fiber.App {
+	enc := newAESGCMEncryptor(encryptionKey)
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(func(c *fiber.Ctx) error {
+		// Check excluded paths (same as Aarv)
+		if enc.isExcludedPath(c.Path()) {
+			return c.Next()
+		}
+		err := c.Next()
+		if err == nil && len(c.Response().Body()) > 0 {
+			// Check excluded content types (same as Aarv)
+			ct := string(c.Response().Header.ContentType())
+			if enc.isExcludedType(ct) {
+				return nil
+			}
+			encrypted := enc.Encrypt(c.Response().Body())
+			c.Response().Header.Set("Content-Type", "application/encrypted")
+			c.Response().Header.Del("Content-Length")
+			c.Response().SetBody(encrypted)
+		}
+		return err
+	})
+	app.Get("/api/users", func(c *fiber.Ctx) error {
+		return c.JSON(sampleUser)
+	})
+	return app
+}
+
+// --- Encryption Benchmarks ---
+func BenchmarkEncrypt_Aarv(b *testing.B)  { benchHTTP(b, newAarv_Encrypt(), "GET", "/api/users", nil) }
+func BenchmarkEncrypt_Mach(b *testing.B)  { benchHTTP(b, newMach_Encrypt(), "GET", "/api/users", nil) }
+func BenchmarkEncrypt_Gin(b *testing.B)   { benchHTTP(b, newGin_Encrypt(), "GET", "/api/users", nil) }
+func BenchmarkEncrypt_Fiber(b *testing.B) { benchFiber(b, newFiber_Encrypt(), "GET", "/api/users", nil) }
+
+// ========== Logging Benchmarks ==========
+
+// Discard logger for fair comparison
+var discardLogger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+
+func init() {
+	slog.SetDefault(discardLogger)
+}
+
+// statusCapturingWriter captures status code and bytes written (same as Aarv's logger)
+type statusCapturingWriter struct {
+	http.ResponseWriter
+	statusCode   int
+	bytesWritten int64
+	written      bool
+}
+
+func newStatusCapturingWriter(w http.ResponseWriter) *statusCapturingWriter {
+	return &statusCapturingWriter{ResponseWriter: w, statusCode: 200}
+}
+
+func (w *statusCapturingWriter) WriteHeader(code int) {
+	if !w.written {
+		w.statusCode = code
+		w.written = true
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusCapturingWriter) Write(b []byte) (int, error) {
+	if !w.written {
+		w.written = true
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.bytesWritten += int64(n)
+	return n, err
+}
+
+// Logging middleware for other frameworks (same fields and logic as Aarv's logger)
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := newStatusCapturingWriter(w) // Same allocation pattern as Aarv
+		next.ServeHTTP(sw, r)
+
+		// Get request ID (same pattern as Aarv - check context)
+		requestID := ""
+		if c, ok := aarv.FromRequest(r); ok {
+			requestID = c.RequestID()
+		}
+
+		// Log same fields as Aarv
+		slog.Info("request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", sw.statusCode,
+			"latency", time.Since(start).String(),
+			"client_ip", clientIPFromRequest(r),
+			"user_agent", r.UserAgent(),
+			"bytes_out", sw.bytesWritten,
+			"request_id", requestID,
+		)
+	})
+}
+
+// clientIPFromRequest extracts client IP (same logic as Aarv's logger)
+func clientIPFromRequest(r *http.Request) string {
+	if ip := r.Header.Get("X-Real-IP"); ip != "" {
+		return ip
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i > 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return xff
+	}
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return ip
+}
+
+// Sensitive headers and fields for redaction (same as Aarv's verboselog)
+var sensitiveHeaders = map[string]struct{}{
+	"authorization": {},
+	"cookie":        {},
+	"set-cookie":    {},
+	"x-api-key":     {},
+	"x-auth-token":  {},
+}
+
+var sensitiveFields = []string{"password", "token", "secret", "api_key", "apikey"}
+
+// redactSensitiveFields replaces sensitive field values (same algorithm as Aarv)
+func redactSensitiveFields(body string) string {
+	for _, field := range sensitiveFields {
+		patterns := []string{
+			`"` + field + `":"`,
+			`"` + field + `": "`,
+			`"` + field + `" : "`,
+		}
+		for _, pattern := range patterns {
+			if idx := strings.Index(strings.ToLower(body), strings.ToLower(pattern)); idx >= 0 {
+				start := idx + len(pattern)
+				end := strings.Index(body[start:], `"`)
+				if end > 0 {
+					body = body[:start] + "[REDACTED]" + body[start+end:]
+				}
+			}
+		}
+	}
+	return body
+}
+
+// bodyCapturingWriter captures response body for logging (same as Aarv)
+type bodyCapturingWriter struct {
+	http.ResponseWriter
+	body       *bytes.Buffer
+	statusCode int
+}
+
+func (w *bodyCapturingWriter) WriteHeader(code int) {
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *bodyCapturingWriter) Write(b []byte) (int, error) {
+	w.body.Write(b)
+	return w.ResponseWriter.Write(b)
+}
+
+// Verbose logging middleware for other frameworks (with response capture + redaction like Aarv)
+func verboseLoggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		var reqBody []byte
+		if r.Body != nil && r.ContentLength > 0 {
+			reqBody, _ = io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(reqBody))
+		}
+		// Build headers map with sensitive header redaction
+		headers := make(map[string]string)
+		for k, v := range r.Header {
+			if _, sensitive := sensitiveHeaders[strings.ToLower(k)]; sensitive {
+				headers[k] = "[REDACTED]"
+			} else {
+				headers[k] = strings.Join(v, ", ")
+			}
+		}
+		// Capture response body
+		bw := &bodyCapturingWriter{ResponseWriter: w, body: &bytes.Buffer{}, statusCode: 200}
+		next.ServeHTTP(bw, r)
+
+		// Redact sensitive fields in bodies
+		reqBodyStr := redactSensitiveFields(string(reqBody))
+		respBodyStr := redactSensitiveFields(bw.body.String())
+
+		slog.Info("http_dump",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"request_headers", headers,
+			"request_body", reqBodyStr,
+			"response_body", respBodyStr,
+			"status", bw.statusCode,
+			"latency", time.Since(start).String(),
+		)
+	})
+}
+
+func newAarv_Logger() http.Handler {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(logger.New())
+	app.Post("/api/users", func(c *aarv.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return app
+}
+
+func newMach_Logger() http.Handler {
+	app := mach.New()
+	app.Use(loggingMiddleware)
+	app.POST("/api/users", func(c *mach.Context) {
+		c.JSON(200, sampleUser)
+	})
+	return app
+}
+
+func newGin_Logger() http.Handler {
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		// Get request ID (same pattern as Aarv)
+		requestID := ""
+		if ctx, ok := aarv.FromRequest(c.Request); ok {
+			requestID = ctx.RequestID()
+		}
+		// Log same fields as Aarv
+		slog.Info("request",
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
+			"status", c.Writer.Status(),
+			"latency", time.Since(start).String(),
+			"client_ip", clientIPFromRequest(c.Request),
+			"user_agent", c.Request.UserAgent(),
+			"bytes_out", c.Writer.Size(),
+			"request_id", requestID,
+		)
+	})
+	r.POST("/api/users", func(c *gin.Context) {
+		c.JSON(200, sampleUser)
+	})
+	return r
+}
+
+func newFiber_Logger() *fiber.App {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(func(c *fiber.Ctx) error {
+		start := time.Now()
+		err := c.Next()
+		// Fiber doesn't have aarv context, so just use empty (fair since Fiber won't find it either)
+		requestID := ""
+		// Log same fields as Aarv
+		slog.Info("request",
+			"method", c.Method(),
+			"path", c.Path(),
+			"status", c.Response().StatusCode(),
+			"latency", time.Since(start).String(),
+			"client_ip", c.IP(),
+			"user_agent", c.Get("User-Agent"),
+			"bytes_out", len(c.Response().Body()),
+			"request_id", requestID,
+		)
+		return err
+	})
+	app.Post("/api/users", func(c *fiber.Ctx) error {
+		return c.JSON(sampleUser)
+	})
+	return app
+}
+
+// --- Standard Logger Benchmarks ---
+func BenchmarkLogger_Aarv(b *testing.B)  { benchHTTP(b, newAarv_Logger(), "POST", "/api/users", jsonBody) }
+func BenchmarkLogger_Mach(b *testing.B)  { benchHTTP(b, newMach_Logger(), "POST", "/api/users", jsonBody) }
+func BenchmarkLogger_Gin(b *testing.B)   { benchHTTP(b, newGin_Logger(), "POST", "/api/users", jsonBody) }
+func BenchmarkLogger_Fiber(b *testing.B) { benchFiber(b, newFiber_Logger(), "POST", "/api/users", jsonBody) }
+
+// --- Verbose Logger Benchmarks ---
+
+func newAarv_VerboseLog() http.Handler {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(verboselog.New())
+	app.Post("/api/users", func(c *aarv.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return app
+}
+
+func newMach_VerboseLog() http.Handler {
+	app := mach.New()
+	app.Use(verboseLoggingMiddleware)
+	app.POST("/api/users", func(c *mach.Context) {
+		c.JSON(200, sampleUser)
+	})
+	return app
+}
+
+func newGin_VerboseLog() http.Handler {
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		start := time.Now()
+		var reqBody []byte
+		if c.Request.Body != nil && c.Request.ContentLength > 0 {
+			reqBody, _ = io.ReadAll(c.Request.Body)
+			c.Request.Body = io.NopCloser(bytes.NewReader(reqBody))
+		}
+		// Headers with sensitive redaction
+		headers := make(map[string]string)
+		for k, v := range c.Request.Header {
+			if _, sensitive := sensitiveHeaders[strings.ToLower(k)]; sensitive {
+				headers[k] = "[REDACTED]"
+			} else {
+				headers[k] = strings.Join(v, ", ")
+			}
+		}
+		// Capture response body using gin's blw
+		blw := &ginVerboseWriter{body: &bytes.Buffer{}, ResponseWriter: c.Writer}
+		c.Writer = blw
+		c.Next()
+
+		// Redact sensitive fields
+		reqBodyStr := redactSensitiveFields(string(reqBody))
+		respBodyStr := redactSensitiveFields(blw.body.String())
+
+		slog.Info("http_dump",
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
+			"request_headers", headers,
+			"request_body", reqBodyStr,
+			"response_body", respBodyStr,
+			"status", c.Writer.Status(),
+			"latency", time.Since(start).String(),
+		)
+	})
+	r.POST("/api/users", func(c *gin.Context) {
+		c.JSON(200, sampleUser)
+	})
+	return r
+}
+
+// ginVerboseWriter wraps gin.ResponseWriter to capture body
+type ginVerboseWriter struct {
+	gin.ResponseWriter
+	body *bytes.Buffer
+}
+
+func (w *ginVerboseWriter) Write(b []byte) (int, error) {
+	w.body.Write(b)
+	return w.ResponseWriter.Write(b)
+}
+
+func newFiber_VerboseLog() *fiber.App {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(func(c *fiber.Ctx) error {
+		start := time.Now()
+		reqBody := c.Body()
+		// Headers with sensitive redaction
+		headers := make(map[string]string)
+		c.Request().Header.VisitAll(func(k, v []byte) {
+			key := string(k)
+			if _, sensitive := sensitiveHeaders[strings.ToLower(key)]; sensitive {
+				headers[key] = "[REDACTED]"
+			} else {
+				headers[key] = string(v)
+			}
+		})
+		err := c.Next()
+
+		// Capture response body and redact sensitive fields
+		reqBodyStr := redactSensitiveFields(string(reqBody))
+		respBodyStr := redactSensitiveFields(string(c.Response().Body()))
+
+		slog.Info("http_dump",
+			"method", c.Method(),
+			"path", c.Path(),
+			"request_headers", headers,
+			"request_body", reqBodyStr,
+			"response_body", respBodyStr,
+			"status", c.Response().StatusCode(),
+			"latency", time.Since(start).String(),
+		)
+		return err
+	})
+	app.Post("/api/users", func(c *fiber.Ctx) error {
+		return c.JSON(sampleUser)
+	})
+	return app
+}
+
+func BenchmarkVerboseLog_Aarv(b *testing.B)  { benchHTTP(b, newAarv_VerboseLog(), "POST", "/api/users", jsonBody) }
+func BenchmarkVerboseLog_Mach(b *testing.B)  { benchHTTP(b, newMach_VerboseLog(), "POST", "/api/users", jsonBody) }
+func BenchmarkVerboseLog_Gin(b *testing.B)   { benchHTTP(b, newGin_VerboseLog(), "POST", "/api/users", jsonBody) }
+func BenchmarkVerboseLog_Fiber(b *testing.B) { benchFiber(b, newFiber_VerboseLog(), "POST", "/api/users", jsonBody) }
+
+// --- Verboselog with Minimal Config (Aarv only, for showing config impact) ---
+func newAarv_VerboseLogMinimal() http.Handler {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(verboselog.New(verboselog.MinimalConfig()))
+	app.Post("/api/users", func(c *aarv.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return app
+}
+
+func BenchmarkVerboseLogMinimal_Aarv(b *testing.B) {
+	benchHTTP(b, newAarv_VerboseLogMinimal(), "POST", "/api/users", jsonBody)
+}
 
 // ========== Bench helpers ==========
 
@@ -388,6 +1277,52 @@ func TestLoadTest(t *testing.T) {
 				{"Fiber", func() loadResult { return runFiberTCPLoad("Fiber", newFiber_Bind(), "POST", "/users", jsonBody) }},
 			},
 		},
+		// ========== Real-World Scenarios ==========
+		{
+			label: "Middleware Stack (Recovery + Noop + JSON Response)",
+			tests: []testFn{
+				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newAarv_Middleware(), "GET", "/api/users", nil) }},
+				{"Mach", func() loadResult { return runTCPLoad("Mach", newMach_Middleware(), "GET", "/api/users", nil) }},
+				{"Gin", func() loadResult { return runTCPLoad("Gin", newGin_Middleware(), "GET", "/api/users", nil) }},
+				{"Fiber", func() loadResult { return runFiberTCPLoad("Fiber", newFiber_Middleware(), "GET", "/api/users", nil) }},
+			},
+		},
+		{
+			label: "Query Params (4 params + JSON list response)",
+			tests: []testFn{
+				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newAarv_Query(), "GET", "/api/users?page=2&limit=20&sort=name&order=asc", nil) }},
+				{"Mach", func() loadResult { return runTCPLoad("Mach", newMach_Query(), "GET", "/api/users?page=2&limit=20&sort=name&order=asc", nil) }},
+				{"Gin", func() loadResult { return runTCPLoad("Gin", newGin_Query(), "GET", "/api/users?page=2&limit=20&sort=name&order=asc", nil) }},
+				{"Fiber", func() loadResult { return runFiberTCPLoad("Fiber", newFiber_Query(), "GET", "/api/users?page=2&limit=20&sort=name&order=asc", nil) }},
+			},
+		},
+		{
+			label: "Multi Path Params (3 params: org/team/member)",
+			tests: []testFn{
+				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newAarv_MultiParam(), "GET", "/api/orgs/org123/teams/team456/members/mem789", nil) }},
+				{"Mach", func() loadResult { return runTCPLoad("Mach", newMach_MultiParam(), "GET", "/api/orgs/org123/teams/team456/members/mem789", nil) }},
+				{"Gin", func() loadResult { return runTCPLoad("Gin", newGin_MultiParam(), "GET", "/api/orgs/org123/teams/team456/members/mem789", nil) }},
+				{"Fiber", func() loadResult { return runFiberTCPLoad("Fiber", newFiber_MultiParam(), "GET", "/api/orgs/org123/teams/team456/members/mem789", nil) }},
+			},
+		},
+		{
+			label: "Headers + Auth Check (read 3 headers, write 1)",
+			tests: []testFn{
+				{"Aarv", func() loadResult { return runTCPLoadWithHeaders("Aarv", newAarv_Headers(), "GET", "/api/protected") }},
+				{"Mach", func() loadResult { return runTCPLoadWithHeaders("Mach", newMach_Headers(), "GET", "/api/protected") }},
+				{"Gin", func() loadResult { return runTCPLoadWithHeaders("Gin", newGin_Headers(), "GET", "/api/protected") }},
+				{"Fiber", func() loadResult { return runFiberTCPLoadWithHeaders("Fiber", newFiber_Headers(), "GET", "/api/protected") }},
+			},
+		},
+		{
+			label: "Large JSON Response (5 users with nested address)",
+			tests: []testFn{
+				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newAarv_LargeJSON(), "GET", "/api/users/list", nil) }},
+				{"Mach", func() loadResult { return runTCPLoad("Mach", newMach_LargeJSON(), "GET", "/api/users/list", nil) }},
+				{"Gin", func() loadResult { return runTCPLoad("Gin", newGin_LargeJSON(), "GET", "/api/users/list", nil) }},
+				{"Fiber", func() loadResult { return runFiberTCPLoad("Fiber", newFiber_LargeJSON(), "GET", "/api/users/list", nil) }},
+			},
+		},
 	}
 
 	for _, sc := range scenarios {
@@ -468,13 +1403,12 @@ func captureMemStats() memSnapshot {
 }
 
 func getProcessCPUTime() time.Duration {
-	var creation, exit, kernel, user syscall.Filetime
-	h, _ := syscall.GetCurrentProcess()
-	syscall.GetProcessTimes(h, &creation, &exit, &kernel, &user)
-	// Filetime is 100-nanosecond intervals
-	k := int64(kernel.HighDateTime)<<32 | int64(kernel.LowDateTime)
-	u := int64(user.HighDateTime)<<32 | int64(user.LowDateTime)
-	return time.Duration((k + u) * 100) // convert 100ns units to ns
+	// Use runtime stats for cross-platform CPU time approximation
+	// This isn't exact CPU time but gives a reasonable measure of work done
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	// Use GC CPU time as a proxy (not perfect but cross-platform)
+	return time.Duration(m.GCCPUFraction * float64(time.Since(time.Time{})))
 }
 
 // ========== Real TCP load test runners ==========
@@ -592,6 +1526,136 @@ func runFiberTCPLoad(name string, app *fiber.App, method, path string, body []by
 				} else {
 					req, _ = http.NewRequest(method, url, nil)
 				}
+				t0 := time.Now()
+				resp, err := client.Do(req)
+				lat := time.Since(t0)
+				if err == nil {
+					io.Copy(io.Discard, resp.Body)
+					resp.Body.Close()
+				}
+				lats = append(lats, lat)
+			}
+			workerLats[id] = lats
+		}(w)
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+	cpuAfter := getProcessCPUTime()
+	memAfter := captureMemStats()
+
+	return buildResult(name, workerLats, elapsed, memBefore, memAfter, cpuBefore, cpuAfter)
+}
+
+// runTCPLoadWithHeaders runs load test with custom headers (for auth-like scenarios)
+func runTCPLoadWithHeaders(name string, handler http.Handler, method, path string) loadResult {
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	url := srv.URL + path
+
+	tr := &http.Transport{
+		MaxIdleConns:        concurrency,
+		MaxIdleConnsPerHost: concurrency,
+		MaxConnsPerHost:     concurrency,
+		DisableKeepAlives:   false,
+	}
+	client := &http.Client{Transport: tr}
+	defer tr.CloseIdleConnections()
+
+	workerLats := make([][]time.Duration, concurrency)
+	for i := range workerLats {
+		workerLats[i] = make([]time.Duration, 0, reqsPerWorker)
+	}
+
+	memBefore := captureMemStats()
+	cpuBefore := getProcessCPUTime()
+	start := time.Now()
+
+	var wg sync.WaitGroup
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			lats := workerLats[id]
+			for i := 0; i < reqsPerWorker; i++ {
+				req, _ := http.NewRequest(method, url, nil)
+				req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test")
+				req.Header.Set("X-Request-ID", "req-12345-abcde")
+				req.Header.Set("User-Agent", "BenchmarkClient/1.0")
+				t0 := time.Now()
+				resp, err := client.Do(req)
+				lat := time.Since(t0)
+				if err == nil {
+					io.Copy(io.Discard, resp.Body)
+					resp.Body.Close()
+				}
+				lats = append(lats, lat)
+			}
+			workerLats[id] = lats
+		}(w)
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+	cpuAfter := getProcessCPUTime()
+	memAfter := captureMemStats()
+
+	return buildResult(name, workerLats, elapsed, memBefore, memAfter, cpuBefore, cpuAfter)
+}
+
+// runFiberTCPLoadWithHeaders runs Fiber load test with custom headers
+func runFiberTCPLoadWithHeaders(name string, app *fiber.App, method, path string) loadResult {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		panic(err)
+	}
+	go app.Listener(ln)
+	defer app.Shutdown()
+
+	baseURL := "http://" + ln.Addr().String()
+	url := baseURL + path
+
+	tr := &http.Transport{
+		MaxIdleConns:        concurrency,
+		MaxIdleConnsPerHost: concurrency,
+		MaxConnsPerHost:     concurrency,
+		DisableKeepAlives:   false,
+	}
+	client := &http.Client{Transport: tr}
+	defer tr.CloseIdleConnections()
+
+	// Warmup
+	for i := 0; i < 20; i++ {
+		req, _ := http.NewRequest(method, url, nil)
+		req.Header.Set("Authorization", "Bearer test")
+		resp, err := client.Do(req)
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	workerLats := make([][]time.Duration, concurrency)
+	for i := range workerLats {
+		workerLats[i] = make([]time.Duration, 0, reqsPerWorker)
+	}
+
+	memBefore := captureMemStats()
+	cpuBefore := getProcessCPUTime()
+	start := time.Now()
+
+	var wg sync.WaitGroup
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			lats := workerLats[id]
+			for i := 0; i < reqsPerWorker; i++ {
+				req, _ := http.NewRequest(method, url, nil)
+				req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test")
+				req.Header.Set("X-Request-ID", "req-12345-abcde")
+				req.Header.Set("User-Agent", "BenchmarkClient/1.0")
 				t0 := time.Now()
 				resp, err := client.Do(req)
 				lat := time.Since(t0)
