@@ -117,7 +117,7 @@ func New(d time.Duration) aarv.Middleware {
 				if !tw.written {
 					w.Header().Set("Content-Type", "application/json; charset=utf-8")
 					w.WriteHeader(http.StatusGatewayTimeout)
-					json.NewEncoder(w).Encode(map[string]string{
+					_ = json.NewEncoder(w).Encode(map[string]string{
 						"error":   "gateway_timeout",
 						"message": "Request timed out",
 					})

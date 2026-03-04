@@ -69,7 +69,7 @@ func (bw *bufferedResponseWriter) Bypass() {
 	// Flush any buffered content first
 	if bw.buf.Len() > 0 {
 		bw.ResponseWriter.WriteHeader(bw.statusCode)
-		bw.ResponseWriter.Write(bw.buf.Bytes())
+		_, _ = bw.ResponseWriter.Write(bw.buf.Bytes())
 		bw.buf.Reset()
 	}
 }
@@ -82,7 +82,7 @@ func (bw *bufferedResponseWriter) Body() []byte {
 // SetBody replaces the buffered response body (for OnSend hooks).
 func (bw *bufferedResponseWriter) SetBody(data []byte) {
 	bw.buf.Reset()
-	bw.buf.Write(data)
+	_, _ = bw.buf.Write(data)
 }
 
 // StatusCode returns the pending status code.
@@ -106,7 +106,7 @@ func (bw *bufferedResponseWriter) Flush() {
 	}
 	bw.ResponseWriter.WriteHeader(bw.statusCode)
 	if len(body) > 0 {
-		bw.ResponseWriter.Write(body)
+		_, _ = bw.ResponseWriter.Write(body)
 	}
 	bw.buf.Reset()
 	bw.bypassed = true // After flush, further writes go direct
@@ -123,7 +123,7 @@ func (bw *bufferedResponseWriter) flush() {
 	}
 	bw.ResponseWriter.WriteHeader(bw.statusCode)
 	if len(body) > 0 {
-		bw.ResponseWriter.Write(body)
+		_, _ = bw.ResponseWriter.Write(body)
 	}
 }
 

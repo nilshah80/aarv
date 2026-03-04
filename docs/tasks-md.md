@@ -4,6 +4,76 @@
 
 ---
 
+## ⭐ PRIORITY: Production Readiness (Do First!)
+
+> **Start here before any new feature work.**
+
+### Current State Assessment
+
+| Area | Current State | Target | Priority |
+|------|---------------|--------|----------|
+| **Tests** | Core: ~31%, Plugins: variable | 80%+ coverage | **HIGH** |
+| **Documentation** | Basic README | GoDoc comments on all exports | **HIGH** |
+| **CI/CD** | ✅ Files created | Push & verify workflows run | **HIGH** |
+| **Error handling** | Basic | All edge cases handled gracefully | **MEDIUM** |
+| **Security review** | Unknown | Audit for OWASP top 10 | **MEDIUM** |
+| **API stability** | Unversioned | Semantic versioning, v0.1.0 release | **HIGH** |
+
+### PR0: CI/CD & Infrastructure ✅ (Files created)
+- [x] Create `.github/workflows/test.yml` - runs `go test -race` on Go 1.22/1.23
+- [x] Create `.github/workflows/lint.yml` - runs `golangci-lint`
+- [x] Create `CHANGELOG.md` - version tracking
+- [x] Create `CONTRIBUTING.md` - contributor guide
+- [ ] **Push to GitHub and verify CI runs** ⬅️ DO THIS FIRST
+- [ ] Fix any linting errors CI reports
+
+### PR1: Core Test Coverage (HIGH PRIORITY)
+- [ ] `aarv_test.go` - App creation, configuration, Listen/Shutdown
+- [ ] `context_test.go` - Context methods, Get/Set, JSON, Text, etc.
+- [ ] `router_test.go` - Route registration, path params, groups
+- [ ] `middleware_test.go` - Middleware chain, ordering, error handling
+- [ ] `bind_test.go` - JSON binding, form binding, query binding
+- [ ] `validate_test.go` - All validation rules
+- [ ] `hooks_test.go` - Lifecycle hooks execution order
+
+### PR2: Plugin Test Coverage (HIGH PRIORITY)
+- [ ] `plugins/logger/logger_test.go` (currently 0%)
+- [ ] `plugins/verboselog/verboselog_test.go` (currently 90.1%)
+- [ ] `plugins/encrypt/encrypt_test.go` (currently 86.4%)
+- [ ] `plugins/cors/cors_test.go` (currently 0%)
+- [ ] All other plugins need tests
+
+### PR3: GoDoc Comments (HIGH PRIORITY)
+- [ ] `aarv.go` - App, New(), Listen(), Use(), Get/Post/etc.
+- [ ] `context.go` - Context, JSON(), Text(), Param(), Query()
+- [ ] `router.go` - RouteGroup, Group()
+- [ ] `bind.go` - Bind(), BindReq()
+- [ ] `validate.go` - Validation rules
+- [ ] `hooks.go` - Hook types, AddHook()
+- [ ] All plugins and codecs
+
+### PR4: Error Handling Audit
+- [ ] Review all error returns in core code
+- [ ] Ensure panics are recovered in middleware
+- [ ] Test nil pointer scenarios
+- [ ] Test malformed JSON, missing fields
+- [ ] Test concurrent access scenarios
+
+### PR5: Security Review
+- [ ] Review for OWASP top 10 vulnerabilities
+- [ ] Ensure no secrets logged, proper redaction
+- [ ] Review TLS configuration defaults
+- [ ] Run `govulncheck ./...`
+
+### PR6: First Release (v0.1.0)
+- [ ] All CI checks passing
+- [ ] Test coverage > 80%
+- [ ] All GoDoc comments complete
+- [ ] `git tag -a v0.1.0 -m "Initial release"`
+- [ ] Create GitHub Release
+
+---
+
 ## Phase 1: Foundation (M1) ✅ COMPLETE
 
 ### 1.1 Project Scaffolding ✅
@@ -213,6 +283,14 @@
 - [x] JSON serialization as 422 response
 - [x] Integration with error handler
 
+### 3.5 RFC 7807 Problem Details (Enhancement)
+- [ ] Implement `ProblemDetails` struct per RFC 7807: type, title, status, detail, instance
+- [ ] Add `extensions` map for custom fields
+- [ ] Create `ValidationProblem` formatter that wraps validation errors in RFC 7807 format
+- [ ] Configurable: enable/disable RFC 7807 format globally or per-route
+- [ ] Content-Type: `application/problem+json`
+- [ ] Unit tests: RFC 7807 compliance, extension fields
+
 ---
 
 ## Phase 4: Middleware & Hooks (M4) ✅ COMPLETE
@@ -339,6 +417,38 @@
 - [ ] Configurable: additional info in response
 - [ ] Unit tests: healthy, unhealthy, custom callbacks
 
+### 5.12 Multipart File Upload Helper
+- [ ] Implement `c.FormFile(name string) (*UploadedFile, error)` helper
+- [ ] Implement `c.FormFiles(name string) ([]*UploadedFile, error)` for multiple files
+- [ ] `UploadedFile` struct: Filename, Size, ContentType, Header, Open() (returns io.Reader)
+- [ ] Implement `c.SaveFile(file *UploadedFile, dst string) error` helper
+- [ ] Integration with binder: `file` struct tag for file binding
+- [ ] Configurable: max file size, allowed content types, max files per field
+- [ ] Configurable: memory threshold for disk streaming (default 32MB, then stream to temp file)
+- [ ] Progress callback: `OnProgress func(bytesRead, totalBytes int64)` for upload tracking
+- [ ] Chunked upload support: resume interrupted uploads via `Content-Range` header
+- [ ] Unit tests: single file, multiple files, size limit, content type validation, progress callback
+
+### 5.13 Cookie Signing & Encryption
+- [ ] Implement `SecureCookie` helper using `crypto/hmac` for signing
+- [ ] Implement `c.SetSecureCookie(name, value, secret)` — signs cookie value
+- [ ] Implement `c.SecureCookie(name, secret)` — verifies and returns unsigned value
+- [ ] Implement optional encryption using `crypto/aes` (AES-GCM)
+- [ ] `c.SetEncryptedCookie(name, value, key)` — encrypt + sign
+- [ ] `c.EncryptedCookie(name, key)` — decrypt + verify
+- [ ] Configurable: expiry, path, domain, secure, httpOnly, sameSite
+- [ ] Unit tests: sign/verify, encrypt/decrypt, tamper detection, expiry
+
+### 5.14 Server-Sent Events (SSE) Helper
+- [ ] Implement `c.SSE()` that returns `*SSEWriter`
+- [ ] `SSEWriter.Send(event SSEEvent)` — writes event to response
+- [ ] `SSEEvent` struct: Event (name), Data, ID, Retry
+- [ ] Auto-set headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`
+- [ ] `SSEWriter.Flush()` for immediate send
+- [ ] `SSEWriter.Close()` for graceful shutdown
+- [ ] Handle client disconnect via `context.Done()`
+- [ ] Unit tests: event format, multiple events, client disconnect
+
 ---
 
 ## Phase 6: Auth Plugins (M6)
@@ -350,13 +460,17 @@
 - [ ] Implement ECDSA signing/verification (ES256, ES384, ES512) via `crypto/ecdsa`
 - [ ] Implement EdDSA signing/verification via `crypto/ed25519`
 - [ ] Token lookup: header (`Authorization: Bearer`), query param, cookie
-- [ ] Claims validation: `exp`, `nbf`, `iat`, `iss`, `aud`
+- [ ] Standard claims validation: `exp`, `nbf`, `iat`, `iss`, `aud`
+- [ ] Custom claims validation: `ClaimsValidator func(claims map[string]any) error` callback
+- [ ] Typed claims extraction: `GetClaims[T](c *Context) T` generic helper
 - [ ] Store claims in Context via configurable key
 - [ ] Skip paths configuration
 - [ ] `KeyFunc` callback for JWKS / key rotation support
 - [ ] Error handler for auth failures (401/403)
 - [ ] Token creation helper: `SignToken(claims, key)` → string
+- [ ] Token refresh helper: `RefreshToken(token, key, newExp)` → string
 - [ ] Unit tests: each algorithm, expired token, invalid signature, missing token, skip paths
+- [ ] Unit tests: custom claims validation, typed claims extraction
 - [ ] Security tests: algorithm confusion attack, none algorithm rejection
 
 ### 6.2 API Key Plugin
@@ -432,39 +546,75 @@
 
 ## Phase 10: Security Plugins (M10)
 
-- [ ] Rate Limiter: token bucket algorithm, zero-dep, `sync.Mutex` based
-- [ ] Rate Limiter: sliding window variant
-- [ ] Rate Limiter: per-IP keying via `c.RealIP()`
-- [ ] Rate Limiter: custom key function
-- [ ] Rate Limiter: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` headers
-- [ ] Throttle: max concurrent in-flight requests via `chan struct{}`
-- [ ] CSRF: double-submit cookie pattern
-- [ ] CSRF: token generation via `crypto/rand`
-- [ ] CSRF: `X-CSRF-Token` header validation
-- [ ] CSRF: skip safe methods (GET, HEAD, OPTIONS)
-- [ ] IP Filter: whitelist mode — only allow listed CIDRs
-- [ ] IP Filter: blacklist mode — block listed CIDRs
-- [ ] IP Filter: `net.ParseCIDR` based matching
-- [ ] Sanitizer: strip HTML tags from string fields
-- [ ] Sanitizer: normalize Unicode (NFC)
-- [ ] Unit tests for every plugin
+### 10.1 Rate Limiter
+- [ ] Token bucket algorithm, zero-dep, `sync.Mutex` based
+- [ ] Sliding window variant for smoother rate limiting
+- [ ] Per-IP keying via `c.RealIP()`
+- [ ] Custom key function: `KeyFunc func(*Context) string` (e.g., user ID, API key)
+- [ ] `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` headers
+- [ ] Configurable response on limit: custom status code, message, handler
+- [ ] Skip paths configuration (e.g., health checks)
+- [ ] Burst allowance configuration
+- [ ] Optional: `plugins/ratelimit-redis/go.mod` for distributed rate limiting via Redis
+- [ ] Unit tests: within limit, exceed limit, custom key, headers
+
+### 10.2 Throttle
+- [ ] Max concurrent in-flight requests via `chan struct{}`
+- [ ] Configurable: max concurrent, queue size, timeout
+- [ ] Return 503 Service Unavailable when queue full
+- [ ] Unit tests: under limit, at limit, queue timeout
+
+### 10.3 CSRF Protection
+- [ ] Double-submit cookie pattern
+- [ ] Token generation via `crypto/rand`
+- [ ] `X-CSRF-Token` header validation
+- [ ] Skip safe methods (GET, HEAD, OPTIONS)
+- [ ] Configurable: cookie name, header name, token length
+- [ ] Unit tests: valid token, invalid token, missing token, safe methods
+
+### 10.4 IP Filter
+- [ ] Whitelist mode — only allow listed CIDRs
+- [ ] Blacklist mode — block listed CIDRs
+- [ ] `net.ParseCIDR` based matching
+- [ ] Configurable: custom block response
+- [ ] Unit tests: allow, block, CIDR ranges
+
+### 10.5 Request Sanitizer
+- [ ] Strip HTML tags from string fields
+- [ ] Normalize Unicode (NFC)
+- [ ] Configurable: fields to sanitize, custom sanitizer functions
+- [ ] Unit tests: HTML stripping, Unicode normalization
 
 ---
 
 ## Phase 11: Observability Plugins (M11)
 
+### 11.1 Prometheus Plugin
 - [ ] Create `plugins/prometheus/go.mod` — separate module
-- [ ] Prometheus: request counter (method, path, status)
-- [ ] Prometheus: request duration histogram
-- [ ] Prometheus: in-flight requests gauge
-- [ ] Prometheus: response size histogram
-- [ ] Prometheus: configurable buckets, path grouping
+- [ ] Request counter (method, path, status)
+- [ ] Request duration histogram
+- [ ] In-flight requests gauge
+- [ ] Response size histogram
+- [ ] Configurable: buckets, path grouping/normalization (collapse path params)
+- [ ] Custom collectors registration
+- [ ] Unit tests: metric collection, path grouping
+
+### 11.2 OpenTelemetry Plugin
 - [ ] Create `plugins/otel/go.mod` — separate module
-- [ ] OpenTelemetry: span creation per request
-- [ ] OpenTelemetry: W3C Trace Context propagation
-- [ ] OpenTelemetry: attribute injection (method, path, status)
-- [ ] OpenTelemetry: configurable span naming
-- [ ] Pprof: mount `net/http/pprof` at configurable prefix (stdlib, no external deps)
+- [ ] Span creation per request with configurable span naming
+- [ ] W3C Trace Context propagation (traceparent, tracestate headers)
+- [ ] Attribute injection: method, path, status, user_agent, request_id
+- [ ] Error recording: span.RecordError on handler errors
+- [ ] Metrics export: request count, duration, size via OTLP
+- [ ] Log correlation: inject trace_id, span_id into slog logger
+- [ ] Baggage propagation support
+- [ ] Configurable: exporter (OTLP, Jaeger, Zipkin), sampling rate
+- [ ] Unit tests: span creation, context propagation, attribute injection
+
+### 11.3 Pprof Plugin
+- [ ] Mount `net/http/pprof` at configurable prefix (stdlib, no external deps)
+- [ ] Optional: authentication middleware for pprof endpoints
+- [ ] Unit tests: endpoint availability
 
 ---
 
@@ -477,6 +627,24 @@
 - [ ] Implement cert file watcher for hot-reload (fsnotify-free, `os.Stat` polling)
 - [ ] h2c plugin for HTTP/2 cleartext (internal mesh)
 - [ ] Document recommended TLS config for financial services
+
+---
+
+## Phase 12.5: OpenAPI / Swagger Generator (M12.5)
+
+### 12.5.1 OpenAPI Core
+- [ ] Define `OpenAPIConfig` struct: title, version, description, servers, contact, license
+- [ ] Implement route introspection: collect all registered routes with metadata
+- [ ] Auto-generate path parameters from `{param}` patterns
+- [ ] Auto-generate request body schema from `Bind[Req, Res]` type parameters
+- [ ] Auto-generate response schema from handler return types
+- [ ] Extract validation rules from `validate:""` tags → OpenAPI constraints (min, max, required, enum)
+- [ ] Implement `/openapi.json` endpoint handler
+- [ ] Implement `/openapi.yaml` endpoint handler
+- [ ] Optional: Swagger UI integration via embedded static files
+- [ ] Optional: ReDoc integration
+- [ ] Configurable: paths to include/exclude, security schemes
+- [ ] Unit tests: schema generation, constraint mapping, endpoint output
 
 ---
 
@@ -512,11 +680,37 @@
 - [x] examples/hello — minimal hello world
 - [x] examples/rest-crud — full CRUD with typed handlers
 - [ ] examples/jwt-auth — JWT protected API
-- [ ] examples/file-upload — multipart form handling
+- [ ] examples/file-upload — multipart form handling with binder integration
 - [ ] examples/middleware-chain — custom middleware
 - [ ] examples/plugin-custom — writing a plugin
 - [ ] examples/tls-http2 — HTTPS setup
 - [ ] examples/microservice — health check + prometheus + structured logging
+- [ ] examples/sse — server-sent events real-time updates
+- [ ] examples/openapi — auto-generated OpenAPI docs with Swagger UI
+
+---
+
+## Phase 14: Nice-to-Have Features (M14) — OPTIONAL
+
+### 14.1 WebSocket Support
+- [ ] Implement WebSocket upgrader using `golang.org/x/net/websocket` or `nhooyr.io/websocket`
+- [ ] Alternative: Create `plugins/websocket/go.mod` as separate module to avoid core deps
+- [ ] `c.Upgrade()` returns `*WebSocketConn`
+- [ ] Message reading/writing: `conn.ReadMessage()`, `conn.WriteMessage()`
+- [ ] JSON helpers: `conn.ReadJSON()`, `conn.WriteJSON()`
+- [ ] Ping/Pong heartbeat handling
+- [ ] Connection close handling with status codes
+- [ ] Configurable: read/write buffer sizes, handshake timeout, compression
+- [ ] Unit tests: upgrade, message exchange, close handling
+
+### 14.2 GraphQL Adapter
+- [ ] Create `plugins/graphql/go.mod` as separate module
+- [ ] Adapter for `graphql-go/graphql` library
+- [ ] Adapter for `99designs/gqlgen` generated handlers
+- [ ] Route helper: `app.GraphQL("/graphql", schema)` or `app.GraphQL("/graphql", gqlgenHandler)`
+- [ ] Playground/GraphiQL integration (optional static embed)
+- [ ] Context propagation: aarv Context → GraphQL resolver context
+- [ ] Unit tests: query execution, mutations, subscriptions routing
 
 ---
 
@@ -543,3 +737,116 @@
 - [x] No user input in log format strings (slog structured logging prevents this)
 - [x] Path traversal protection in static file server
 - [x] CORS: reject `AllowCredentials: true` with `AllowOrigins: ["*"]`
+
+---
+
+## Appendix: Probably Not Required / Over-Engineering
+
+> **Note**: The features below were considered but are likely over-engineering for a Go web framework.
+> They add .NET-style ceremony that conflicts with Go's philosophy of simplicity and explicitness.
+> Documented here for reference — implement only if there's strong user demand.
+
+### A.1 Results Helpers (.NET IResult Pattern)
+**Why probably not needed**: Go already has `c.JSON()`, `c.Text()`, `c.Redirect()`, etc. This is just syntax sugar that adds an abstraction layer without real benefit. The existing Context methods are already clean and idiomatic Go.
+
+- [ ] Implement `Result` interface with `Execute(*Context) error` method
+- [ ] `Results.Ok(data)` — 200 with JSON body
+- [ ] `Results.Created(location, data)` — 201 with Location header
+- [ ] `Results.Accepted(data)` — 202 with optional body
+- [ ] `Results.NoContent()` — 204 empty response
+- [ ] `Results.BadRequest(error)` — 400 with error details
+- [ ] `Results.Unauthorized()` — 401
+- [ ] `Results.Forbidden()` — 403
+- [ ] `Results.NotFound()` — 404
+- [ ] `Results.Conflict(error)` — 409
+- [ ] `Results.UnprocessableEntity(errors)` — 422 with validation errors
+- [ ] `Results.TooManyRequests()` — 429
+- [ ] `Results.InternalError(error)` — 500
+- [ ] `Results.File(path, contentType)` — file download
+- [ ] `Results.Stream(reader, contentType)` — streaming response
+- [ ] `Results.Redirect(url)` — 302 redirect
+- [ ] `Results.Problem(details)` — RFC 7807 Problem Details response
+- [ ] Generic `BindResult[Req, Res]` wrapper that accepts `Result` return type
+
+### A.2 Endpoint Filters (.NET IEndpointFilter Pattern)
+**Why probably not needed**: Middleware already provides pre/post handler functionality with the onion model. Filters are a .NET pattern that duplicates what middleware does. Adding another abstraction layer increases complexity without clear benefit.
+
+- [ ] Define `EndpointFilter` interface: `Filter(ctx *FilterContext, next FilterDelegate) Result`
+- [ ] `FilterContext` struct: Context, Arguments (bound request), Metadata
+- [ ] Pre-handler filters that can short-circuit (return early)
+- [ ] Post-handler filters for response modification
+- [ ] Filter pipeline composition (multiple filters in order)
+- [ ] Per-route filter registration via `WithFilters(filter1, filter2)`
+- [ ] Global filter registration via `app.AddFilter(filter)`
+- [ ] Built-in filters: `AuthorizationFilter`, `LoggingFilter`, `CacheFilter`, `ValidationFilter`
+
+### A.3 Route Groups Enhancement (Fluent Builder)
+**Why probably not needed**: Current `Group()` with `Use()` already works well. Fluent builders add ceremony. `RequireAuthorization()` can be done with middleware. Keep it simple.
+
+- [ ] Fluent route group builder: `app.MapGroup("/api/v1").WithTags("v1").WithFilters(...)`
+- [ ] Group-level metadata inheritance to child routes
+- [ ] Group-level API versioning via prefix or header
+- [ ] `group.RequireAuthorization(policy)` — apply auth to all routes in group
+- [ ] `group.AllowAnonymous()` — exempt group from parent auth
+
+### A.4 Parameter Binding Enhancements
+**Why probably not needed**: The `services` tag over-complicates binding. Use `c.MustGet()` or decorators explicitly — it's clearer. `AsParameters` is a niche use case that adds complexity to the binder for minimal benefit.
+
+- [ ] `services` struct tag: inject from decorator registry (like [FromServices])
+- [ ] `AsParameters` support: flatten nested struct into parent binding
+- [ ] Custom binder registration: `RegisterBinder[T](fn func(*Context) (T, error))`
+- [ ] Automatic service resolution in `Bind` handlers via decorator lookup
+
+### A.5 Verbose Endpoint Metadata
+**Why probably not needed**: `.WithName()`, `.WithTags()`, `.WithDescription()` already exist. The additional `.Produces[T]()`, `.ProducesProblem()`, `.RequireAuthorization()` add ceremony to every route definition. OpenAPI can infer most of this from `Bind[Req, Res]` types automatically.
+
+- [ ] `.WithSummary("...")` — OpenAPI summary (short description)
+- [ ] `.Produces[TResponse](statusCode)` — document response type for status code
+- [ ] `.Produces(statusCode, contentType)` — document response without type
+- [ ] `.ProducesProblem(statusCode)` — document RFC 7807 error response
+- [ ] `.ProducesValidationProblem()` — document 400 validation error response
+- [ ] `.Accepts[TRequest](contentType)` — document accepted request body types
+- [ ] `.RequireAuthorization(policy...)` — mark endpoint as requiring auth
+- [ ] `.AllowAnonymous()` — exempt endpoint from auth requirements
+- [ ] `.WithOpenApi(fn)` — custom OpenAPI operation modifier callback
+- [ ] `.ExcludeFromDescription()` — hide endpoint from OpenAPI docs
+- [ ] `.WithGroupName("v1")` — API versioning group
+
+### A.6 Dependency Injection Container
+**Why probably not needed**: Go philosophy is explicit over implicit. The existing `Decorate`/`Resolve` pattern is sufficient. Full DI containers add magic and make code harder to trace. Just pass dependencies explicitly or use decorators.
+
+- [ ] Service registration: `app.Services.AddSingleton[T](factory)`
+- [ ] Service registration: `app.Services.AddScoped[T](factory)` — per-request
+- [ ] Service registration: `app.Services.AddTransient[T](factory)` — new each time
+- [ ] Service resolution: `GetService[T](c *Context) T`
+- [ ] Constructor injection via decorator pattern
+- [ ] Lazy initialization for expensive services
+- [ ] Service disposal on request end (for scoped services)
+
+### A.7 Response Caching
+**Why probably not needed**: Most production apps use Redis, CDN, or reverse proxy (nginx, Cloudflare) for caching. Framework-level caching is rarely used and adds complexity. The existing ETag plugin handles conditional requests.
+
+- [ ] `.CacheOutput(duration)` route option — cache response for duration
+- [ ] Vary by query parameters: `VaryByQuery("page", "limit")`
+- [ ] Vary by headers: `VaryByHeader("Accept-Language")`
+- [ ] Cache tags for targeted invalidation
+- [ ] Memory-based cache store (default, zero-dep)
+- [ ] Optional: `plugins/cache-redis/go.mod` for distributed caching
+
+### A.8 Typed HTTP Client Factory
+**Why probably not needed**: Just use `http.Client` with your own wrapper. Every team has different preferences for HTTP clients (resty, req, etc.). A framework-provided client adds opinions where none are needed.
+
+- [ ] Named client registration: `app.AddHttpClient("github", config)`
+- [ ] Base URL configuration
+- [ ] Default headers and timeout
+- [ ] Retry policies with exponential backoff
+- [ ] Circuit breaker pattern
+- [ ] Request/response logging
+- [ ] OpenTelemetry span propagation
+
+### A.9 Request Decompression
+**Why probably not needed**: Rarely needed — most APIs receive uncompressed JSON. If needed, it's a simple middleware to write. Not worth adding to core.
+
+- [ ] Auto-detect `Content-Encoding` header (gzip, deflate, br)
+- [ ] Decompress request body before parsing
+- [ ] Configurable: max decompressed size, allowed encodings

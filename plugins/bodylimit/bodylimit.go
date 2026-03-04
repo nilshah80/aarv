@@ -80,9 +80,8 @@ func NewWithResponse(maxBytes int64) aarv.Middleware {
 // triggered and convert it into a proper 413 response.
 type limitResponseWriter struct {
 	http.ResponseWriter
-	request    *http.Request
-	maxBytes   int64
-	errorSent  bool
+	request  *http.Request
+	maxBytes int64
 }
 
 func (lw *limitResponseWriter) WriteHeader(code int) {
@@ -103,7 +102,7 @@ func (lw *limitResponseWriter) Unwrap() http.ResponseWriter {
 func SendPayloadTooLarge(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusRequestEntityTooLarge)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"error":   "payload_too_large",
 		"message": "Request body too large",
 	})

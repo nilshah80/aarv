@@ -237,7 +237,7 @@ func TestHook(t *testing.T) {
 	resp.AssertStatus(t, 200)
 
 	var body map[string]bool
-	resp.JSON(&body)
+	_ = resp.JSON(&body)
 	if !body["hooked"] {
 		t.Error("expected hooked to be true")
 	}

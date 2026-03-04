@@ -51,37 +51,6 @@ func DefaultConfig() Config {
 	}
 }
 
-// notFoundWriter is a response writer that captures 404 responses so the SPA
-// fallback can serve the index file instead.
-type notFoundWriter struct {
-	http.ResponseWriter
-	statusCode int
-	is404      bool
-}
-
-func (nfw *notFoundWriter) WriteHeader(code int) {
-	nfw.statusCode = code
-	if code == http.StatusNotFound {
-		nfw.is404 = true
-		// Don't forward the 404 — we'll serve the SPA fallback
-		return
-	}
-	nfw.ResponseWriter.WriteHeader(code)
-}
-
-func (nfw *notFoundWriter) Write(b []byte) (int, error) {
-	if nfw.is404 {
-		// Swallow the body of the 404 response
-		return len(b), nil
-	}
-	return nfw.ResponseWriter.Write(b)
-}
-
-// Unwrap returns the underlying http.ResponseWriter.
-func (nfw *notFoundWriter) Unwrap() http.ResponseWriter {
-	return nfw.ResponseWriter
-}
-
 // New creates a static file serving middleware with the given configuration.
 // The Config.Root field is required.
 func New(config Config) aarv.Middleware {

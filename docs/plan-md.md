@@ -7,6 +7,37 @@
 
 ---
 
+## ⭐ PRIORITY: Production Readiness
+
+> **Before any new features, complete these items for v0.1.0 release.**
+
+| Phase | Focus | Status | Priority |
+|-------|-------|--------|----------|
+| **PR0** | CI/CD Setup | ✅ Files created, need push | **IMMEDIATE** |
+| **PR1** | Core Test Coverage (target: 80%+) | 🔴 Core: ~31% | **HIGH** |
+| **PR2** | Plugin Test Coverage | 🟡 Variable (0-90%) | **HIGH** |
+| **PR3** | GoDoc Comments | ⚪ Not started | **HIGH** |
+| **PR4** | Error Handling Audit | ⚪ Not started | **MEDIUM** |
+| **PR5** | Security Review (OWASP) | ⚪ Not started | **MEDIUM** |
+| **PR6** | First Release (v0.1.0) | ⚪ Blocked by above | **HIGH** |
+
+**Current Coverage Baseline:**
+- Core (`aarv`): 30.8%
+- `plugins/encrypt`: 86.4%
+- `plugins/verboselog`: 90.1%
+- Other plugins: 0%
+
+**Next Actions:**
+1. Push to GitHub → verify CI workflows run
+2. Fix any linting errors
+3. Write tests to increase coverage to 80%+
+4. Add GoDoc comments to all exported types/functions
+5. Tag and release v0.1.0
+
+See `tasks-md.md` for detailed task breakdown.
+
+---
+
 ## Vision
 
 Build the fastest, zero-dependency Go web framework on top of `net/http` stdlib, combining:
@@ -96,6 +127,7 @@ Build the fastest, zero-dependency Go web framework on top of `net/http` stdlib,
 - [x] Integration into `Bind[T]` pipeline
 - [ ] `unsafe.Pointer` + field offset arithmetic fast path (not yet implemented)
 - [ ] Configurable message templates (currently hardcoded)
+- [ ] RFC 7807 Problem Details format (optional, `application/problem+json`)
 
 **Exit Criteria**: ✅ Struct with `validate:""` tags auto-validates before handler, returns structured 422 on failure.
 
@@ -131,8 +163,12 @@ Build the fastest, zero-dependency Go web framework on top of `net/http` stdlib,
 - [x] ETag (auto-generation + conditional 304)
 - [x] Static Files (file server with SPA fallback)
 - [x] Health Check (/health, /ready, /live)
+- [x] Encrypt (AES-256-GCM request/response encryption via `crypto/aes` + `crypto/cipher`)
+- [ ] Multipart File Upload helper (`c.FormFile`, `c.SaveFile`, binder integration, progress tracking)
+- [ ] Cookie Signing & Encryption (`crypto/hmac` + `crypto/aes`)
+- [ ] Server-Sent Events (SSE) helper (`c.SSE()`, event streaming)
 
-**Exit Criteria**: ✅ All 11 plugins working, configurable, zero external dependencies.
+**Exit Criteria**: ✅ All 12 core plugins working. File upload, cookie signing, and SSE pending.
 
 ---
 
@@ -193,24 +229,28 @@ Build the fastest, zero-dependency Go web framework on top of `net/http` stdlib,
 > Goal: Rate limiting, CSRF, IP filtering
 
 - [ ] Rate Limiter: token bucket + sliding window, per-IP or per-key, zero-dep
-- [ ] Throttle: max concurrent requests limiter
+- [ ] Rate Limiter: custom key function, configurable response, burst allowance
+- [ ] Rate Limiter: optional Redis backend for distributed limiting (`plugins/ratelimit-redis`)
+- [ ] Throttle: max concurrent requests limiter with queue
 - [ ] CSRF: token generation + validation (double-submit cookie pattern)
 - [ ] IP Filter: whitelist/blacklist with CIDR range support
 - [ ] Request Sanitizer: strip XSS vectors, normalize Unicode
 
-**Exit Criteria**: Rate limiter returns 429, CSRF protects POST routes, IP filter blocks ranges.
+**Exit Criteria**: Rate limiter returns 429 with proper headers, CSRF protects POST routes, IP filter blocks ranges.
 
 ---
 
 ### M11: Observability Plugins
 > Goal: Prometheus, OpenTelemetry, Pprof
 
-- [ ] Prometheus: request count, latency histogram, in-flight gauge, custom collectors
-- [ ] OpenTelemetry: span creation, context propagation, attribute injection
+- [ ] Prometheus: request count, latency histogram, in-flight gauge, response size, custom collectors
+- [ ] OpenTelemetry: span creation, W3C Trace Context propagation, attribute injection
+- [ ] OpenTelemetry: metrics export via OTLP, log correlation (trace_id in slog)
+- [ ] OpenTelemetry: error recording, baggage propagation
 - [ ] Pprof: mount `net/http/pprof` handlers at configurable prefix
 - [ ] Each as separate Go module (has external deps)
 
-**Exit Criteria**: Prometheus `/metrics` endpoint exports request latency histograms.
+**Exit Criteria**: Prometheus `/metrics` exports histograms; OpenTelemetry traces propagate with log correlation.
 
 ---
 
@@ -227,6 +267,19 @@ Build the fastest, zero-dependency Go web framework on top of `net/http` stdlib,
 
 ---
 
+### M12.5: OpenAPI / Swagger Generator
+> Goal: Auto-generate OpenAPI 3.0 spec from route definitions
+
+- [ ] Route introspection: collect all routes with `Bind[Req, Res]` type info
+- [ ] Auto-generate request/response schemas from Go struct types
+- [ ] Extract validation constraints from `validate:""` tags → OpenAPI constraints
+- [ ] Serve `/openapi.json` and `/openapi.yaml` endpoints
+- [ ] Optional Swagger UI / ReDoc integration
+
+**Exit Criteria**: `app.Get("/openapi.json", openapi.Handler(app))` returns valid OpenAPI 3.0 spec.
+
+---
+
 ### M13: Documentation & Benchmarks — IN PROGRESS
 > Goal: Production-ready documentation and performance proof
 
@@ -238,31 +291,43 @@ Build the fastest, zero-dependency Go web framework on top of `net/http` stdlib,
 - [x] Benchmark suite: framework overhead, comparison vs Gin/Fiber/Mach
 - [x] Load test: 500K requests, 100 VCs, real TCP (latency, memory, CPU, RPS)
 - [x] Example applications: hello, rest-crud
-- [ ] Example applications: JWT auth, file upload, middleware chain, plugin, TLS, microservice
+- [ ] Example applications: JWT auth, file upload, middleware chain, plugin, TLS, microservice, SSE, OpenAPI
 
 **Exit Criteria**: Sub-microsecond framework overhead per request. Competitive with Gin/Echo in benchmarks. ✅ (Confirmed via benchmarks)
+
+---
+
+### M14: Nice-to-Have Features (OPTIONAL)
+> Goal: Extended features for specific use cases
+
+- [ ] WebSocket support (separate module `plugins/websocket`)
+- [ ] GraphQL adapter (separate module `plugins/graphql` for graphql-go/gqlgen)
+
+**Exit Criteria**: Optional. Implemented as separate Go modules to avoid polluting core with dependencies.
 
 ---
 
 ## Progress Summary
 
 ```
-✅ M1  Foundation              — COMPLETE
-✅ M2  Type-Safe Binding       — COMPLETE
-✅ M3  Validation Engine       — COMPLETE
-✅ M4  Middleware & Hooks       — COMPLETE
-✅ M5  Core Plugins (11/11)    — COMPLETE
-⬜ M6  Auth Plugins            — NOT STARTED
-✅ M7  Plugin System           — COMPLETE
-✅ M8  Codec Sub-Packages      — COMPLETE
-✅ M9  Testing Utilities       — COMPLETE
-⬜ M10 Security Plugins        — NOT STARTED
-⬜ M11 Observability Plugins   — NOT STARTED
-⬜ M12 TLS Helpers             — NOT STARTED
-🔶 M13 Docs & Benchmarks      — IN PROGRESS (benchmarks done, docs pending)
+✅ M1    Foundation              — COMPLETE
+✅ M2    Type-Safe Binding       — COMPLETE
+✅ M3    Validation Engine       — COMPLETE (RFC 7807 pending)
+✅ M4    Middleware & Hooks      — COMPLETE
+🔶 M5    Core Plugins (12/15)    — File Upload, Cookie Signing, SSE pending
+⬜ M6    Auth Plugins            — NOT STARTED
+✅ M7    Plugin System           — COMPLETE
+✅ M8    Codec Sub-Packages      — COMPLETE
+✅ M9    Testing Utilities       — COMPLETE
+⬜ M10   Security Plugins        — NOT STARTED
+⬜ M11   Observability Plugins   — NOT STARTED
+⬜ M12   TLS Helpers             — NOT STARTED
+⬜ M12.5 OpenAPI Generator       — NOT STARTED
+🔶 M13   Docs & Benchmarks       — IN PROGRESS (benchmarks done, docs pending)
+⬜ M14   Nice-to-Have            — OPTIONAL (WebSocket, GraphQL)
 ```
 
-**Overall**: 9 of 13 milestones complete. Core framework fully functional with benchmarks proving competitive performance vs Gin, Fiber, and Mach.
+**Overall**: 9 of 14 milestones complete (M14 optional). Core framework fully functional with benchmarks proving competitive performance vs Gin, Fiber, and Mach.
 
 ---
 
@@ -288,3 +353,24 @@ Build the fastest, zero-dependency Go web framework on top of `net/http` stdlib,
 | Sonic build constraint `!go1.27` | Low | Sonic is optional codec sub-package, not core |
 | Performance regression from buffered ResponseWriter | Medium | Benchmark; provide opt-out for streaming endpoints |
 | Plugin isolation is hard without goroutine-local storage | Low | Convention-based isolation via PluginContext scoping |
+
+---
+
+## Appendix: Features Considered But Likely Over-Engineering
+
+> The following .NET Minimal API inspired features were evaluated but deemed over-engineering for a Go framework.
+> They add ceremony and abstraction layers that conflict with Go's philosophy of simplicity.
+> See `tasks-md.md` Appendix for detailed specifications if ever needed.
+
+| Feature | Why Not Needed |
+|---------|----------------|
+| **Results Helpers (IResult)** | `c.JSON()`, `c.Text()`, `c.Redirect()` already exist — this is just syntax sugar |
+| **Endpoint Filters** | Middleware already does pre/post handler with onion model — filters duplicate this |
+| **Fluent Route Group Builder** | Current `Group()` + `Use()` is simple and works — fluent builders add ceremony |
+| **Parameter Binding `services` tag** | Over-complicates binding — use `c.MustGet()` or decorators explicitly |
+| **`AsParameters` flattening** | Niche use case, adds complexity to binder for minimal benefit |
+| **Verbose Endpoint Metadata** | `.Produces[T]()`, `.RequireAuthorization()` etc. add ceremony — OpenAPI can infer from types |
+| **DI Container** | Go prefers explicit over implicit — `Decorate`/`Resolve` is sufficient |
+| **Response Caching** | Production uses Redis/CDN — framework caching rarely used |
+| **Typed HTTP Client Factory** | Just use `http.Client` — teams have different preferences |
+| **Request Decompression** | Rarely needed — simple middleware if required |

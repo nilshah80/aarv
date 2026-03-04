@@ -66,7 +66,7 @@ func GenerateULID() string {
 		ulidLastMs = ms
 		// Random counter start for new millisecond
 		var b [2]byte
-		rand.Read(b[:])
+		_, _ = rand.Read(b[:])
 		ulidCounter = binary.BigEndian.Uint16(b[:])
 	}
 	counter := ulidCounter
@@ -88,7 +88,7 @@ func GenerateULID() string {
 	// Use counter in first 16 bits, rest random
 	var randomness [10]byte
 	binary.BigEndian.PutUint16(randomness[:2], counter)
-	rand.Read(randomness[2:])
+	_, _ = rand.Read(randomness[2:])
 
 	// Encode 80 bits (10 bytes) as 16 chars (5 bits each)
 	ulid[10] = ulidEncoding[(randomness[0]>>3)&0x1F]

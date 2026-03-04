@@ -1,7 +1,6 @@
 package aarv
 
 import (
-	"context"
 	"net/http"
 	"strings"
 )
@@ -196,11 +195,6 @@ func (g *RouteGroup) Group(prefix string, fn func(g *RouteGroup)) *RouteGroup {
 
 // ctxKey is the context key for storing the aarv Context in request context.
 type ctxKey struct{}
-
-// contextWithAarv stores the aarv Context into the request's context.Context.
-func contextWithAarv(ctx context.Context, c *Context) context.Context {
-	return context.WithValue(ctx, ctxKey{}, c)
-}
 
 // FromRequest extracts the aarv Context from an http.Request.
 // This is exported so sub-packages (plugins) can access the aarv Context.

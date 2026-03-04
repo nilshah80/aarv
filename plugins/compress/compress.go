@@ -134,7 +134,7 @@ func (grw *gzipResponseWriter) finish() {
 		grw.ResponseWriter.WriteHeader(grw.statusCode)
 	}
 	if len(grw.buf) > 0 {
-		grw.ResponseWriter.Write(grw.buf)
+		_, _ = grw.ResponseWriter.Write(grw.buf)
 	}
 }
 
@@ -211,7 +211,7 @@ func (drw *deflateResponseWriter) finish() {
 		drw.ResponseWriter.WriteHeader(drw.statusCode)
 	}
 	if len(drw.buf) > 0 {
-		drw.ResponseWriter.Write(drw.buf)
+		_, _ = drw.ResponseWriter.Write(drw.buf)
 	}
 }
 

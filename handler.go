@@ -20,14 +20,14 @@ func adaptHandler(handler any) HandlerFunc {
 			h(c.Response(), c.Request())
 			return nil
 		}
-	case http.Handler:
-		return func(c *Context) error {
-			h.ServeHTTP(c.Response(), c.Request())
-			return nil
-		}
 	case http.HandlerFunc:
 		return func(c *Context) error {
 			h(c.Response(), c.Request())
+			return nil
+		}
+	case http.Handler:
+		return func(c *Context) error {
+			h.ServeHTTP(c.Response(), c.Request())
 			return nil
 		}
 	default:

@@ -22,6 +22,17 @@ vendor/
 bin/
 dist/
 
+# Example binaries (no extension on macOS/Linux)
+examples/*/[a-z]*
+!examples/*/*.go
+!examples/*/*.mod
+!examples/*/*.sum
+!examples/*/*.json
+!examples/*/*.html
+!examples/*/*.css
+!examples/*/*.js
+!examples/*/*.md
+
 # IDE and editor files
 .vscode/
 .idea/
