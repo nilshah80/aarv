@@ -2,13 +2,17 @@ package benchmark
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
+	playgroundvalidator "github.com/go-playground/validator/v10"
 	"github.com/nilshah80/aarv"
+	"github.com/nilshah80/aarv/internal/benchutil"
 	"github.com/nilshah80/aarv/plugins/encrypt"
 	"github.com/nilshah80/aarv/plugins/logger"
 	"github.com/nilshah80/aarv/plugins/verboselog"
@@ -284,6 +288,129 @@ func BenchmarkValidation_10Fields(b *testing.B) {
 		rec := httptest.NewRecorder()
 		app.ServeHTTP(rec, req)
 	}
+}
+
+type validationComparePayload struct {
+	Name    string `json:"name" validate:"required,min=2,max=50"`
+	Email   string `json:"email" validate:"required,email"`
+	Age     int    `json:"age" validate:"gte=0,lte=150"`
+	Phone   string `json:"phone" validate:"required,min=5"`
+	Street  string `json:"street" validate:"required"`
+	City    string `json:"city" validate:"required,min=2"`
+	State   string `json:"state" validate:"required,len=2"`
+	Zip     string `json:"zip" validate:"required,numeric,len=5"`
+	Country string `json:"country" validate:"required,len=2"`
+	Role    string `json:"role" validate:"required,oneof=admin user editor"`
+}
+
+var validationCompareBody = []byte(`{"name":"alice","email":"a@t.com","age":30,"phone":"55555","street":"123 Main","city":"NYC","state":"NY","zip":"10001","country":"US","role":"admin"}`)
+
+func newValidationCompareApp() *aarv.App {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Post("/users", aarv.BindReq(func(c *aarv.Context, req validationComparePayload) error {
+		return c.NoContent(http.StatusNoContent)
+	}))
+	return app
+}
+
+func newValidationCompareRequest() *http.Request {
+	return &http.Request{
+		Method:        http.MethodPost,
+		URL:           &url.URL{Path: "/users"},
+		Header:        http.Header{"Content-Type": []string{"application/json"}},
+		Body:          io.NopCloser(bytes.NewReader(validationCompareBody)),
+		ContentLength: int64(len(validationCompareBody)),
+	}
+}
+
+func newValidationCompareAppWithMiddleware() *aarv.App {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(noopMiddleware)
+	app.Use(noopMiddleware)
+	app.AddHook(aarv.OnRequest, func(c *aarv.Context) error {
+		c.Set("request_id", "bench-id")
+		return nil
+	})
+	app.Post("/users", aarv.BindReq(func(c *aarv.Context, req validationComparePayload) error {
+		return c.NoContent(http.StatusNoContent)
+	}))
+	return app
+}
+
+func benchmarkValidationCompareAarv(b *testing.B, app *aarv.App) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(validationCompareBody))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			b.Fatalf("unexpected status %d", rec.Code)
+		}
+	}
+}
+
+func benchmarkValidationCompareAarvLight(b *testing.B, app *aarv.App) {
+	var w benchutil.DiscardResponseWriter
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w.Reset()
+		req := newValidationCompareRequest()
+		app.ServeHTTP(&w, req)
+		if w.Status != http.StatusNoContent {
+			b.Fatalf("unexpected status %d", w.Status)
+		}
+	}
+}
+
+func benchmarkValidationCompareGoPlayground(b *testing.B, validate *playgroundvalidator.Validate) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var payload validationComparePayload
+		if err := json.Unmarshal(validationCompareBody, &payload); err != nil {
+			b.Fatal(err)
+		}
+		if err := validate.Struct(payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkValidationCompare_10Fields(b *testing.B) {
+	app := newValidationCompareApp()
+	validate := playgroundvalidator.New()
+
+	b.Run("aarv_bindreq", func(b *testing.B) {
+		benchmarkValidationCompareAarv(b, app)
+	})
+
+	b.Run("json_unmarshal_plus_go_playground", func(b *testing.B) {
+		benchmarkValidationCompareGoPlayground(b, validate)
+	})
+}
+
+func BenchmarkValidationCompare10FieldsAarv(b *testing.B) {
+	benchmarkValidationCompareAarv(b, newValidationCompareApp())
+}
+
+func BenchmarkValidationCompare10FieldsAarvWithMiddleware(b *testing.B) {
+	benchmarkValidationCompareAarv(b, newValidationCompareAppWithMiddleware())
+}
+
+func BenchmarkValidationCompare10FieldsAarvLight(b *testing.B) {
+	benchmarkValidationCompareAarvLight(b, newValidationCompareApp())
+}
+
+func BenchmarkValidationCompare10FieldsAarvWithMiddlewareLight(b *testing.B) {
+	benchmarkValidationCompareAarvLight(b, newValidationCompareAppWithMiddleware())
+}
+
+func BenchmarkValidationCompare10FieldsGoPlayground(b *testing.B) {
+	benchmarkValidationCompareGoPlayground(b, playgroundvalidator.New())
 }
 
 // --- Middleware Chain Benchmarks ---

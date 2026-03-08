@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,13 +29,29 @@ type StructLevelValidator interface {
 // The function receives the field value and the rule parameter, and returns true if valid.
 type CustomRuleFunc func(field reflect.Value, param string) bool
 
+// ValidationMessageFunc customizes the human-readable message for a failed rule.
+type ValidationMessageFunc func(field, param string) string
+
 // customRules stores registered custom validation rules.
 var customRules sync.Map
+
+// validationMessageTemplates stores per-rule message template overrides.
+var validationMessageTemplates sync.Map
 
 // RegisterRule registers a custom validation rule.
 // The rule can then be used in validate tags like: validate:"myrule=param"
 func RegisterRule(name string, fn CustomRuleFunc) {
 	customRules.Store(name, fn)
+}
+
+// SetValidationMessageTemplate overrides the default message for a validation rule.
+// Passing a nil function removes the custom template for the rule.
+func SetValidationMessageTemplate(tag string, fn ValidationMessageFunc) {
+	if fn == nil {
+		validationMessageTemplates.Delete(tag)
+		return
+	}
+	validationMessageTemplates.Store(tag, fn)
 }
 
 // StructLevelFunc is a function that performs struct-level validation.
@@ -52,8 +69,11 @@ func RegisterStructValidation(t reflect.Type, fn StructLevelFunc) {
 }
 
 type validationRule struct {
-	tag   string
-	param string
+	tag    string
+	param  string
+	num    float64
+	hasNum bool
+	oneOf  []string
 }
 
 type fieldValidator struct {
@@ -63,7 +83,9 @@ type fieldValidator struct {
 	fieldType  reflect.Type
 	rules      []validationRule
 	nested     *structValidator // for nested structs
-	dive       *structValidator // for slice elements
+	dive       *structValidator // for nested slice/map elements
+	hasDive    bool
+	diveRules  []validationRule // rules applied to each slice/map element
 }
 
 type structValidator struct {
@@ -126,7 +148,14 @@ func buildStructValidator(t reflect.Type) *structValidator {
 		}
 
 		if tag != "" {
-			fv.rules = parseValidateTag(tag)
+			rules := parseValidateTag(tag)
+			if diveIndex := findDiveIndex(rules); diveIndex >= 0 {
+				fv.hasDive = true
+				fv.rules = append(fv.rules, rules[:diveIndex]...)
+				fv.diveRules = append(fv.diveRules, rules[diveIndex+1:]...)
+			} else {
+				fv.rules = rules
+			}
 			hasRules = true
 		}
 
@@ -143,20 +172,15 @@ func buildStructValidator(t reflect.Type) *structValidator {
 		}
 
 		// Handle dive for slices
-		if ft.Kind() == reflect.Slice {
-			for _, r := range fv.rules {
-				if r.tag == "dive" {
-					elemType := ft.Elem()
-					if elemType.Kind() == reflect.Ptr {
-						elemType = elemType.Elem()
-					}
-					if elemType.Kind() == reflect.Struct {
-						fv.dive = buildStructValidator(elemType)
-					}
-					hasRules = true
-					break
-				}
+		if fv.hasDive && (ft.Kind() == reflect.Slice || ft.Kind() == reflect.Map) {
+			elemType := ft.Elem()
+			if elemType.Kind() == reflect.Ptr {
+				elemType = elemType.Elem()
 			}
+			if elemType.Kind() == reflect.Struct {
+				fv.dive = buildStructValidator(elemType)
+			}
+			hasRules = true
 		}
 
 		sv.fields = append(sv.fields, fv)
@@ -168,6 +192,15 @@ func buildStructValidator(t reflect.Type) *structValidator {
 
 	validatorCache.Store(t, sv)
 	return sv
+}
+
+func findDiveIndex(rules []validationRule) int {
+	for i, rule := range rules {
+		if rule.tag == "dive" {
+			return i
+		}
+	}
+	return -1
 }
 
 func parseValidateTag(tag string) []validationRule {
@@ -183,9 +216,19 @@ func parseValidateTag(tag string) []validationRule {
 			r.tag = p[:idx]
 			r.param = p[idx+1:]
 		}
+		compileValidationRule(&r)
 		rules = append(rules, r)
 	}
 	return rules
+}
+
+func compileValidationRule(rule *validationRule) {
+	switch rule.tag {
+	case "min", "max", "gte", "lte", "gt", "lt", "len":
+		rule.num, rule.hasNum = parseNumValue(rule.param)
+	case "oneof":
+		rule.oneOf = strings.Fields(rule.param)
+	}
 }
 
 func (sv *structValidator) validate(dest any) []ValidationError {
@@ -247,20 +290,7 @@ func (sv *structValidator) validate(dest any) []ValidationError {
 			errs = append(errs, nested...)
 		}
 
-		// Dive validation for slices
-		if fv.dive != nil && field.Kind() == reflect.Slice {
-			for j := 0; j < field.Len(); j++ {
-				elem := field.Index(j)
-				if elem.Kind() == reflect.Ptr {
-					elem = elem.Elem()
-				}
-				elemErrs := fv.dive.validate(elem.Addr().Interface())
-				for k := range elemErrs {
-					elemErrs[k].Field = fmt.Sprintf("%s[%d].%s", fv.name, j, elemErrs[k].Field)
-				}
-				errs = append(errs, elemErrs...)
-			}
-		}
+		errs = append(errs, validateDiveRules(fv, field)...)
 	}
 
 	// Check StructLevelValidator interface
@@ -277,26 +307,117 @@ func (sv *structValidator) validate(dest any) []ValidationError {
 	return errs
 }
 
+func validateDiveRules(fv fieldValidator, field reflect.Value) []ValidationError {
+	if !fv.hasDive {
+		return nil
+	}
+	switch field.Kind() {
+	case reflect.Slice:
+		var errs []ValidationError
+		for i := 0; i < field.Len(); i++ {
+			errs = append(errs, validateDiveElement(fv, field.Index(i), fmt.Sprintf("%s[%d]", fv.name, i))...)
+		}
+		return errs
+	case reflect.Map:
+		var errs []ValidationError
+		iter := field.MapRange()
+		for iter.Next() {
+			key := iter.Key()
+			errs = append(errs, validateDiveElement(fv, iter.Value(), fmt.Sprintf("%s[%v]", fv.name, key.Interface()))...)
+		}
+		return errs
+	default:
+		return nil
+	}
+}
+
+func validateDiveElement(fv fieldValidator, elem reflect.Value, path string) []ValidationError {
+	var errs []ValidationError
+	elemValue := elem
+	elemKind := elem.Kind()
+
+	if hasOmitEmptyRule(fv.diveRules) && isZero(elemValue) {
+		return nil
+	}
+	if elemValue.Kind() == reflect.Ptr && !elemValue.IsNil() {
+		elemValue = elemValue.Elem()
+		elemKind = elemValue.Kind()
+	}
+
+	for _, rule := range fv.diveRules {
+		if rule.tag == "omitempty" {
+			continue
+		}
+		if !checkRule(elemValue, elemKind, rule) {
+			errs = append(errs, ValidationError{
+				Field:   path,
+				Tag:     rule.tag,
+				Param:   rule.param,
+				Value:   fieldValue(elemValue),
+				Message: formatMessage(path, rule),
+			})
+		}
+	}
+
+	if fv.dive == nil {
+		return errs
+	}
+
+	nestedTarget := elem
+	if nestedTarget.Kind() == reflect.Ptr {
+		if nestedTarget.IsNil() {
+			return errs
+		}
+		nestedTarget = nestedTarget.Elem()
+	}
+	if !nestedTarget.IsValid() || nestedTarget.Kind() != reflect.Struct {
+		return errs
+	}
+
+	var nested any
+	if nestedTarget.CanAddr() {
+		nested = nestedTarget.Addr().Interface()
+	} else {
+		copyPtr := reflect.New(nestedTarget.Type())
+		copyPtr.Elem().Set(nestedTarget)
+		nested = copyPtr.Interface()
+	}
+	nestedErrs := fv.dive.validate(nested)
+	for i := range nestedErrs {
+		nestedErrs[i].Field = path + "." + nestedErrs[i].Field
+	}
+	return append(errs, nestedErrs...)
+}
+
+func hasOmitEmptyRule(rules []validationRule) bool {
+	for _, rule := range rules {
+		if rule.tag == "omitempty" {
+			return true
+		}
+	}
+	return false
+}
+
 func checkRule(field reflect.Value, kind reflect.Kind, rule validationRule) bool {
 	switch rule.tag {
 	case "required":
 		return !isZero(field)
 	case "min":
-		return checkMin(field, kind, rule.param)
+		return checkMinRule(field, kind, rule)
 	case "max":
-		return checkMax(field, kind, rule.param)
+		return checkMaxRule(field, kind, rule)
 	case "gte":
-		return checkGte(field, kind, rule.param)
+		return checkGteRule(field, kind, rule)
 	case "lte":
-		return checkLte(field, kind, rule.param)
+		return checkLteRule(field, kind, rule)
 	case "gt":
-		return checkGt(field, kind, rule.param)
+		return checkGtRule(field, kind, rule)
 	case "lt":
-		return checkLt(field, kind, rule.param)
+		return checkLtRule(field, kind, rule)
 	case "len":
-		return checkLen(field, kind, rule.param)
+		return checkLenRule(field, kind, rule)
 	case "oneof":
-		return checkOneOf(field, rule.param)
+		return checkOneOfRule(field, rule)
 	case "email":
 		return field.Kind() != reflect.String || emailRegex.MatchString(field.String())
 	case "url":
@@ -392,9 +513,13 @@ func isZero(v reflect.Value) bool {
 }
 
 func parseNum(s string) float64 {
-	var f float64
-	_, _ = fmt.Sscanf(s, "%f", &f)
+	f, _ := strconv.ParseFloat(s, 64)
 	return f
+}
+
+func parseNumValue(s string) (float64, bool) {
+	f, err := strconv.ParseFloat(s, 64)
+	return f, err == nil
 }
 
 func fieldLen(field reflect.Value, kind reflect.Kind) float64 {
@@ -413,48 +538,79 @@ func fieldLen(field reflect.Value, kind reflect.Kind) float64 {
 	return 0
 }
 
-func checkMin(field reflect.Value, kind reflect.Kind, param string) bool {
-	return fieldLen(field, kind) >= parseNum(param)
+func checkMinRule(field reflect.Value, kind reflect.Kind, rule validationRule) bool {
+	return fieldLen(field, kind) >= numericRuleValue(rule)
 }
 
-func checkMax(field reflect.Value, kind reflect.Kind, param string) bool {
-	return fieldLen(field, kind) <= parseNum(param)
+func checkMaxRule(field reflect.Value, kind reflect.Kind, rule validationRule) bool {
+	return fieldLen(field, kind) <= numericRuleValue(rule)
 }
 
-func checkGte(field reflect.Value, kind reflect.Kind, param string) bool {
-	return fieldLen(field, kind) >= parseNum(param)
+func checkGteRule(field reflect.Value, kind reflect.Kind, rule validationRule) bool {
+	return fieldLen(field, kind) >= numericRuleValue(rule)
 }
 
-func checkLte(field reflect.Value, kind reflect.Kind, param string) bool {
-	return fieldLen(field, kind) <= parseNum(param)
+func checkLteRule(field reflect.Value, kind reflect.Kind, rule validationRule) bool {
+	return fieldLen(field, kind) <= numericRuleValue(rule)
 }
 
-func checkGt(field reflect.Value, kind reflect.Kind, param string) bool {
-	return fieldLen(field, kind) > parseNum(param)
+func checkGtRule(field reflect.Value, kind reflect.Kind, rule validationRule) bool {
+	return fieldLen(field, kind) > numericRuleValue(rule)
 }
 
-func checkLt(field reflect.Value, kind reflect.Kind, param string) bool {
-	return fieldLen(field, kind) < parseNum(param)
+func checkLtRule(field reflect.Value, kind reflect.Kind, rule validationRule) bool {
+	return fieldLen(field, kind) < numericRuleValue(rule)
 }
 
-func checkLen(field reflect.Value, kind reflect.Kind, param string) bool {
+func checkLenRule(field reflect.Value, kind reflect.Kind, rule validationRule) bool {
+	value := numericRuleValue(rule)
 	switch kind {
 	case reflect.String:
-		return float64(len(field.String())) == parseNum(param)
+		return float64(len(field.String())) == value
 	case reflect.Slice, reflect.Map, reflect.Array:
-		return float64(field.Len()) == parseNum(param)
+		return float64(field.Len()) == value
 	}
 	return true
 }
 
-func checkOneOf(field reflect.Value, param string) bool {
-	val := fmt.Sprintf("%v", field.Interface())
-	for _, opt := range strings.Fields(param) {
+func numericRuleValue(rule validationRule) float64 {
+	if rule.hasNum {
+		return rule.num
+	}
+	return parseNum(rule.param)
+}
+
+func checkOneOfRule(field reflect.Value, rule validationRule) bool {
+	val := stringifyValue(field)
+	options := rule.oneOf
+	if options == nil {
+		options = strings.Fields(rule.param)
+	}
+	for _, opt := range options {
 		if val == opt {
 			return true
 		}
 	}
 	return false
+}
+
+func stringifyValue(field reflect.Value) string {
+	switch field.Kind() {
+	case reflect.String:
+		return field.String()
+	case reflect.Bool:
+		return strconv.FormatBool(field.Bool())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(field.Int(), 10)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return strconv.FormatUint(field.Uint(), 10)
+	case reflect.Float32:
+		return strconv.FormatFloat(field.Float(), 'f', -1, 32)
+	case reflect.Float64:
+		return strconv.FormatFloat(field.Float(), 'f', -1, 64)
+	default:
+		return fmt.Sprintf("%v", field.Interface())
+	}
 }
 
 func checkUnique(field reflect.Value) bool {
@@ -505,6 +661,11 @@ func fieldValue(v reflect.Value) any {
 }
 
 func formatMessage(field string, rule validationRule) string {
+	if tmpl, ok := validationMessageTemplates.Load(rule.tag); ok {
+		if msg := tmpl.(ValidationMessageFunc)(field, rule.param); msg != "" {
+			return msg
+		}
+	}
 	switch rule.tag {
 	case "required":
 		return field + " is required"

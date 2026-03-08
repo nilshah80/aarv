@@ -360,8 +360,8 @@ func TestAppInternalBranchCoverage(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, ctx))
 		ctx.req = req
 		mux.ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("expected standard 404 fallback for malformed route key case, got %d", rec.Code)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("expected custom 404 error handling for malformed route key case, got %d", rec.Code)
 		}
 
 		app.SetNotFoundHandler(func(c *Context) error { return errors.New("404 fail") })
@@ -379,6 +379,21 @@ func TestAppInternalBranchCoverage(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("expected fallback error handling on not found failure, got %d", rec.Code)
+		}
+
+		app.SetNotFoundHandler(func(c *Context) error { return c.Text(http.StatusNotFound, "custom not found") })
+		req = httptest.NewRequest(http.MethodGet, "/still-missing", nil)
+		ctx, rec = newAppContext(app, req)
+		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, ctx))
+		ctx.req = req
+		mux = &routingMux{
+			mux:         http.NewServeMux(),
+			app:         app,
+			routesByKey: map[string]struct{}{},
+		}
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "custom not found") {
+			t.Fatalf("expected custom 404 fallback with context, got code=%d body=%q", rec.Code, rec.Body.String())
 		}
 	})
 }

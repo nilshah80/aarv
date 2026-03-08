@@ -560,3 +560,46 @@ func TestContextAdditionalCoverage(t *testing.T) {
 		t.Fatal("expected invalid UUID hex result")
 	}
 }
+
+type errReader struct {
+	err error
+}
+
+func (r errReader) Read(_ []byte) (int, error) {
+	return 0, r.err
+}
+
+func TestContextInternalHelpers(t *testing.T) {
+	t.Run("reset drops oversized body cache", func(t *testing.T) {
+		app := New(WithBanner(false))
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		ctx, rec := newAppContext(app, req)
+		defer app.ReleaseContext(ctx)
+
+		ctx.bodyCache = make([]byte, 0, maxReusableBodyCache+1)
+		ctx.store = map[string]any{"k": "v"}
+		ctx.reset(rec, req)
+		if ctx.bodyCache != nil {
+			t.Fatalf("expected oversized cache to be released, got cap=%d", cap(ctx.bodyCache))
+		}
+		if ctx.store != nil {
+			t.Fatalf("expected request store to be cleared, got %#v", ctx.store)
+		}
+	})
+
+	t.Run("readBodyInto covers short, streaming, and error reads", func(t *testing.T) {
+		data, err := readBodyInto(bytes.NewBufferString("abc"), nil, 5)
+		if err != nil || string(data) != "abc" {
+			t.Fatalf("expected short read to succeed, got data=%q err=%v", string(data), err)
+		}
+
+		data, err = readBodyInto(bytes.NewBufferString("stream"), make([]byte, 0, 2), -1)
+		if err != nil || string(data) != "stream" {
+			t.Fatalf("expected unknown-length read to succeed, got data=%q err=%v", string(data), err)
+		}
+
+		if _, err = readBodyInto(errReader{err: errors.New("boom")}, nil, -1); err == nil || err.Error() != "boom" {
+			t.Fatalf("expected streaming read error, got %v", err)
+		}
+	})
+}
