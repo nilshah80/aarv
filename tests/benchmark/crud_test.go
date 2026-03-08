@@ -1,4 +1,4 @@
-package bench
+package benchmark
 
 import (
 	"bytes"
@@ -496,8 +496,10 @@ func TestCRUDLoadTest(t *testing.T) {
 			name:   "POST /api/v1/users (create+validate)",
 			method: "POST",
 			path:   "/api/v1/users",
-			body:   func(n int64) []byte { return []byte(fmt.Sprintf(`{"name":"User%d","email":"u%d@test.com","age":25}`, n, n)) },
-			setup:  func() { st.reset() },
+			body: func(n int64) []byte {
+				return []byte(fmt.Sprintf(`{"name":"User%d","email":"u%d@test.com","age":25}`, n, n))
+			},
+			setup: func() { st.reset() },
 		},
 		{
 			name:   "PUT /api/v1/users/{id} (update)",
@@ -1272,7 +1274,9 @@ func TestCRUDCompare(t *testing.T) {
 			label:  "Create User (POST /api/v1/users — bind + validate + write)",
 			method: "POST",
 			path:   "/api/v1/users",
-			body:   func(n int64) []byte { return []byte(fmt.Sprintf(`{"name":"User%d","email":"u%d@test.com","age":25}`, n, n)) },
+			body: func(n int64) []byte {
+				return []byte(fmt.Sprintf(`{"name":"User%d","email":"u%d@test.com","age":25}`, n, n))
+			},
 		},
 		{
 			label:  "Get User (GET /api/v1/users/{id} — path param + read)",

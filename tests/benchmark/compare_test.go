@@ -1,4 +1,4 @@
-package bench
+package benchmark
 
 import (
 	"bytes"
@@ -533,15 +533,31 @@ func BenchmarkBind_Gin(b *testing.B)   { benchHTTP(b, newGin_Bind(), "POST", "/u
 func BenchmarkBind_Fiber(b *testing.B) { benchFiber(b, newFiber_Bind(), "POST", "/users", jsonBody) }
 
 // --- Parallel variants ---
-func BenchmarkStaticParallel_Aarv(b *testing.B)  { benchHTTPParallel(b, newAarv_Static(), "GET", "/hello", nil) }
-func BenchmarkStaticParallel_Mach(b *testing.B)  { benchHTTPParallel(b, newMach_Static(), "GET", "/hello", nil) }
-func BenchmarkStaticParallel_Gin(b *testing.B)   { benchHTTPParallel(b, newGin_Static(), "GET", "/hello", nil) }
-func BenchmarkStaticParallel_Fiber(b *testing.B) { benchFiberParallel(b, newFiber_Static(), "GET", "/hello", nil) }
+func BenchmarkStaticParallel_Aarv(b *testing.B) {
+	benchHTTPParallel(b, newAarv_Static(), "GET", "/hello", nil)
+}
+func BenchmarkStaticParallel_Mach(b *testing.B) {
+	benchHTTPParallel(b, newMach_Static(), "GET", "/hello", nil)
+}
+func BenchmarkStaticParallel_Gin(b *testing.B) {
+	benchHTTPParallel(b, newGin_Static(), "GET", "/hello", nil)
+}
+func BenchmarkStaticParallel_Fiber(b *testing.B) {
+	benchFiberParallel(b, newFiber_Static(), "GET", "/hello", nil)
+}
 
-func BenchmarkBindParallel_Aarv(b *testing.B)  { benchHTTPParallel(b, newAarv_Bind(), "POST", "/users", jsonBody) }
-func BenchmarkBindParallel_Mach(b *testing.B)  { benchHTTPParallel(b, newMach_Bind(), "POST", "/users", jsonBody) }
-func BenchmarkBindParallel_Gin(b *testing.B)   { benchHTTPParallel(b, newGin_Bind(), "POST", "/users", jsonBody) }
-func BenchmarkBindParallel_Fiber(b *testing.B) { benchFiberParallel(b, newFiber_Bind(), "POST", "/users", jsonBody) }
+func BenchmarkBindParallel_Aarv(b *testing.B) {
+	benchHTTPParallel(b, newAarv_Bind(), "POST", "/users", jsonBody)
+}
+func BenchmarkBindParallel_Mach(b *testing.B) {
+	benchHTTPParallel(b, newMach_Bind(), "POST", "/users", jsonBody)
+}
+func BenchmarkBindParallel_Gin(b *testing.B) {
+	benchHTTPParallel(b, newGin_Bind(), "POST", "/users", jsonBody)
+}
+func BenchmarkBindParallel_Fiber(b *testing.B) {
+	benchFiberParallel(b, newFiber_Bind(), "POST", "/users", jsonBody)
+}
 
 // ========== Encryption Benchmarks ==========
 
@@ -556,8 +572,8 @@ var encryptionKey = func() []byte {
 
 // AES-GCM encryptor for non-Aarv frameworks (with excluded paths/types for fair comparison)
 type aesGCMEncryptor struct {
-	gcm             cipher.AEAD
-	excludedPaths   map[string]struct{}
+	gcm              cipher.AEAD
+	excludedPaths    map[string]struct{}
 	excludedPrefixes []string
 }
 
@@ -730,10 +746,12 @@ func newFiber_Encrypt() *fiber.App {
 }
 
 // --- Encryption Benchmarks ---
-func BenchmarkEncrypt_Aarv(b *testing.B)  { benchHTTP(b, newAarv_Encrypt(), "GET", "/api/users", nil) }
-func BenchmarkEncrypt_Mach(b *testing.B)  { benchHTTP(b, newMach_Encrypt(), "GET", "/api/users", nil) }
-func BenchmarkEncrypt_Gin(b *testing.B)   { benchHTTP(b, newGin_Encrypt(), "GET", "/api/users", nil) }
-func BenchmarkEncrypt_Fiber(b *testing.B) { benchFiber(b, newFiber_Encrypt(), "GET", "/api/users", nil) }
+func BenchmarkEncrypt_Aarv(b *testing.B) { benchHTTP(b, newAarv_Encrypt(), "GET", "/api/users", nil) }
+func BenchmarkEncrypt_Mach(b *testing.B) { benchHTTP(b, newMach_Encrypt(), "GET", "/api/users", nil) }
+func BenchmarkEncrypt_Gin(b *testing.B)  { benchHTTP(b, newGin_Encrypt(), "GET", "/api/users", nil) }
+func BenchmarkEncrypt_Fiber(b *testing.B) {
+	benchFiber(b, newFiber_Encrypt(), "GET", "/api/users", nil)
+}
 
 // ========== Logging Benchmarks ==========
 
@@ -975,10 +993,16 @@ func newFiber_Logger() *fiber.App {
 }
 
 // --- Standard Logger Benchmarks ---
-func BenchmarkLogger_Aarv(b *testing.B)  { benchHTTP(b, newAarv_Logger(), "POST", "/api/users", jsonBody) }
-func BenchmarkLogger_Mach(b *testing.B)  { benchHTTP(b, newMach_Logger(), "POST", "/api/users", jsonBody) }
-func BenchmarkLogger_Gin(b *testing.B)   { benchHTTP(b, newGin_Logger(), "POST", "/api/users", jsonBody) }
-func BenchmarkLogger_Fiber(b *testing.B) { benchFiber(b, newFiber_Logger(), "POST", "/api/users", jsonBody) }
+func BenchmarkLogger_Aarv(b *testing.B) {
+	benchHTTP(b, newAarv_Logger(), "POST", "/api/users", jsonBody)
+}
+func BenchmarkLogger_Mach(b *testing.B) {
+	benchHTTP(b, newMach_Logger(), "POST", "/api/users", jsonBody)
+}
+func BenchmarkLogger_Gin(b *testing.B) { benchHTTP(b, newGin_Logger(), "POST", "/api/users", jsonBody) }
+func BenchmarkLogger_Fiber(b *testing.B) {
+	benchFiber(b, newFiber_Logger(), "POST", "/api/users", jsonBody)
+}
 
 // --- Verbose Logger Benchmarks ---
 
@@ -1092,10 +1116,18 @@ func newFiber_VerboseLog() *fiber.App {
 	return app
 }
 
-func BenchmarkVerboseLog_Aarv(b *testing.B)  { benchHTTP(b, newAarv_VerboseLog(), "POST", "/api/users", jsonBody) }
-func BenchmarkVerboseLog_Mach(b *testing.B)  { benchHTTP(b, newMach_VerboseLog(), "POST", "/api/users", jsonBody) }
-func BenchmarkVerboseLog_Gin(b *testing.B)   { benchHTTP(b, newGin_VerboseLog(), "POST", "/api/users", jsonBody) }
-func BenchmarkVerboseLog_Fiber(b *testing.B) { benchFiber(b, newFiber_VerboseLog(), "POST", "/api/users", jsonBody) }
+func BenchmarkVerboseLog_Aarv(b *testing.B) {
+	benchHTTP(b, newAarv_VerboseLog(), "POST", "/api/users", jsonBody)
+}
+func BenchmarkVerboseLog_Mach(b *testing.B) {
+	benchHTTP(b, newMach_VerboseLog(), "POST", "/api/users", jsonBody)
+}
+func BenchmarkVerboseLog_Gin(b *testing.B) {
+	benchHTTP(b, newGin_VerboseLog(), "POST", "/api/users", jsonBody)
+}
+func BenchmarkVerboseLog_Fiber(b *testing.B) {
+	benchFiber(b, newFiber_VerboseLog(), "POST", "/api/users", jsonBody)
+}
 
 // --- Verboselog with Minimal Config (Aarv only, for showing config impact) ---
 func newAarv_VerboseLogMinimal() http.Handler {
@@ -1211,9 +1243,9 @@ type loadResult struct {
 	allocPerOp uint64 // mallocs / total
 
 	// GC
-	gcCycles   uint32
-	gcPauseNs  uint64 // total GC STW pause
-	heapInUse  uint64 // heap bytes in use at end
+	gcCycles  uint32
+	gcPauseNs uint64 // total GC STW pause
+	heapInUse uint64 // heap bytes in use at end
 
 	// CPU (process user+kernel time)
 	cpuTime    time.Duration
@@ -1290,19 +1322,35 @@ func TestLoadTest(t *testing.T) {
 		{
 			label: "Query Params (4 params + JSON list response)",
 			tests: []testFn{
-				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newAarv_Query(), "GET", "/api/users?page=2&limit=20&sort=name&order=asc", nil) }},
-				{"Mach", func() loadResult { return runTCPLoad("Mach", newMach_Query(), "GET", "/api/users?page=2&limit=20&sort=name&order=asc", nil) }},
-				{"Gin", func() loadResult { return runTCPLoad("Gin", newGin_Query(), "GET", "/api/users?page=2&limit=20&sort=name&order=asc", nil) }},
-				{"Fiber", func() loadResult { return runFiberTCPLoad("Fiber", newFiber_Query(), "GET", "/api/users?page=2&limit=20&sort=name&order=asc", nil) }},
+				{"Aarv", func() loadResult {
+					return runTCPLoad("Aarv", newAarv_Query(), "GET", "/api/users?page=2&limit=20&sort=name&order=asc", nil)
+				}},
+				{"Mach", func() loadResult {
+					return runTCPLoad("Mach", newMach_Query(), "GET", "/api/users?page=2&limit=20&sort=name&order=asc", nil)
+				}},
+				{"Gin", func() loadResult {
+					return runTCPLoad("Gin", newGin_Query(), "GET", "/api/users?page=2&limit=20&sort=name&order=asc", nil)
+				}},
+				{"Fiber", func() loadResult {
+					return runFiberTCPLoad("Fiber", newFiber_Query(), "GET", "/api/users?page=2&limit=20&sort=name&order=asc", nil)
+				}},
 			},
 		},
 		{
 			label: "Multi Path Params (3 params: org/team/member)",
 			tests: []testFn{
-				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newAarv_MultiParam(), "GET", "/api/orgs/org123/teams/team456/members/mem789", nil) }},
-				{"Mach", func() loadResult { return runTCPLoad("Mach", newMach_MultiParam(), "GET", "/api/orgs/org123/teams/team456/members/mem789", nil) }},
-				{"Gin", func() loadResult { return runTCPLoad("Gin", newGin_MultiParam(), "GET", "/api/orgs/org123/teams/team456/members/mem789", nil) }},
-				{"Fiber", func() loadResult { return runFiberTCPLoad("Fiber", newFiber_MultiParam(), "GET", "/api/orgs/org123/teams/team456/members/mem789", nil) }},
+				{"Aarv", func() loadResult {
+					return runTCPLoad("Aarv", newAarv_MultiParam(), "GET", "/api/orgs/org123/teams/team456/members/mem789", nil)
+				}},
+				{"Mach", func() loadResult {
+					return runTCPLoad("Mach", newMach_MultiParam(), "GET", "/api/orgs/org123/teams/team456/members/mem789", nil)
+				}},
+				{"Gin", func() loadResult {
+					return runTCPLoad("Gin", newGin_MultiParam(), "GET", "/api/orgs/org123/teams/team456/members/mem789", nil)
+				}},
+				{"Fiber", func() loadResult {
+					return runFiberTCPLoad("Fiber", newFiber_MultiParam(), "GET", "/api/orgs/org123/teams/team456/members/mem789", nil)
+				}},
 			},
 		},
 		{
@@ -1311,7 +1359,9 @@ func TestLoadTest(t *testing.T) {
 				{"Aarv", func() loadResult { return runTCPLoadWithHeaders("Aarv", newAarv_Headers(), "GET", "/api/protected") }},
 				{"Mach", func() loadResult { return runTCPLoadWithHeaders("Mach", newMach_Headers(), "GET", "/api/protected") }},
 				{"Gin", func() loadResult { return runTCPLoadWithHeaders("Gin", newGin_Headers(), "GET", "/api/protected") }},
-				{"Fiber", func() loadResult { return runFiberTCPLoadWithHeaders("Fiber", newFiber_Headers(), "GET", "/api/protected") }},
+				{"Fiber", func() loadResult {
+					return runFiberTCPLoadWithHeaders("Fiber", newFiber_Headers(), "GET", "/api/protected")
+				}},
 			},
 		},
 		{
@@ -1320,7 +1370,9 @@ func TestLoadTest(t *testing.T) {
 				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newAarv_LargeJSON(), "GET", "/api/users/list", nil) }},
 				{"Mach", func() loadResult { return runTCPLoad("Mach", newMach_LargeJSON(), "GET", "/api/users/list", nil) }},
 				{"Gin", func() loadResult { return runTCPLoad("Gin", newGin_LargeJSON(), "GET", "/api/users/list", nil) }},
-				{"Fiber", func() loadResult { return runFiberTCPLoad("Fiber", newFiber_LargeJSON(), "GET", "/api/users/list", nil) }},
+				{"Fiber", func() loadResult {
+					return runFiberTCPLoad("Fiber", newFiber_LargeJSON(), "GET", "/api/users/list", nil)
+				}},
 			},
 		},
 	}

@@ -1,8 +1,8 @@
-module github.com/nilshah80/aarv/bench
+module github.com/nilshah80/aarv/tests/benchmark
 
-go 1.26.0
+go 1.25.0
 
-replace github.com/nilshah80/aarv => ../
+replace github.com/nilshah80/aarv => ../../
 
 require (
 	github.com/gin-gonic/gin v1.12.0

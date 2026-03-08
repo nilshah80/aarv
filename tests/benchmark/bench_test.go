@@ -1,4 +1,4 @@
-package bench
+package benchmark
 
 import (
 	"bytes"
@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/nilshah80/aarv"
-	"github.com/nilshah80/aarv/plugins/verboselog"
 	"github.com/nilshah80/aarv/plugins/encrypt"
 	"github.com/nilshah80/aarv/plugins/logger"
+	"github.com/nilshah80/aarv/plugins/verboselog"
 )
 
 // --- Router Benchmarks ---

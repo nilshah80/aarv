@@ -1,4 +1,4 @@
-package bench
+package benchmark
 
 // Vanilla vs Bare Minimum Benchmark Tests
 //
@@ -342,29 +342,57 @@ func newStandard_Aarv_EncryptMinimal() http.Handler {
 // =============================================================================
 
 // --- Vanilla Benchmarks ---
-func BenchmarkVanilla_RawHTTP(b *testing.B) { benchHTTP(b, newVanilla_RawHTTP(), "GET", "/api/users", nil) }
-func BenchmarkVanilla_Aarv(b *testing.B)    { benchHTTP(b, newVanilla_Aarv(), "GET", "/api/users", nil) }
-func BenchmarkVanilla_Mach(b *testing.B)    { benchHTTP(b, newVanilla_Mach(), "GET", "/api/users", nil) }
-func BenchmarkVanilla_Gin(b *testing.B)     { benchHTTP(b, newVanilla_Gin(), "GET", "/api/users", nil) }
-func BenchmarkVanilla_Fiber(b *testing.B)   { benchFiber(b, newVanilla_Fiber(), "GET", "/api/users", nil) }
+func BenchmarkVanilla_RawHTTP(b *testing.B) {
+	benchHTTP(b, newVanilla_RawHTTP(), "GET", "/api/users", nil)
+}
+func BenchmarkVanilla_Aarv(b *testing.B) { benchHTTP(b, newVanilla_Aarv(), "GET", "/api/users", nil) }
+func BenchmarkVanilla_Mach(b *testing.B) { benchHTTP(b, newVanilla_Mach(), "GET", "/api/users", nil) }
+func BenchmarkVanilla_Gin(b *testing.B)  { benchHTTP(b, newVanilla_Gin(), "GET", "/api/users", nil) }
+func BenchmarkVanilla_Fiber(b *testing.B) {
+	benchFiber(b, newVanilla_Fiber(), "GET", "/api/users", nil)
+}
 
 // --- Bare Minimum Logger Benchmarks ---
-func BenchmarkBareMinLogger_Aarv(b *testing.B)  { benchHTTP(b, newBareMin_Aarv_Logger(), "GET", "/api/users", nil) }
-func BenchmarkBareMinLogger_Mach(b *testing.B)  { benchHTTP(b, newBareMin_Mach_Logger(), "GET", "/api/users", nil) }
-func BenchmarkBareMinLogger_Gin(b *testing.B)   { benchHTTP(b, newBareMin_Gin_Logger(), "GET", "/api/users", nil) }
-func BenchmarkBareMinLogger_Fiber(b *testing.B) { benchFiber(b, newBareMin_Fiber_Logger(), "GET", "/api/users", nil) }
+func BenchmarkBareMinLogger_Aarv(b *testing.B) {
+	benchHTTP(b, newBareMin_Aarv_Logger(), "GET", "/api/users", nil)
+}
+func BenchmarkBareMinLogger_Mach(b *testing.B) {
+	benchHTTP(b, newBareMin_Mach_Logger(), "GET", "/api/users", nil)
+}
+func BenchmarkBareMinLogger_Gin(b *testing.B) {
+	benchHTTP(b, newBareMin_Gin_Logger(), "GET", "/api/users", nil)
+}
+func BenchmarkBareMinLogger_Fiber(b *testing.B) {
+	benchFiber(b, newBareMin_Fiber_Logger(), "GET", "/api/users", nil)
+}
 
 // --- Bare Minimum Encryption Benchmarks ---
-func BenchmarkBareMinEncrypt_Aarv(b *testing.B)  { benchHTTP(b, newBareMin_Aarv_Encrypt(), "GET", "/api/users", nil) }
-func BenchmarkBareMinEncrypt_Mach(b *testing.B)  { benchHTTP(b, newBareMin_Mach_Encrypt(), "GET", "/api/users", nil) }
-func BenchmarkBareMinEncrypt_Gin(b *testing.B)   { benchHTTP(b, newBareMin_Gin_Encrypt(), "GET", "/api/users", nil) }
-func BenchmarkBareMinEncrypt_Fiber(b *testing.B) { benchFiber(b, newBareMin_Fiber_Encrypt(), "GET", "/api/users", nil) }
+func BenchmarkBareMinEncrypt_Aarv(b *testing.B) {
+	benchHTTP(b, newBareMin_Aarv_Encrypt(), "GET", "/api/users", nil)
+}
+func BenchmarkBareMinEncrypt_Mach(b *testing.B) {
+	benchHTTP(b, newBareMin_Mach_Encrypt(), "GET", "/api/users", nil)
+}
+func BenchmarkBareMinEncrypt_Gin(b *testing.B) {
+	benchHTTP(b, newBareMin_Gin_Encrypt(), "GET", "/api/users", nil)
+}
+func BenchmarkBareMinEncrypt_Fiber(b *testing.B) {
+	benchFiber(b, newBareMin_Fiber_Encrypt(), "GET", "/api/users", nil)
+}
 
 // --- Aarv Standard Plugin vs Bare Minimum ---
-func BenchmarkAarv_StandardLogger(b *testing.B)          { benchHTTP(b, newStandard_Aarv_Logger(), "GET", "/api/users", nil) }
-func BenchmarkAarv_VerboseLogMinimal(b *testing.B)       { benchHTTP(b, newStandard_Aarv_VerboseLogMinimal(), "GET", "/api/users", nil) }
-func BenchmarkAarv_StandardEncrypt(b *testing.B)         { benchHTTP(b, newStandard_Aarv_Encrypt(), "GET", "/api/users", nil) }
-func BenchmarkAarv_StandardEncryptMinimal(b *testing.B)  { benchHTTP(b, newStandard_Aarv_EncryptMinimal(), "GET", "/api/users", nil) }
+func BenchmarkAarv_StandardLogger(b *testing.B) {
+	benchHTTP(b, newStandard_Aarv_Logger(), "GET", "/api/users", nil)
+}
+func BenchmarkAarv_VerboseLogMinimal(b *testing.B) {
+	benchHTTP(b, newStandard_Aarv_VerboseLogMinimal(), "GET", "/api/users", nil)
+}
+func BenchmarkAarv_StandardEncrypt(b *testing.B) {
+	benchHTTP(b, newStandard_Aarv_Encrypt(), "GET", "/api/users", nil)
+}
+func BenchmarkAarv_StandardEncryptMinimal(b *testing.B) {
+	benchHTTP(b, newStandard_Aarv_EncryptMinimal(), "GET", "/api/users", nil)
+}
 
 // =============================================================================
 // COMPARISON SUMMARY BENCHMARKS (Side by side)
@@ -806,7 +834,6 @@ func BenchmarkHTTPWriteOverhead(b *testing.B) {
 	})
 }
 
-
 // =============================================================================
 // ALLOCATION ANALYSIS
 // =============================================================================
@@ -1012,9 +1039,15 @@ func (w *statusCapturingWriterFair) Write(b []byte) (int, error) {
 }
 
 // --- Fair Logger Benchmarks ---
-func BenchmarkFairLogger_Aarv(b *testing.B) { benchHTTP(b, newFairLogger_Aarv(), "GET", "/api/users", nil) }
-func BenchmarkFairLogger_Mach(b *testing.B) { benchHTTP(b, newFairLogger_Mach(), "GET", "/api/users", nil) }
-func BenchmarkFairLogger_Gin(b *testing.B)  { benchHTTP(b, newFairLogger_Gin(), "GET", "/api/users", nil) }
+func BenchmarkFairLogger_Aarv(b *testing.B) {
+	benchHTTP(b, newFairLogger_Aarv(), "GET", "/api/users", nil)
+}
+func BenchmarkFairLogger_Mach(b *testing.B) {
+	benchHTTP(b, newFairLogger_Mach(), "GET", "/api/users", nil)
+}
+func BenchmarkFairLogger_Gin(b *testing.B) {
+	benchHTTP(b, newFairLogger_Gin(), "GET", "/api/users", nil)
+}
 
 // --- Fair Encryption with request ID tracking ---
 
@@ -1093,9 +1126,15 @@ func newFairEncrypt_Aarv() http.Handler {
 }
 
 // --- Fair Encryption Benchmarks ---
-func BenchmarkFairEncrypt_Aarv(b *testing.B) { benchHTTP(b, newFairEncrypt_Aarv(), "GET", "/api/users", nil) }
-func BenchmarkFairEncrypt_Mach(b *testing.B) { benchHTTP(b, newFairEncrypt_Mach(), "GET", "/api/users", nil) }
-func BenchmarkFairEncrypt_Gin(b *testing.B)  { benchHTTP(b, newFairEncrypt_Gin(), "GET", "/api/users", nil) }
+func BenchmarkFairEncrypt_Aarv(b *testing.B) {
+	benchHTTP(b, newFairEncrypt_Aarv(), "GET", "/api/users", nil)
+}
+func BenchmarkFairEncrypt_Mach(b *testing.B) {
+	benchHTTP(b, newFairEncrypt_Mach(), "GET", "/api/users", nil)
+}
+func BenchmarkFairEncrypt_Gin(b *testing.B) {
+	benchHTTP(b, newFairEncrypt_Gin(), "GET", "/api/users", nil)
+}
 
 // =============================================================================
 // SIDE-BY-SIDE COMPARISON
@@ -1203,9 +1242,15 @@ func newGin_LoggerNoFromRequest() http.Handler {
 }
 
 // --- Benchmarks WITHOUT FromRequest ---
-func BenchmarkNoFromRequest_Aarv(b *testing.B) { benchHTTP(b, newAarv_LoggerNoFromRequest(), "GET", "/api/users", nil) }
-func BenchmarkNoFromRequest_Mach(b *testing.B) { benchHTTP(b, newMach_LoggerNoFromRequest(), "GET", "/api/users", nil) }
-func BenchmarkNoFromRequest_Gin(b *testing.B)  { benchHTTP(b, newGin_LoggerNoFromRequest(), "GET", "/api/users", nil) }
+func BenchmarkNoFromRequest_Aarv(b *testing.B) {
+	benchHTTP(b, newAarv_LoggerNoFromRequest(), "GET", "/api/users", nil)
+}
+func BenchmarkNoFromRequest_Mach(b *testing.B) {
+	benchHTTP(b, newMach_LoggerNoFromRequest(), "GET", "/api/users", nil)
+}
+func BenchmarkNoFromRequest_Gin(b *testing.B) {
+	benchHTTP(b, newGin_LoggerNoFromRequest(), "GET", "/api/users", nil)
+}
 
 // Compare: Aarv standard logger (WITH FromRequest) vs custom (WITHOUT)
 func BenchmarkFromRequestImpact(b *testing.B) {
@@ -1286,7 +1331,9 @@ func TestFairLoadTest(t *testing.T) {
 				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newBareMin_Aarv_Logger(), "GET", "/api/users", nil) }},
 				{"Mach", func() loadResult { return runTCPLoad("Mach", newBareMin_Mach_Logger(), "GET", "/api/users", nil) }},
 				{"Gin", func() loadResult { return runTCPLoad("Gin", newBareMin_Gin_Logger(), "GET", "/api/users", nil) }},
-				{"Fiber", func() loadResult { return runFiberTCPLoad("Fiber", newBareMin_Fiber_Logger(), "GET", "/api/users", nil) }},
+				{"Fiber", func() loadResult {
+					return runFiberTCPLoad("Fiber", newBareMin_Fiber_Logger(), "GET", "/api/users", nil)
+				}},
 			},
 		},
 		{
@@ -1295,7 +1342,9 @@ func TestFairLoadTest(t *testing.T) {
 				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newBareMin_Aarv_Encrypt(), "GET", "/api/users", nil) }},
 				{"Mach", func() loadResult { return runTCPLoad("Mach", newBareMin_Mach_Encrypt(), "GET", "/api/users", nil) }},
 				{"Gin", func() loadResult { return runTCPLoad("Gin", newBareMin_Gin_Encrypt(), "GET", "/api/users", nil) }},
-				{"Fiber", func() loadResult { return runFiberTCPLoad("Fiber", newBareMin_Fiber_Encrypt(), "GET", "/api/users", nil) }},
+				{"Fiber", func() loadResult {
+					return runFiberTCPLoad("Fiber", newBareMin_Fiber_Encrypt(), "GET", "/api/users", nil)
+				}},
 			},
 		},
 	}
