@@ -1,10 +1,10 @@
 package aarv
 
 import (
-	"strings"
-	"testing"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"testing"
 )
 
 func TestRouteGroup(t *testing.T) {
@@ -24,7 +24,7 @@ func TestRoutingMethods(t *testing.T) {
 	app := New(WithBanner(false))
 
 	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
-	
+
 	for _, method := range methods {
 		m := method // capture
 		handler := func(c *Context) error {
@@ -32,13 +32,20 @@ func TestRoutingMethods(t *testing.T) {
 		}
 
 		switch m {
-		case "GET": app.Get("/test", handler)
-		case "POST": app.Post("/test", handler)
-		case "PUT": app.Put("/test", handler)
-		case "DELETE": app.Delete("/test", handler)
-		case "PATCH": app.Patch("/test", handler)
-		case "HEAD": app.Head("/test", handler)
-		case "OPTIONS": app.Options("/test", handler)
+		case "GET":
+			app.Get("/test", handler)
+		case "POST":
+			app.Post("/test", handler)
+		case "PUT":
+			app.Put("/test", handler)
+		case "DELETE":
+			app.Delete("/test", handler)
+		case "PATCH":
+			app.Patch("/test", handler)
+		case "HEAD":
+			app.Head("/test", handler)
+		case "OPTIONS":
+			app.Options("/test", handler)
 		}
 	}
 
@@ -46,25 +53,27 @@ func TestRoutingMethods(t *testing.T) {
 		return c.Text(200, "ANY")
 	})
 
-
-
 	for _, method := range methods {
 		req := httptest.NewRequest(method, "/test", nil)
 		w := httptest.NewRecorder()
 		app.ServeHTTP(w, req)
-		if w.Code != 200 { t.Errorf("Method %s failed", method) }
+		if w.Code != 200 {
+			t.Errorf("Method %s failed", method)
+		}
 		if method != "HEAD" {
 			if w.Body.String() != method {
 				t.Errorf("Method %s body mismatch", method)
 			}
 		}
 	}
-	
+
 	for _, method := range methods {
 		req := httptest.NewRequest(method, "/any", nil)
 		w := httptest.NewRecorder()
 		app.ServeHTTP(w, req)
-		if w.Code != 200 { t.Errorf("Any failed for %s", method) }
+		if w.Code != 200 {
+			t.Errorf("Any failed for %s", method)
+		}
 	}
 }
 
@@ -72,26 +81,30 @@ func TestMount(t *testing.T) {
 	app := New(WithBanner(false))
 	subHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte("sub"))
+		if _, err := w.Write([]byte("sub")); err != nil {
+			t.Fatalf("unexpected subhandler write error: %v", err)
+		}
 	})
-	
+
 	app.Mount("/sub/", subHandler)
-	
+
 	tc := NewTestClient(app)
 	resp := tc.Get("/sub/x")
 	resp.AssertStatus(t, 200)
-	if resp.Text() != "sub" { t.Errorf("Mount mismatch") }
+	if resp.Text() != "sub" {
+		t.Errorf("Mount mismatch")
+	}
 }
 
 func TestRoutesList(t *testing.T) {
 	app := New(WithBanner(false))
 	app.Get("/users", func(c *Context) error { return c.Text(200, "ok") }, WithName("GetUsers"), WithDescription("Desc"), WithTags("A", "B"), WithDeprecated(), WithOperationID("op1"), WithRouteMaxBodySize(100), WithSummary("sum1"))
-	
+
 	routes := app.Routes()
 	if len(routes) != 1 {
 		t.Fatalf("Expected 1 route, got %d", len(routes))
 	}
-	
+
 	r := routes[0]
 	if r.Method != "GET" || r.Pattern != "/users" || r.Name != "GetUsers" || r.Description != "Desc" || len(r.Tags) != 2 || !r.Deprecated {
 		t.Errorf("Route metadata mismatch: %+v", r)
@@ -105,30 +118,34 @@ func TestRoutesList(t *testing.T) {
 
 func TestCustom404And405(t *testing.T) {
 	app := New(WithBanner(false))
-	
+
 	app.SetNotFoundHandler(func(c *Context) error {
 		return c.Text(404, "Custom404")
 	})
-	
+
 	app.SetMethodNotAllowedHandler(func(c *Context) error {
 		return c.Text(405, "Custom405")
 	})
-	
+
 	app.Get("/valid", func(c *Context) error { return c.Text(200, "ok") })
-	
+
 	req404 := httptest.NewRequest("GET", "/invalid", nil)
 	ctx404 := app.AcquireContext(httptest.NewRecorder(), req404)
 	if err := app.notFoundHandler(ctx404); err != nil {
 		t.Fatalf("not found handler returned error: %v", err)
 	}
 	app.ReleaseContext(ctx404)
-	
+
 	// 405
 	req := httptest.NewRequest("POST", "/valid", strings.NewReader(""))
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, req)
-	if w.Code != 405 { t.Errorf("Expected 405, got %d", w.Code) }
-	if !strings.Contains(w.Body.String(), "Custom405") { t.Errorf("405 mismatch: %s", w.Body.String()) }
+	if w.Code != 405 {
+		t.Errorf("Expected 405, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Custom405") {
+		t.Errorf("405 mismatch: %s", w.Body.String())
+	}
 }
 
 func TestRouteGroupAdditionalCoverage(t *testing.T) {

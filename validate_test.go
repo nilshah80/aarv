@@ -11,15 +11,15 @@ import (
 
 func TestValidationRules(t *testing.T) {
 	type ValidateReq struct {
-		ReqStr    string   `json:"req_str" validate:"required"`
-		MinStr    string   `json:"min_str" validate:"min=3"`
-		MaxStr    string   `json:"max_str" validate:"max=5"`
-		Email     string   `json:"email" validate:"email"`
-		URL       string   `json:"url" validate:"url"`
-		UUID      string   `json:"uuid" validate:"uuid"`
-		AlphaNum  string   `json:"alpha_num" validate:"alphanum"`
-		Items     []string `json:"items" validate:"min=1,max=2"`
-		NumItems  int      `json:"num_items" validate:"min=10,max=20"`
+		ReqStr   string   `json:"req_str" validate:"required"`
+		MinStr   string   `json:"min_str" validate:"min=3"`
+		MaxStr   string   `json:"max_str" validate:"max=5"`
+		Email    string   `json:"email" validate:"email"`
+		URL      string   `json:"url" validate:"url"`
+		UUID     string   `json:"uuid" validate:"uuid"`
+		AlphaNum string   `json:"alpha_num" validate:"alphanum"`
+		Items    []string `json:"items" validate:"min=1,max=2"`
+		NumItems int      `json:"num_items" validate:"min=10,max=20"`
 	}
 
 	app := New(WithBanner(false))
@@ -80,7 +80,7 @@ func assertValidationError(t *testing.T, responseText, field, tag string) {
 	}
 	type errResp struct {
 		Message string     `json:"message"`
-		Details  []valError `json:"details"`
+		Details []valError `json:"details"`
 	}
 
 	var parsed errResp
@@ -163,7 +163,7 @@ func TestValidatorAdditionalCoverage(t *testing.T) {
 		}
 		sv = buildStructValidator(reflect.TypeOf(ptrPayload{}))
 		if errs := sv.validate(&ptrPayload{
-			Tags:  []*item{{Code: ""}},
+			Tags: []*item{{Code: ""}},
 		}); len(errs) == 0 {
 			t.Fatal("expected nested pointer validation errors")
 		}
@@ -262,7 +262,7 @@ func TestValidatorAdditionalCoverage(t *testing.T) {
 		if checkOneOf(reflect.ValueOf("x"), "a b") {
 			t.Fatal("expected oneof mismatch")
 		}
-		if !matchRegex("^a+$", "aa") || !matchRegex("^a+$", "aa") || matchRegex("(", "aa") {
+		if !matchRegex("^a+$", "aa") || matchRegex("(", "aa") {
 			t.Fatal("unexpected regex helper result")
 		}
 	})

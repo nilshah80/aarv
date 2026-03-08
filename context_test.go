@@ -43,7 +43,7 @@ func TestContextStore(t *testing.T) {
 		if !ok {
 			return c.Error(500, "key not found")
 		}
-		
+
 		valMustGet := c.MustGet("key").(string)
 		if valMustGet != "value" {
 			return c.Error(500, "MustGet value mismatch")
@@ -122,7 +122,7 @@ func TestContextQueries(t *testing.T) {
 		}
 		return c.Text(200, "ok")
 	})
-	
+
 	tc := NewTestClient(app)
 	resp := tc.WithQuery("type", "active").
 		WithQuery("amount", "100").
@@ -145,26 +145,37 @@ func TestContextBodyCaching(t *testing.T) {
 		}
 		return c.Text(200, "ok")
 	})
-	
 
 	req := httptest.NewRequest("POST", "/body", bytes.NewBufferString("hello"))
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, req)
-	
-	if w.Code != 200 { t.Errorf("Expected 200") }
+
+	if w.Code != 200 {
+		t.Errorf("Expected 200")
+	}
 }
 
 func TestContextMetadata(t *testing.T) {
 	app := New(WithBanner(false))
 	app.Get("/meta", func(c *Context) error {
-		if c.Method() != "GET" { t.Errorf("Method mismatch") }
-		if c.Path() != "/meta" { t.Errorf("Path mismatch") }
-		if c.RealIP() == "" { t.Errorf("IP missing") }
-		if c.Protocol() != "HTTP/1.1" { t.Errorf("Protocol mismatch") }
-		if c.Scheme() != "http" { t.Errorf("Scheme mismatch") }
+		if c.Method() != "GET" {
+			t.Errorf("Method mismatch")
+		}
+		if c.Path() != "/meta" {
+			t.Errorf("Path mismatch")
+		}
+		if c.RealIP() == "" {
+			t.Errorf("IP missing")
+		}
+		if c.Protocol() != "HTTP/1.1" {
+			t.Errorf("Protocol mismatch")
+		}
+		if c.Scheme() != "http" {
+			t.Errorf("Scheme mismatch")
+		}
 		return c.Text(200, "ok")
 	})
-	
+
 	tc := NewTestClient(app)
 	resp := tc.Get("/meta")
 	resp.AssertStatus(t, 200)
@@ -172,24 +183,31 @@ func TestContextMetadata(t *testing.T) {
 
 func TestContextHelpers(t *testing.T) {
 	app := New(WithBanner(false))
+	type ctxKey string
 
 	app.Get("/helpers", func(c *Context) error {
 		c.SetContext(c.Request().Context())
-		if c.Host() == "" { t.Errorf("Host missing") }
+		if c.Host() == "" {
+			t.Errorf("Host missing")
+		}
 
 		c.Set("requestId", "test-123")
-		if c.RequestID() != "test-123" { t.Errorf("RequestID missing or mismatch") }
-		
+		if c.RequestID() != "test-123" {
+			t.Errorf("RequestID missing or mismatch")
+		}
+
 		c.Logger().Info("test logging")
-		c.ErrorWithDetail(400, "bad", "req") // actually status, message, detail
-		
+		if err := c.ErrorWithDetail(400, "bad", "req"); err == nil {
+			t.Errorf("expected ErrorWithDetail to return an app error")
+		}
+
 		return c.Redirect(302, "https://example.com")
 	})
 
 	app.Get("/file", func(c *Context) error {
 		return c.File("context_test.go")
 	})
-	
+
 	app.Get("/attachment", func(c *Context) error {
 		return c.Attachment("context_test.go", "test.txt")
 	})
@@ -199,7 +217,7 @@ func TestContextHelpers(t *testing.T) {
 	})
 
 	tc := NewTestClient(app)
-	
+
 	resp := tc.Get("/helpers")
 	if resp.Status != 302 || resp.Headers.Get("Location") != "https://example.com" {
 		t.Errorf("Redirect expected")
@@ -220,6 +238,7 @@ func TestContextHelpers(t *testing.T) {
 
 func TestContextAdditionalCoverage(t *testing.T) {
 	t.Run("request metadata and query helpers", func(t *testing.T) {
+		type replacementCtxKey string
 		app := New(WithBanner(false), WithTrustedProxies("127.0.0.1/32"))
 		req := httptest.NewRequest(http.MethodGet, "/users/123?count=9&big=99&ratio=1.5&flag=true&list=a&list=b", nil)
 		req.RemoteAddr = "127.0.0.1:1234"
@@ -237,8 +256,8 @@ func TestContextAdditionalCoverage(t *testing.T) {
 		if ctx.Response() != rec || ctx.Context() == nil {
 			t.Fatal("expected response writer and request context")
 		}
-		ctx.SetContext(context.WithValue(context.Background(), "k", "v"))
-		if ctx.Context().Value("k") != "v" {
+		ctx.SetContext(context.WithValue(context.Background(), replacementCtxKey("k"), "v"))
+		if ctx.Context().Value(replacementCtxKey("k")) != "v" {
 			t.Fatal("expected replaced request context")
 		}
 		if ctx.Scheme() != "https" || !ctx.IsTLS() {
@@ -435,11 +454,11 @@ func TestContextAdditionalCoverage(t *testing.T) {
 			t.Fatalf("unexpected JSON status: %d", rec.Code)
 		}
 
-		ctx, rec = newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
+		ctx, _ = newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
 		if err := ctx.JSONPretty(http.StatusOK, map[string]string{"pretty": "yes"}); err != nil {
 			t.Fatalf("unexpected JSONPretty error: %v", err)
 		}
-		ctx, rec = newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
+		ctx, _ = newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
 		app.codec = failingCodec{}
 		if err := ctx.JSONPretty(http.StatusOK, map[string]string{"fail": "yes"}); err == nil {
 			t.Fatal("expected JSONPretty error from codec")
@@ -450,7 +469,7 @@ func TestContextAdditionalCoverage(t *testing.T) {
 		if err := ctx.HTML(http.StatusAccepted, "<b>ok</b>"); err != nil || rec.Code != http.StatusAccepted {
 			t.Fatalf("unexpected HTML result: code=%d err=%v", rec.Code, err)
 		}
-		ctx, rec = newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
+		ctx, _ = newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
 		if err := ctx.XML(http.StatusOK, struct {
 			XMLName string `xml:"name"`
 		}{XMLName: "value"}); err != nil {
@@ -495,7 +514,8 @@ func TestContextAdditionalCoverage(t *testing.T) {
 		if ctx.RequestID() != "req-1" {
 			t.Fatal("expected request ID")
 		}
-		if ctx.Logger() != ctx.Logger() {
+		logger := ctx.Logger()
+		if logger != ctx.Logger() {
 			t.Fatal("expected cached logger instance")
 		}
 		if v, ok := GetTyped[int](ctx, "value"); !ok || v != 3 {
