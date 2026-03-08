@@ -1,12 +1,13 @@
+version: "2"
+
 run:
   timeout: 5m
 
-issues:
-  exclude-dirs:
-    - examples
-    - tests/benchmark
-
 linters:
+  exclusions:
+    paths:
+      - examples
+      - tests/benchmark
   enable:
     - errcheck
     - staticcheck
