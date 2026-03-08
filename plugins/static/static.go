@@ -14,6 +14,8 @@ import (
 	"github.com/nilshah80/aarv"
 )
 
+var filepathAbs = filepath.Abs
+
 // Config holds configuration for the static file middleware.
 type Config struct {
 	// Root is the directory to serve files from. Required.
@@ -62,7 +64,7 @@ func New(config Config) aarv.Middleware {
 	}
 
 	// Resolve the root to an absolute path
-	root, err := filepath.Abs(config.Root)
+	root, err := filepathAbs(config.Root)
 	if err != nil {
 		panic(fmt.Sprintf("static: invalid root directory: %v", err))
 	}

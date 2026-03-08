@@ -37,11 +37,11 @@
 - [x] `hooks_test.go` - Lifecycle hooks execution order
 
 ### PR2: Plugin Test Coverage (HIGH PRIORITY)
-- [ ] `plugins/logger/logger_test.go` (currently 0%)
-- [ ] `plugins/verboselog/verboselog_test.go` (currently 90.1%)
-- [ ] `plugins/encrypt/encrypt_test.go` (currently 86.4%)
-- [ ] `plugins/cors/cors_test.go` (currently 0%)
-- [ ] All other plugins need tests
+- [x] `plugins/logger/logger_test.go` (currently 0%)
+- [x] `plugins/verboselog/verboselog_test.go` (currently 90.1%)
+- [x] `plugins/encrypt/encrypt_test.go` (currently 86.4%)
+- [x] `plugins/cors/cors_test.go` (currently 0%)
+- [x] All other plugins need tests
 
 ### PR3: GoDoc Comments (HIGH PRIORITY)
 - [ ] `aarv.go` - App, New(), Listen(), Use(), Get/Post/etc.
