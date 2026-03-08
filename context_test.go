@@ -183,7 +183,6 @@ func TestContextMetadata(t *testing.T) {
 
 func TestContextHelpers(t *testing.T) {
 	app := New(WithBanner(false))
-	type ctxKey string
 
 	app.Get("/helpers", func(c *Context) error {
 		c.SetContext(c.Request().Context())
