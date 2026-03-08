@@ -68,13 +68,13 @@
 Note: `govulncheck` reports 4 Go standard library vulnerabilities in `go1.26.0`, all fixed in `go1.26.1`. Follow-up remediation is a Go toolchain upgrade rather than a repo code change.
 
 ### PR6: Release Prep (v0.3.0)
-- [ ] All CI checks passing
+- [x] All CI checks passing
 - [x] Test coverage > 80%
 - [x] All GoDoc comments complete
-- [ ] `git tag -a v0.3.0 -m <Proper message>`
-- [ ] Create GitHub Release
+- [x] `git tag -a v0.3.0 -m <Proper message>`
+- [x] Create GitHub Release
 
-Note: excluding `examples/...`, combined package coverage is 98.7%. Release notes are prepared for `v0.3.0`, but CI workflow status and release publication still need verification on GitHub before tagging/publishing.
+Note: excluding `examples/...`, combined package coverage is 98.7%. Latest `main` workflow runs for Tests and Lint completed successfully on March 8, 2026, and `v0.3.0` is published on GitHub.
 
 ---
 
@@ -82,12 +82,12 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Release note
 
 ### 1.1 Project Scaffolding ✅
 - [x] Initialize Go module: `go mod init github.com/nilshah80/aarv`
-- [x] Set `go 1.26.0` in `go.mod`
+- [x] Set `go 1.22.0` in `go.mod`
 - [x] Create directory structure (see spec for layout)
 - [x] Add `LICENSE` (MIT)
-- [ ] Add `.gitignore`, `Makefile`
-- [ ] Add `golangci-lint` config (`.golangci.yml`)
-- [ ] Set up GitHub Actions CI: lint, test, race detector, coverage
+- [x] Add `.gitignore`
+- [x] Add `golangci-lint` config (`.golangci.yml`)
+- [x] Set up GitHub Actions CI: lint, test, race detector, coverage
 
 ### 1.2 Codec Interface ✅
 - [x] Define `Codec` interface: `Encode`, `Decode`, `MarshalBytes`, `UnmarshalBytes`, `ContentType`
@@ -135,7 +135,7 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Release note
 - [x] Set `Content-Length` header from buffer length
 - [x] Implement `Hijack()`, `Flush()`, `Push()` interface passthrough
 - [x] Opt-out: `c.Stream()` bypasses buffer for streaming responses
-- [ ] Unit tests: buffering, Content-Length, hijack passthrough
+- [x] Unit tests: buffering, Content-Length, hijack passthrough
 
 ### 1.6 Router ✅
 - [x] Create internal `router` struct wrapping `*http.ServeMux`
@@ -148,7 +148,7 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Release note
 - [x] Implement custom 405 handler: detect method mismatch and serve custom response
 - [x] Implement trailing slash redirect (configurable)
 - [x] Unit tests: route matching, path params, wildcards, method filtering
-- [ ] Unit tests: custom 404/405 handler invocation
+- [x] Unit tests: custom 404/405 handler invocation
 - [x] Integration test: register 50+ routes, verify no conflicts
 
 ### 1.7 Route Groups ✅
@@ -158,7 +158,7 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Release note
 - [x] Internal: nested `http.ServeMux` + `http.StripPrefix` composition
 - [x] Scoped middleware: group middleware only applies to group routes
 - [x] Implement `RouteOption`: `WithName`, `WithTags`, `WithDescription`, `WithRouteMiddleware`, `WithRouteMaxBodySize`
-- [ ] Unit tests: group prefix, nested groups, scoped middleware isolation
+- [x] Unit tests: group prefix, nested groups, scoped middleware isolation
 
 ### 1.8 Handler Adapters ✅
 - [x] Define internal `HandlerFunc = func(*Context) error`
@@ -677,7 +677,7 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Release note
 - [x] Middleware chain: 0, 1, 5, 10 middlewares overhead
 - [x] Binding: manual vs `Bind[T]` overhead
 - [x] Validation: framework validator vs go-playground/validator
-- [x] Comparison: framework vs Gin vs Mach vs Fiber (bench/compare_test.go)
+- [x] Comparison: framework vs Gin vs Mach vs Fiber (tests/benchmark/compare_test.go)
 - [x] Load test: 500K requests, 100 VCs, real TCP with latency/memory/CPU metrics
 
 ### Examples — PARTIALLY COMPLETE

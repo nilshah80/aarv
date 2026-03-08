@@ -34,7 +34,7 @@ go test ./...
 go test -race ./...
 
 # Run benchmarks
-cd bench && go test -bench=. -benchmem
+cd tests/benchmark && go test -bench=. -benchmem
 
 # Run linter (install first: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
 golangci-lint run

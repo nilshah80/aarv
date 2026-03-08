@@ -171,8 +171,8 @@ When other frameworks implement these same features, they incur the same costs â
 
 Run benchmarks yourself:
 ```bash
-cd bench && go test -bench=BenchmarkFair -benchmem
-cd bench && go test -v -run TestFairLoadTest -timeout 30m
+cd tests/benchmark && go test -bench=BenchmarkFair -benchmem
+cd tests/benchmark && go test -v -run TestFairLoadTest -timeout 30m
 ```
 
 ## Architecture

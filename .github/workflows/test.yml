@@ -26,7 +26,7 @@ jobs:
 
       - name: Run tests
         run: |
-          go test -race -coverprofile=coverage.txt -covermode=atomic $(go list ./... | grep -v /examples/ | grep -v /bench/)
+          go test -race -coverprofile=coverage.txt -covermode=atomic $(go list ./... | grep -v /examples/ | grep -v /tests/benchmark/)
 
       - name: Upload coverage to Codecov
         if: matrix.go == '1.23'

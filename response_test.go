@@ -131,6 +131,9 @@ func TestResponseWrapper(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Errorf("Expected flushed recorder code to match")
 	}
+	if got := w.Header().Get("Content-Length"); got != "5" {
+		t.Errorf("Expected Content-Length 5, got %q", got)
+	}
 
 	res.Bypass()
 	if !res.bypassed {
