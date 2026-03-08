@@ -2,13 +2,22 @@ package verboselog
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/nilshah80/aarv"
 )
+
+type failingCloseReadCloser struct {
+	io.Reader
+}
+
+func (failingCloseReadCloser) Close() error { return errors.New("close failure") }
 
 func TestDumpLogger_Basic(t *testing.T) {
 	var logBuf bytes.Buffer
@@ -62,6 +71,66 @@ func TestDumpLogger_RequestBody(t *testing.T) {
 	logOutput := logBuf.String()
 	if !strings.Contains(logOutput, "alice") {
 		t.Errorf("expected log to contain request body 'alice', got: %s", logOutput)
+	}
+}
+
+func TestDumpLogger_LogsBodyCloseFailure(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+	old := slog.Default()
+	slog.SetDefault(logger)
+	t.Cleanup(func() {
+		slog.SetDefault(old)
+	})
+
+	app := aarv.New(aarv.WithBanner(false), aarv.WithLogger(logger))
+	app.Use(New())
+
+	app.Post("/users", func(c *aarv.Context) error {
+		return c.JSON(201, map[string]string{"id": "1"})
+	})
+
+	body := []byte(`{"name":"alice"}`)
+	req := httptest.NewRequest("POST", "/users", nil)
+	req.Body = failingCloseReadCloser{Reader: bytes.NewReader(body)}
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(body))
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "verboselog request body close failed") {
+		t.Fatalf("expected close warning log, got: %s", logOutput)
+	}
+}
+
+func TestDumpLogger_LogsBodyCloseFailureWithoutAarvContext(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+	old := slog.Default()
+	slog.SetDefault(logger)
+	t.Cleanup(func() {
+		slog.SetDefault(old)
+	})
+
+	middleware := New()
+	body := []byte(`{"name":"alice"}`)
+	req := httptest.NewRequest(http.MethodPost, "/users", nil)
+	req.Body = failingCloseReadCloser{Reader: bytes.NewReader(body)}
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(body))
+
+	rec := httptest.NewRecorder()
+	middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected status 204, got %d", rec.Code)
+	}
+	if !strings.Contains(logBuf.String(), "verboselog request body close failed") {
+		t.Fatalf("expected fallback close warning log, got: %s", logBuf.String())
 	}
 }
 

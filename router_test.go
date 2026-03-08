@@ -1,6 +1,7 @@
 package aarv
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -150,12 +151,20 @@ func TestCustom404And405(t *testing.T) {
 
 func TestRouteGroupAdditionalCoverage(t *testing.T) {
 	app := New(WithBanner(false))
+	var apiGroup *RouteGroup
 	app.Group("/api", func(g *RouteGroup) {
+		apiGroup = g
 		g.Patch("/patch", func(c *Context) error { return c.NoContent(http.StatusOK) })
 		g.Head("/head", func(c *Context) error { return c.NoContent(http.StatusOK) })
 		g.Options("/options", func(c *Context) error { return c.NoContent(http.StatusOK) })
 		g.Any("/any", func(c *Context) error { return c.NoContent(http.StatusOK) })
 		g.Group("/nested", func(sub *RouteGroup) {
+			sub.Use(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("X-Nested", "true")
+					next.ServeHTTP(w, r)
+				})
+			})
 			sub.Get("/child", func(c *Context) error { return c.NoContent(http.StatusOK) })
 		})
 	})
@@ -165,7 +174,27 @@ func TestRouteGroupAdditionalCoverage(t *testing.T) {
 	tc.Do(httptest.NewRequest(http.MethodHead, "/api/head", nil)).AssertStatus(t, http.StatusOK)
 	tc.Do(httptest.NewRequest(http.MethodOptions, "/api/options", nil)).AssertStatus(t, http.StatusOK)
 	tc.Get("/api/any").AssertStatus(t, http.StatusOK)
-	tc.Get("/api/nested/child").AssertStatus(t, http.StatusOK)
+	resp := tc.Get("/api/nested/child")
+	resp.AssertStatus(t, http.StatusOK)
+	if resp.Headers.Get("X-Nested") != "true" {
+		t.Fatalf("expected nested group middleware header, got %q", resp.Headers.Get("X-Nested"))
+	}
+
+	rec := httptest.NewRecorder()
+	apiGroup.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/patch", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected direct group mux call without aarv context to fail, got %d", rec.Code)
+	}
+
+	errReq := httptest.NewRequest(http.MethodGet, "/explode", nil)
+	errCtx, errRec := newAppContext(app, errReq)
+	errReq = errReq.WithContext(context.WithValue(errReq.Context(), ctxKey{}, errCtx))
+	errCtx.req = errReq
+	apiGroup.Get("/explode", func(c *Context) error { return ErrBadRequest("group failed") })
+	apiGroup.mux.ServeHTTP(errRec, errReq)
+	if errRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected grouped handler error to be handled, got %d", errRec.Code)
+	}
 
 	app = New(WithBanner(false))
 	app.Get("/direct", func(c *Context) error { return c.NoContent(http.StatusOK) }, WithRouteMiddleware(func(next http.Handler) http.Handler {
@@ -174,7 +203,7 @@ func TestRouteGroupAdditionalCoverage(t *testing.T) {
 			next.ServeHTTP(w, r)
 		})
 	}))
-	rec := httptest.NewRecorder()
+	rec = httptest.NewRecorder()
 	app.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/direct", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected direct mux call without aarv context to fail, got %d", rec.Code)
