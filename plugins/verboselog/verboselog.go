@@ -23,10 +23,17 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nilshah80/aarv"
 )
+
+var bodyBufferPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
 
 // Config holds configuration for the dump logger middleware.
 type Config struct {
@@ -158,6 +165,10 @@ type bodyCapturingWriter struct {
 	written      bool
 }
 
+type redactionPattern struct {
+	match string
+}
+
 func (w *bodyCapturingWriter) WriteHeader(code int) {
 	if !w.written {
 		w.statusCode = code
@@ -192,6 +203,20 @@ func (w *bodyCapturingWriter) Header() http.Header {
 
 func (w *bodyCapturingWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
+}
+
+func acquireBodyBuffer() *bytes.Buffer {
+	buf := bodyBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	return buf
+}
+
+func releaseBodyBuffer(buf *bytes.Buffer) {
+	if buf == nil {
+		return
+	}
+	buf.Reset()
+	bodyBufferPool.Put(buf)
 }
 
 // clientIP extracts the client IP from the request.
@@ -233,6 +258,7 @@ func New(config ...Config) aarv.Middleware {
 	for _, field := range cfg.SensitiveFields {
 		sensitiveFields[strings.ToLower(field)] = struct{}{}
 	}
+	redactionPatterns := buildRedactionPatterns(cfg.SensitiveFields)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -278,7 +304,7 @@ func New(config ...Config) aarv.Middleware {
 							continue
 						}
 					}
-					reqHeaders[k] = strings.Join(v, ", ")
+					reqHeaders[k] = firstOrJoin(v)
 				}
 			}
 
@@ -293,14 +319,16 @@ func New(config ...Config) aarv.Middleware {
 							continue
 						}
 					}
-					queryParams[k] = strings.Join(v, ", ")
+					queryParams[k] = firstOrJoin(v)
 				}
 			}
 
 			// Create response body capturing writer
+			bodyBuf := acquireBodyBuffer()
+			defer releaseBodyBuffer(bodyBuf)
 			respWriter := &bodyCapturingWriter{
 				ResponseWriter: w,
-				body:           &bytes.Buffer{},
+				body:           bodyBuf,
 				statusCode:     http.StatusOK,
 				maxBodySize:    cfg.MaxBodySize,
 			}
@@ -321,7 +349,7 @@ func New(config ...Config) aarv.Middleware {
 							continue
 						}
 					}
-					respHeaders[k] = strings.Join(v, ", ")
+					respHeaders[k] = firstOrJoin(v)
 				}
 			}
 
@@ -334,7 +362,7 @@ func New(config ...Config) aarv.Middleware {
 					reqBodyStr = string(reqBody)
 				}
 				if cfg.RedactSensitive {
-					reqBodyStr = redactSensitiveFields(reqBodyStr, cfg.SensitiveFields)
+					reqBodyStr = redactSensitiveBody(reqBodyStr, redactionPatterns)
 				}
 			}
 
@@ -347,7 +375,7 @@ func New(config ...Config) aarv.Middleware {
 					respBodyStr = respWriter.body.String()
 				}
 				if cfg.RedactSensitive {
-					respBodyStr = redactSensitiveFields(respBodyStr, cfg.SensitiveFields)
+					respBodyStr = redactSensitiveBody(respBodyStr, redactionPatterns)
 				}
 			}
 
@@ -393,26 +421,45 @@ func New(config ...Config) aarv.Middleware {
 	}
 }
 
-// redactSensitiveFields replaces sensitive field values in JSON-like strings.
-// This is a simple string-based approach, not full JSON parsing.
-func redactSensitiveFields(body string, fields []string) string {
+func buildRedactionPatterns(fields []string) []redactionPattern {
+	patterns := make([]redactionPattern, 0, len(fields)*3)
 	for _, field := range fields {
-		// Match patterns like "password":"value" or "password": "value"
-		patterns := []string{
-			`"` + field + `":"`,
-			`"` + field + `": "`,
-			`"` + field + `" : "`,
+		lowerField := strings.ToLower(field)
+		for _, pattern := range [...]string{
+			`"` + lowerField + `":"`,
+			`"` + lowerField + `": "`,
+			`"` + lowerField + `" : "`,
+		} {
+			patterns = append(patterns, redactionPattern{
+				match: pattern,
+			})
 		}
-		for _, pattern := range patterns {
-			if idx := strings.Index(strings.ToLower(body), strings.ToLower(pattern)); idx >= 0 {
-				// Find the closing quote
-				start := idx + len(pattern)
-				end := strings.Index(body[start:], `"`)
-				if end > 0 {
-					body = body[:start] + "[REDACTED]" + body[start+end:]
-				}
+	}
+	return patterns
+}
+
+func redactSensitiveBody(body string, patterns []redactionPattern) string {
+	if body == "" || len(patterns) == 0 {
+		return body
+	}
+
+	lowerBody := strings.ToLower(body)
+	for _, pattern := range patterns {
+		if idx := strings.Index(lowerBody, pattern.match); idx >= 0 {
+			start := idx + len(pattern.match)
+			end := strings.IndexByte(body[start:], '"')
+			if end > 0 {
+				body = body[:start] + "[REDACTED]" + body[start+end:]
+				lowerBody = strings.ToLower(body)
 			}
 		}
 	}
 	return body
+}
+
+func firstOrJoin(values []string) string {
+	if len(values) == 1 {
+		return values[0]
+	}
+	return strings.Join(values, ", ")
 }

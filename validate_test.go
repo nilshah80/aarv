@@ -192,6 +192,31 @@ func TestValidatorAdditionalCoverage(t *testing.T) {
 		if errs := sv.validate(&ptrNestedPayload{Child: &child{}}); len(errs) == 0 {
 			t.Fatal("expected pointer nested validation errors")
 		}
+
+		type primitiveDivePayload struct {
+			Values []string `json:"values" validate:"required,dive,required,min=2"`
+		}
+		sv = buildStructValidator(reflect.TypeOf(primitiveDivePayload{}))
+		if errs := sv.validate(&primitiveDivePayload{Values: []string{"", "a"}}); len(errs) != 3 {
+			t.Fatalf("expected container + element validation errors, got %#v", errs)
+		}
+
+		type mapDivePayload struct {
+			Users map[string]child `json:"users" validate:"dive"`
+		}
+		sv = buildStructValidator(reflect.TypeOf(mapDivePayload{}))
+		if errs := sv.validate(&mapDivePayload{Users: map[string]child{"broken": {}}}); len(errs) == 0 || !strings.Contains(errs[0].Field, "users[broken].name") {
+			t.Fatalf("expected map dive validation errors, got %#v", errs)
+		}
+
+		type pointerDivePayload struct {
+			Names []*string `json:"names" validate:"dive,required,min=2"`
+		}
+		short := "a"
+		sv = buildStructValidator(reflect.TypeOf(pointerDivePayload{}))
+		if errs := sv.validate(&pointerDivePayload{Names: []*string{nil, &short}}); len(errs) != 3 {
+			t.Fatalf("expected pointer element validation errors, got %#v", errs)
+		}
 	})
 
 	t.Run("self validator short circuit", func(t *testing.T) {
@@ -265,7 +290,9 @@ func TestValidatorAdditionalCoverage(t *testing.T) {
 		if checkUnique(reflect.ValueOf([]int{1, 1})) {
 			t.Fatal("expected duplicate unique check failure")
 		}
-		if checkOneOf(reflect.ValueOf("x"), "a b") {
+		rule := validationRule{tag: "oneof", param: "a b"}
+		compileValidationRule(&rule)
+		if checkOneOfRule(reflect.ValueOf("x"), rule) {
 			t.Fatal("expected oneof mismatch")
 		}
 		if !matchRegex("^a+$", "aa") || matchRegex("(", "aa") {
@@ -293,16 +320,44 @@ func TestValidatorAdditionalCoverage(t *testing.T) {
 		if fieldLen(reflect.ValueOf(true), reflect.Bool) != 0 {
 			t.Fatal("unexpected bool field length")
 		}
-		if !checkGte(reflect.ValueOf(3), reflect.Int, "2") || !checkLte(reflect.ValueOf(2), reflect.Int, "2") || !checkGt(reflect.ValueOf(3), reflect.Int, "2") || !checkLt(reflect.ValueOf(1), reflect.Int, "2") {
+		if got := stringifyValue(reflect.ValueOf(true)); got != "true" {
+			t.Fatalf("unexpected bool stringify result %q", got)
+		}
+		if got := stringifyValue(reflect.ValueOf(int64(42))); got != "42" {
+			t.Fatalf("unexpected int stringify result %q", got)
+		}
+		if got := stringifyValue(reflect.ValueOf(uint64(7))); got != "7" {
+			t.Fatalf("unexpected uint stringify result %q", got)
+		}
+		if got := stringifyValue(reflect.ValueOf(float32(3.5))); got != "3.5" {
+			t.Fatalf("unexpected float32 stringify result %q", got)
+		}
+		if got := stringifyValue(reflect.ValueOf(float64(7.25))); got != "7.25" {
+			t.Fatalf("unexpected float64 stringify result %q", got)
+		}
+		if got := stringifyValue(reflect.ValueOf(struct{ Name string }{Name: "alice"})); !strings.Contains(got, "alice") {
+			t.Fatalf("unexpected fallback stringify result %q", got)
+		}
+		gteRule := validationRule{tag: "gte", param: "2"}
+		lteRule := validationRule{tag: "lte", param: "2"}
+		gtRule := validationRule{tag: "gt", param: "2"}
+		ltRule := validationRule{tag: "lt", param: "2"}
+		lenRule2 := validationRule{tag: "len", param: "2"}
+		lenRule3 := validationRule{tag: "len", param: "3"}
+		mapLenRule := validationRule{tag: "len", param: "1"}
+		for _, rule := range []*validationRule{&gteRule, &lteRule, &gtRule, &ltRule, &lenRule2, &lenRule3, &mapLenRule} {
+			compileValidationRule(rule)
+		}
+		if !checkGteRule(reflect.ValueOf(3), reflect.Int, gteRule) || !checkLteRule(reflect.ValueOf(2), reflect.Int, lteRule) || !checkGtRule(reflect.ValueOf(3), reflect.Int, gtRule) || !checkLtRule(reflect.ValueOf(1), reflect.Int, ltRule) {
 			t.Fatal("unexpected comparison helper result")
 		}
-		if !checkLen(reflect.ValueOf("ab"), reflect.String, "2") || checkLen(reflect.ValueOf("ab"), reflect.String, "3") {
+		if !checkLenRule(reflect.ValueOf("ab"), reflect.String, lenRule2) || checkLenRule(reflect.ValueOf("ab"), reflect.String, lenRule3) {
 			t.Fatal("unexpected length helper result")
 		}
-		if !checkLen(reflect.ValueOf(map[string]int{"a": 1}), reflect.Map, "1") {
+		if !checkLenRule(reflect.ValueOf(map[string]int{"a": 1}), reflect.Map, mapLenRule) {
 			t.Fatal("expected map length helper to pass")
 		}
-		if !checkLen(reflect.ValueOf(1), reflect.Int, "2") {
+		if !checkLenRule(reflect.ValueOf(1), reflect.Int, lenRule2) {
 			t.Fatal("expected default length helper branch to return true")
 		}
 		if isAllFunc("", func(r rune) bool { return true }) {
@@ -353,6 +408,163 @@ func TestValidatorAdditionalCoverage(t *testing.T) {
 			if msg == "" {
 				t.Fatal("expected non-empty validation message")
 			}
+		}
+	})
+
+	t.Run("custom message templates", func(t *testing.T) {
+		SetValidationMessageTemplate("required", func(field, _ string) string {
+			return field + " must be supplied"
+		})
+		t.Cleanup(func() {
+			SetValidationMessageTemplate("required", nil)
+		})
+
+		if got := formatMessage("name", validationRule{tag: "required"}); got != "name must be supplied" {
+			t.Fatalf("unexpected custom message: %q", got)
+		}
+
+		type payload struct {
+			Name string `json:"name" validate:"required"`
+		}
+		sv := buildStructValidator(reflect.TypeOf(payload{}))
+		errs := sv.validate(&payload{})
+		if len(errs) != 1 || errs[0].Message != "name must be supplied" {
+			t.Fatalf("expected custom template in validation output, got %#v", errs)
+		}
+	})
+
+	t.Run("dive helper branches", func(t *testing.T) {
+		if hasOmitEmptyRule(nil) {
+			t.Fatal("expected empty dive rule set to report no omitempty")
+		}
+		if !hasOmitEmptyRule([]validationRule{{tag: "required"}, {tag: "omitempty"}}) {
+			t.Fatal("expected omitempty detection to succeed")
+		}
+		if errs := validateDiveRules(fieldValidator{hasDive: true}, reflect.ValueOf("scalar")); errs != nil {
+			t.Fatalf("expected non-container dive rules to be ignored, got %#v", errs)
+		}
+		if errs := validateDiveElement(fieldValidator{
+			name:      "items",
+			hasDive:   true,
+			diveRules: []validationRule{{tag: "omitempty"}, {tag: "required"}},
+		}, reflect.ValueOf(""), "items[0]"); errs != nil {
+			t.Fatalf("expected omitempty zero-value branch to short-circuit, got %#v", errs)
+		}
+		if errs := validateDiveElement(fieldValidator{
+			name:      "items",
+			hasDive:   true,
+			diveRules: []validationRule{{tag: "omitempty"}, {tag: "min", param: "2", num: 2, hasNum: true}},
+		}, reflect.ValueOf("abc"), "items[0]"); len(errs) != 0 {
+			t.Fatalf("expected omitempty rule to be skipped for non-zero values, got %#v", errs)
+		}
+
+		nonStruct := 5
+		if errs := validateDiveElement(fieldValidator{
+			name:      "items",
+			hasDive:   true,
+			diveRules: []validationRule{{tag: "required"}},
+		}, reflect.ValueOf(&nonStruct), "items[0]"); len(errs) != 0 {
+			t.Fatalf("expected non-struct pointer dive element to stop after rule checks, got %#v", errs)
+		}
+
+		type nested struct {
+			Name string `validate:"required"`
+		}
+		if errs := validateDiveElement(fieldValidator{
+			name:    "items",
+			hasDive: true,
+			dive:    buildStructValidator(reflect.TypeOf(nested{})),
+		}, reflect.ValueOf((*nested)(nil)), "items[0]"); len(errs) != 0 {
+			t.Fatalf("expected nil nested pointer to stop without errors, got %#v", errs)
+		}
+		addressable := nested{}
+		errs := validateDiveElement(fieldValidator{
+			name:    "items",
+			hasDive: true,
+			dive:    buildStructValidator(reflect.TypeOf(nested{})),
+		}, reflect.ValueOf(&addressable), "items[0]")
+		if len(errs) != 1 || errs[0].Field != "items[0].name" {
+			t.Fatalf("expected addressable nested pointer to validate, got %#v", errs)
+		}
+		errs = validateDiveElement(fieldValidator{
+			name:    "items",
+			hasDive: true,
+			dive:    buildStructValidator(reflect.TypeOf(nested{})),
+		}, reflect.ValueOf("plain"), "items[text]")
+		if len(errs) != 0 {
+			t.Fatalf("expected non-struct nested target to return existing errors only, got %#v", errs)
+		}
+		nestedValue := reflect.ValueOf(map[string]nested{"broken": {}}).MapIndex(reflect.ValueOf("broken"))
+		errs = validateDiveElement(fieldValidator{
+			name:    "items",
+			hasDive: true,
+			dive:    buildStructValidator(reflect.TypeOf(nested{})),
+		}, nestedValue, "items[broken]")
+		if len(errs) != 1 || errs[0].Field != "items[broken].name" {
+			t.Fatalf("expected copied map element to validate as nested struct, got %#v", errs)
+		}
+	})
+}
+
+func TestValidationRuleEdgeCases(t *testing.T) {
+	t.Run("invalid cases for built-in rules", func(t *testing.T) {
+		cases := []struct {
+			name string
+			rule validationRule
+			val  any
+			kind reflect.Kind
+		}{
+			{"required string", validationRule{tag: "required"}, "", reflect.String},
+			{"required ptr", validationRule{tag: "required"}, (*int)(nil), reflect.Ptr},
+			{"min string", validationRule{tag: "min", param: "3"}, "ab", reflect.String},
+			{"max int", validationRule{tag: "max", param: "2"}, 3, reflect.Int},
+			{"gte int", validationRule{tag: "gte", param: "2"}, 1, reflect.Int},
+			{"lte int", validationRule{tag: "lte", param: "2"}, 3, reflect.Int},
+			{"gt int", validationRule{tag: "gt", param: "2"}, 2, reflect.Int},
+			{"lt int", validationRule{tag: "lt", param: "2"}, 2, reflect.Int},
+			{"len string", validationRule{tag: "len", param: "2"}, "abc", reflect.String},
+			{"oneof string", validationRule{tag: "oneof", param: "a b"}, "c", reflect.String},
+			{"email", validationRule{tag: "email"}, "bad@", reflect.String},
+			{"url", validationRule{tag: "url"}, "://bad", reflect.String},
+			{"uuid", validationRule{tag: "uuid"}, "bad-uuid", reflect.String},
+			{"alpha", validationRule{tag: "alpha"}, "abc1", reflect.String},
+			{"numeric", validationRule{tag: "numeric"}, "12a", reflect.String},
+			{"alphanum", validationRule{tag: "alphanum"}, "a-1", reflect.String},
+			{"ip", validationRule{tag: "ip"}, "999.0.0.1", reflect.String},
+			{"ipv4", validationRule{tag: "ipv4"}, "::1", reflect.String},
+			{"ipv6", validationRule{tag: "ipv6"}, "127.0.0.1", reflect.String},
+			{"cidr", validationRule{tag: "cidr"}, "127.0.0.1", reflect.String},
+			{"json", validationRule{tag: "json"}, "{", reflect.String},
+			{"datetime", validationRule{tag: "datetime", param: time.RFC3339}, "not-a-time", reflect.String},
+			{"regex", validationRule{tag: "regex", param: "^a+$"}, "bbb", reflect.String},
+			{"contains", validationRule{tag: "contains", param: "z"}, "abc", reflect.String},
+			{"startswith", validationRule{tag: "startswith", param: "z"}, "abc", reflect.String},
+			{"endswith", validationRule{tag: "endswith", param: "z"}, "abc", reflect.String},
+			{"excludes", validationRule{tag: "excludes", param: "b"}, "abc", reflect.String},
+			{"unique", validationRule{tag: "unique"}, []int{1, 1}, reflect.Slice},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if checkRule(reflect.ValueOf(tc.val), tc.kind, tc.rule) {
+					t.Fatalf("expected rule %+v on %#v to fail", tc.rule, tc.val)
+				}
+			})
+		}
+	})
+
+	t.Run("omitempty skips nil pointers and zero values", func(t *testing.T) {
+		type payload struct {
+			Name *string `json:"name" validate:"omitempty,min=3"`
+			Age  int     `json:"age" validate:"omitempty,gte=10"`
+		}
+		sv := buildStructValidator(reflect.TypeOf(payload{}))
+		if errs := sv.validate(&payload{}); len(errs) != 0 {
+			t.Fatalf("expected omitempty to skip zero values, got %#v", errs)
+		}
+		short := "ab"
+		if errs := sv.validate(&payload{Name: &short, Age: 9}); len(errs) != 2 {
+			t.Fatalf("expected non-empty values to be validated, got %#v", errs)
 		}
 	})
 }

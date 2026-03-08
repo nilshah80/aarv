@@ -329,6 +329,26 @@ func TestMinimalConfigAndHelpers(t *testing.T) {
 	if got := clientIP(req); got != "4.4.4.4" {
 		t.Fatalf("expected remote addr ip, got %q", got)
 	}
+
+	releaseBodyBuffer(nil)
+	buf := acquireBodyBuffer()
+	buf.WriteString("captured")
+	releaseBodyBuffer(buf)
+	if got := firstOrJoin([]string{"solo"}); got != "solo" {
+		t.Fatalf("unexpected single join result %q", got)
+	}
+	if got := firstOrJoin([]string{"one", "two"}); got != "one, two" {
+		t.Fatalf("unexpected multi join result %q", got)
+	}
+	if got := redactSensitiveBody("", buildRedactionPatterns([]string{"token"})); got != "" {
+		t.Fatalf("expected empty body to stay empty, got %q", got)
+	}
+	if got := redactSensitiveBody(`{"token":"secret","password":"hidden"}`, nil); !strings.Contains(got, `"password":"hidden"`) {
+		t.Fatalf("expected nil patterns to keep body unchanged, got %q", got)
+	}
+	if got := redactSensitiveBody(`{"token":"secret","password":"hidden"}`, buildRedactionPatterns([]string{"token", "password"})); strings.Contains(got, "secret") || strings.Contains(got, "hidden") {
+		t.Fatalf("expected multiple fields to be redacted, got %q", got)
+	}
 }
 
 func TestDumpLogger_TruncatesBodiesAndRedactsResponseHeaders(t *testing.T) {

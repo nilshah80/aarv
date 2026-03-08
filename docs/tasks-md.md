@@ -214,10 +214,10 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Latest `main
 - [x] Unit tests: each wrapper variant, nil body, invalid JSON, handler error
 
 ### 2.2 Multi-Source Binder ✅
-- [x] Implement `buildBinder[T]()` — registration-time struct inspection
+- [x] Implement registration-time struct inspection via `buildStructBinder(...)`
 - [x] Parse struct tags: `param`, `query`, `header`, `cookie`, `form`, `default`
 - [x] Build field map: `[]fieldBinding{source, name, fieldIndex, kind, defaultValue}`
-- [x] Implement `Binder.Bind(c *Context, dest *T) error` — runtime binding
+- [x] Implement runtime binding via `structBinder.bind(c, dest)`
 - [x] Path param binding: `r.PathValue()` → field
 - [x] Query param binding: `r.URL.Query().Get()` → field with coercion
 - [x] Header binding: `r.Header.Get()` → field
@@ -239,7 +239,7 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Latest `main
 
 ---
 
-## Phase 3: Validation Engine (M3) ✅ COMPLETE
+## Phase 3: Validation Engine (M3)
 
 ### 3.1 Tag Parser ✅
 - [x] Parse `validate:"required,min=2,max=100,oneof=a b c"` tag format
@@ -247,7 +247,7 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Latest `main
 - [x] Handle multiple struct fields
 - [x] Cache parsed rules per type (sync.Map keyed by reflect.Type)
 
-### 3.2 Built-in Rules ✅
+### 3.2 Built-in Rules
 - [x] `required` — non-zero value check
 - [x] `min=N` / `max=N` — string length, numeric value, slice length
 - [x] `gte=N` / `lte=N` / `gt=N` / `lt=N` — numeric comparisons
@@ -265,9 +265,9 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Latest `main
 - [x] `contains=str` / `startswith=str` / `endswith=str` / `excludes=str`
 - [x] `unique` — slice uniqueness check
 - [x] `dive` — validate each element of slice/map
-- [ ] Unit tests: every rule, edge cases (empty string, nil pointer, zero value)
+- [x] Unit tests: every rule, edge cases (empty string, nil pointer, zero value)
 
-### 3.3 Validator Core ✅
+### 3.3 Validator Core
 - [x] Implement `buildStructValidator()` — registration-time rule compilation
 - [x] Pre-compute field indices via `reflect.StructField.Index`
 - [x] Build `[]fieldValidator{index, kind, rules}` slice
@@ -277,23 +277,15 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Latest `main
 - [x] `StructLevelValidator` interface for struct-level validation
 - [x] `RegisterStructValidation(type, fn)` for external struct-level validators
 - [ ] Implement `unsafe.Pointer` + offset fast path (currently uses reflect)
-- [ ] Unit tests: validator performance, custom rules, self-validator, nested structs
-- [ ] Benchmark: reflect validator vs go-playground/validator
+- [x] Unit tests: custom rules, self-validator, nested structs
+- [x] Benchmark: validation path comparison vs go-playground/validator
 
-### 3.4 Error Formatting ✅
+### 3.4 Error Formatting
 - [x] Implement `ValidationError` struct: Field, Tag, Param, Value, Message
 - [x] Auto-generate human-readable messages per rule (hardcoded in `formatMessage`)
-- [ ] Configurable message templates
+- [x] Configurable message templates
 - [x] JSON serialization as 422 response
 - [x] Integration with error handler
-
-### 3.5 RFC 7807 Problem Details (Enhancement)
-- [ ] Implement `ProblemDetails` struct per RFC 7807: type, title, status, detail, instance
-- [ ] Add `extensions` map for custom fields
-- [ ] Create `ValidationProblem` formatter that wraps validation errors in RFC 7807 format
-- [ ] Configurable: enable/disable RFC 7807 format globally or per-route
-- [ ] Content-Type: `application/problem+json`
-- [ ] Unit tests: RFC 7807 compliance, extension fields
 
 ---
 
@@ -501,6 +493,14 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Latest `main
 - [ ] Middleware: `RequireAnyRole("admin", "editor")` → OR check
 - [ ] Return 403 Forbidden on mismatch
 - [ ] Unit tests: has role, missing role, multiple roles
+
+### 6.6 RFC 7807 Problem Details
+- [ ] Implement `ProblemDetails` struct per RFC 7807: type, title, status, detail, instance
+- [ ] Add `extensions` map for custom fields
+- [ ] Create `ValidationProblem` formatter that wraps validation errors in RFC 7807 format
+- [ ] Configurable: enable/disable RFC 7807 format globally or per-route
+- [ ] Content-Type: `application/problem+json`
+- [ ] Unit tests: RFC 7807 compliance, extension fields
 
 ---
 

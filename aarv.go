@@ -197,8 +197,9 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 		ctx.req = r
 		ctx.res = w
 
-		// Enforce body limit
-		if routeBodyLimit > 0 && r.Body != nil {
+		// Enforce body limit only when the request length is unknown or can exceed
+		// the configured limit. Known-small bodies do not need the wrapper.
+		if routeBodyLimit > 0 && r.Body != nil && (r.ContentLength < 0 || r.ContentLength > routeBodyLimit) {
 			r.Body = http.MaxBytesReader(w, r.Body, routeBodyLimit)
 		}
 
@@ -406,55 +407,52 @@ type routingMux struct {
 }
 
 func (m *routingMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Check if any route matches this path with any method
-	path := r.URL.Path
-	var hasPathMatch bool
-	var hasExactMatch bool
+	if _, pattern := m.mux.Handler(r); pattern != "" {
+		if _, ok := m.routesByKey[pattern]; ok {
+			m.mux.ServeHTTP(w, r)
+			return
+		}
+
+		// stdlib-mounted handlers and internal redirect/canonicalization handlers
+		// can return a non-empty pattern that is not one of aarv's tracked routes.
+		// Preserve the old probe-based behavior for those cases.
+		probe := &probeResponseWriter{ResponseWriter: w}
+		m.mux.ServeHTTP(probe, r)
+		if !probe.written {
+			c, _ := r.Context().Value(ctxKey{}).(*Context)
+			if c != nil {
+				if err := m.app.notFoundHandler(c); err != nil {
+					m.app.handleError(c, err)
+				}
+			}
+		}
+		return
+	}
 
 	for key := range m.routesByKey {
 		parts := strings.SplitN(key, " ", 2)
 		if len(parts) != 2 {
 			continue
 		}
-		method, pattern := parts[0], parts[1]
-		if matchesPattern(pattern, path) {
-			hasPathMatch = true
-			if method == r.Method {
-				hasExactMatch = true
-				break
+		if matchesPattern(parts[1], r.URL.Path) {
+			c, _ := r.Context().Value(ctxKey{}).(*Context)
+			if c != nil {
+				if err := m.app.methodNotAllowedHandler(c); err != nil {
+					m.app.handleError(c, err)
+				}
+				return
 			}
+			break
 		}
 	}
 
-	// If exact match exists, let mux handle it
-	if hasExactMatch {
+	c, _ := r.Context().Value(ctxKey{}).(*Context)
+	if c == nil {
 		m.mux.ServeHTTP(w, r)
 		return
 	}
-
-	// If path matches but method doesn't -> 405
-	if hasPathMatch {
-		c, _ := r.Context().Value(ctxKey{}).(*Context)
-		if c != nil {
-			if err := m.app.methodNotAllowedHandler(c); err != nil {
-				m.app.handleError(c, err)
-			}
-			return
-		}
-	}
-
-	// Use a probe writer to detect if mux writes a response
-	probe := &probeResponseWriter{ResponseWriter: w}
-	m.mux.ServeHTTP(probe, r)
-
-	// If mux didn't write anything (404 from ServeMux), call custom 404 handler
-	if !probe.written {
-		c, _ := r.Context().Value(ctxKey{}).(*Context)
-		if c != nil {
-			if err := m.app.notFoundHandler(c); err != nil {
-				m.app.handleError(c, err)
-			}
-		}
+	if err := m.app.notFoundHandler(c); err != nil {
+		m.app.handleError(c, err)
 	}
 }
 
