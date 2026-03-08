@@ -11,9 +11,10 @@ func TestOptions(t *testing.T) {
 	tlsCfg := &tls.Config{}
 	logger := slog.Default()
 	errHandler := func(c *Context, err error) {}
+	codec := failingCodec{}
 
 	opts := []Option{
-		WithCodec(nil),
+		WithCodec(codec),
 		WithLogger(logger),
 		WithErrorHandler(errHandler),
 		WithReadTimeout(1 * time.Second),
@@ -36,6 +37,9 @@ func TestOptions(t *testing.T) {
 
 	if cfg.ReadTimeout != 1*time.Second {
 		t.Errorf("expected read timeout 1s, got %v", cfg.ReadTimeout)
+	}
+	if app.codec != codec {
+		t.Errorf("expected codec to be applied")
 	}
 	if cfg.WriteTimeout != 2*time.Second {
 		t.Errorf("expected write timeout 2s, got %v", cfg.WriteTimeout)
@@ -74,5 +78,3 @@ func TestOptions(t *testing.T) {
 		t.Errorf("expected redirect trailing slash to be true")
 	}
 }
-
-

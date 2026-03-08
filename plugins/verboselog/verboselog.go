@@ -256,7 +256,13 @@ func New(config ...Config) aarv.Middleware {
 			var reqBody []byte
 			if cfg.LogRequestBody && r.Body != nil && r.ContentLength > 0 {
 				reqBody, _ = io.ReadAll(io.LimitReader(r.Body, int64(cfg.MaxBodySize)+1))
-				r.Body.Close()
+				if closeErr := r.Body.Close(); closeErr != nil {
+					if c, ok := aarv.FromRequest(r); ok {
+						c.Logger().Warn("verboselog request body close failed", "error", closeErr)
+					} else {
+						slog.Warn("verboselog request body close failed", "error", closeErr, "path", path)
+					}
+				}
 				// Restore the body for downstream handlers
 				r.Body = io.NopCloser(bytes.NewReader(reqBody))
 			}

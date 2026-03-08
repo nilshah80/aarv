@@ -343,6 +343,14 @@ func TestContextAdditionalCoverage(t *testing.T) {
 		if ctx.Scheme() != "https" {
 			t.Fatalf("expected forwarded proto scheme, got %s", ctx.Scheme())
 		}
+
+		app = New(WithBanner(false), WithTrustedProxies("invalid-cidr"))
+		req = httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "9.9.9.9:1234"
+		ctx, _ = newAppContext(app, req)
+		if ctx.isTrustedProxy("9.9.9.9") {
+			t.Fatal("expected invalid CIDR entry to be ignored when it does not match the IP string")
+		}
 	})
 
 	t.Run("body binding and form file helpers", func(t *testing.T) {
@@ -547,5 +555,8 @@ func TestContextAdditionalCoverage(t *testing.T) {
 	}
 	if isValidUUID("123e4567_e89b-12d3-a456-426614174000") {
 		t.Fatal("expected invalid UUID punctuation result")
+	}
+	if isValidUUID("123e4567-e89b-12d3-a456-42661417400g") {
+		t.Fatal("expected invalid UUID hex result")
 	}
 }

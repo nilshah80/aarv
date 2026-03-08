@@ -81,7 +81,7 @@ func TestNewGzipCompressionAndWriterHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gzip reader failed: %v", err)
 	}
-	defer gr.Close()
+	defer func() { _ = gr.Close() }()
 	decoded, err := io.ReadAll(gr)
 	if err != nil {
 		t.Fatalf("gzip decode failed: %v", err)
@@ -143,7 +143,7 @@ func TestNewDeflateCompression(t *testing.T) {
 	}
 
 	fr := flate.NewReader(strings.NewReader(rec.Body.String()))
-	defer fr.Close()
+	defer func() { _ = fr.Close() }()
 	decoded, err := io.ReadAll(fr)
 	if err != nil {
 		t.Fatalf("deflate decode failed: %v", err)
