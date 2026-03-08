@@ -48,6 +48,12 @@ var (
 	ErrDecryptionFailed = errors.New("encrypt: decryption failed - invalid ciphertext or key")
 )
 
+var (
+	randRead     = rand.Read
+	newAESCipher = aes.NewCipher
+	newGCM       = cipher.NewGCM
+)
+
 // Config holds configuration for the encryption middleware.
 type Config struct {
 	// Key is the 32-byte AES-256 encryption key (required)
@@ -100,7 +106,7 @@ func defaultDecryptErrorHandler(w http.ResponseWriter, _ *http.Request, _ error)
 // GenerateKey generates a cryptographically secure 32-byte key for AES-256.
 func GenerateKey() ([]byte, error) {
 	key := make([]byte, KeySize)
-	if _, err := rand.Read(key); err != nil {
+	if _, err := randRead(key); err != nil {
 		return nil, err
 	}
 	return key, nil
@@ -118,12 +124,12 @@ func NewEncryptor(key []byte) (*Encryptor, error) {
 		return nil, ErrInvalidKey
 	}
 
-	block, err := aes.NewCipher(key)
+	block, err := newAESCipher(key)
 	if err != nil {
 		return nil, err
 	}
 
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := newGCM(block)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +141,7 @@ func NewEncryptor(key []byte) (*Encryptor, error) {
 // Format: Base64(Nonce || Ciphertext || Tag)
 func (e *Encryptor) Encrypt(plaintext []byte) ([]byte, error) {
 	nonce := make([]byte, NonceSize)
-	if _, err := rand.Read(nonce); err != nil {
+	if _, err := randRead(nonce); err != nil {
 		return nil, err
 	}
 

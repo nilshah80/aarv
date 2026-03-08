@@ -188,6 +188,119 @@ func TestDumpLogger_ResponseBody(t *testing.T) {
 	}
 }
 
+func TestMinimalConfigAndHelpers(t *testing.T) {
+	cfg := MinimalConfig()
+	if cfg.LogRequestBody || cfg.LogResponseBody || cfg.LogClientIP || cfg.MaxBodySize != 0 {
+		t.Fatalf("unexpected minimal config: %#v", cfg)
+	}
+
+	rec := httptest.NewRecorder()
+	writer := &bodyCapturingWriter{
+		ResponseWriter: rec,
+		body:           &bytes.Buffer{},
+		statusCode:     200,
+		maxBodySize:    4,
+	}
+	_, _ = writer.Write([]byte("abcdef"))
+	if got := writer.body.String(); got != "abcd" {
+		t.Fatalf("expected truncated captured body, got %q", got)
+	}
+	if writer.Unwrap() != rec {
+		t.Fatal("unwrap should return base writer")
+	}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Real-IP", "1.1.1.1")
+	if got := clientIP(req); got != "1.1.1.1" {
+		t.Fatalf("expected x-real-ip, got %q", got)
+	}
+	req = httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Forwarded-For", "2.2.2.2, 3.3.3.3")
+	if got := clientIP(req); got != "2.2.2.2" {
+		t.Fatalf("expected forwarded ip, got %q", got)
+	}
+	req = httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Forwarded-For", "3.3.3.3")
+	if got := clientIP(req); got != "3.3.3.3" {
+		t.Fatalf("expected single forwarded ip, got %q", got)
+	}
+	req = httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "4.4.4.4:1234"
+	if got := clientIP(req); got != "4.4.4.4" {
+		t.Fatalf("expected remote addr ip, got %q", got)
+	}
+}
+
+func TestDumpLogger_TruncatesBodiesAndRedactsResponseHeaders(t *testing.T) {
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		MaxBodySize:        5,
+		LogRequestBody:     true,
+		LogResponseBody:    true,
+		LogRequestHeaders:  true,
+		LogResponseHeaders: true,
+		RedactSensitive:    true,
+		SensitiveHeaders:   []string{"Set-Cookie"},
+		SensitiveFields:    []string{"token"},
+	}))
+
+	app.Post("/test", func(c *aarv.Context) error {
+		c.Response().Header().Set("Set-Cookie", "session=secret")
+		return c.JSON(200, map[string]string{"token": "secret-token"})
+	})
+
+	body := []byte(`{"token":"abcdefghi"}`)
+	req := httptest.NewRequest("POST", "/test", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "[truncated]") {
+		t.Fatalf("expected truncated marker, got %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "[REDACTED]") {
+		t.Fatalf("expected redaction marker, got %s", logOutput)
+	}
+}
+
+func TestDumpLogger_AllowsVisibleSensitiveDataWhenRedactionDisabled(t *testing.T) {
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		LogRequestHeaders:  true,
+		LogResponseHeaders: true,
+		LogRequestBody:     true,
+		LogResponseBody:    true,
+		RedactSensitive:    false,
+		MaxBodySize:        64,
+	}))
+
+	app.Post("/test", func(c *aarv.Context) error {
+		c.Response().Header().Set("Set-Cookie", "session=value")
+		return c.JSON(200, map[string]string{"token": "secret"})
+	})
+
+	req := httptest.NewRequest("POST", "/test", bytes.NewReader([]byte(`{"token":"secret"}`)))
+	req.Header.Set("Authorization", "Bearer visible")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "Bearer visible") {
+		t.Fatalf("expected visible request header, got %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "session=value") {
+		t.Fatalf("expected visible response header, got %s", logOutput)
+	}
+}
+
 func BenchmarkDumpLogger(b *testing.B) {
 	// Discard logs during benchmark
 	slog.SetDefault(slog.New(slog.NewJSONHandler(bytes.NewBuffer(nil), nil)))

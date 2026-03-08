@@ -16,6 +16,27 @@ import (
 	"github.com/nilshah80/aarv"
 )
 
+type gzipCompressor interface {
+	Write([]byte) (int, error)
+	Close() error
+	Reset(io.Writer)
+}
+
+type deflateCompressor interface {
+	Write([]byte) (int, error)
+	Close() error
+	Reset(io.Writer)
+}
+
+var (
+	newGzipWriterLevel = func(w io.Writer, level int) (gzipCompressor, error) {
+		return gzip.NewWriterLevel(w, level)
+	}
+	newDeflateWriter = func(w io.Writer, level int) (deflateCompressor, error) {
+		return flate.NewWriter(w, level)
+	}
+)
+
 // Config holds configuration for the compression middleware.
 type Config struct {
 	// Level is the compression level for both gzip and deflate.
@@ -60,7 +81,7 @@ func DefaultConfig() Config {
 // conditionally apply gzip compression based on the body size.
 type gzipResponseWriter struct {
 	http.ResponseWriter
-	gzWriter       *gzip.Writer
+	gzWriter       gzipCompressor
 	pool           *sync.Pool
 	buf            []byte
 	minSize        int
@@ -146,7 +167,7 @@ func (grw *gzipResponseWriter) Unwrap() http.ResponseWriter {
 // deflateResponseWriter wraps http.ResponseWriter for deflate compression.
 type deflateResponseWriter struct {
 	http.ResponseWriter
-	deflateWriter  *flate.Writer
+	deflateWriter  deflateCompressor
 	pool           *sync.Pool
 	buf            []byte
 	minSize        int
@@ -238,14 +259,14 @@ func New(config ...Config) aarv.Middleware {
 
 	gzipPool := &sync.Pool{
 		New: func() any {
-			gz, _ := gzip.NewWriterLevel(io.Discard, level)
+			gz, _ := newGzipWriterLevel(io.Discard, level)
 			return gz
 		},
 	}
 
 	deflatePool := &sync.Pool{
 		New: func() any {
-			fw, _ := flate.NewWriter(io.Discard, level)
+			fw, _ := newDeflateWriter(io.Discard, level)
 			return fw
 		},
 	}
@@ -300,7 +321,7 @@ func New(config ...Config) aarv.Middleware {
 			useGzip := acceptsGzip && (cfg.PreferGzip || !acceptsDeflate)
 
 			if useGzip {
-				gz := gzipPool.Get().(*gzip.Writer)
+				gz := gzipPool.Get().(gzipCompressor)
 				gz.Reset(w)
 
 				grw := &gzipResponseWriter{
@@ -315,7 +336,7 @@ func New(config ...Config) aarv.Middleware {
 				defer grw.finish()
 				next.ServeHTTP(grw, r)
 			} else {
-				fw := deflatePool.Get().(*flate.Writer)
+				fw := deflatePool.Get().(deflateCompressor)
 				fw.Reset(w)
 
 				drw := &deflateResponseWriter{

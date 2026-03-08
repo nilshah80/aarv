@@ -2,13 +2,31 @@ package encrypt
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/nilshah80/aarv"
 )
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) {
+	return 0, errors.New("rand failure")
+}
+
+type failingBody struct{}
+
+func (failingBody) Read([]byte) (int, error) {
+	return 0, errors.New("body failure")
+}
+
+func (failingBody) Close() error { return nil }
 
 func TestGenerateKey(t *testing.T) {
 	key, err := GenerateKey()
@@ -17,6 +35,15 @@ func TestGenerateKey(t *testing.T) {
 	}
 	if len(key) != KeySize {
 		t.Errorf("expected key length %d, got %d", KeySize, len(key))
+	}
+
+	oldRead := randRead
+	randRead = failingReader{}.Read
+	t.Cleanup(func() {
+		randRead = oldRead
+	})
+	if _, err := GenerateKey(); err == nil {
+		t.Fatal("expected GenerateKey error when rand reader fails")
 	}
 }
 
@@ -63,6 +90,44 @@ func TestEncryptor_InvalidKey(t *testing.T) {
 	}
 }
 
+func TestNewEncryptorInternalErrors(t *testing.T) {
+	oldCipher := newAESCipher
+	oldGCM := newGCM
+	t.Cleanup(func() {
+		newAESCipher = oldCipher
+		newGCM = oldGCM
+	})
+
+	newAESCipher = func([]byte) (cipher.Block, error) {
+		return nil, errors.New("cipher failure")
+	}
+	if _, err := NewEncryptor(bytes.Repeat([]byte{1}, KeySize)); err == nil {
+		t.Fatal("expected cipher construction error")
+	}
+
+	newAESCipher = aes.NewCipher
+	newGCM = func(cipher.Block) (cipher.AEAD, error) {
+		return nil, errors.New("gcm failure")
+	}
+	if _, err := NewEncryptor(bytes.Repeat([]byte{1}, KeySize)); err == nil {
+		t.Fatal("expected gcm construction error")
+	}
+}
+
+func TestNewReturnsEncryptorConstructionError(t *testing.T) {
+	oldCipher := newAESCipher
+	t.Cleanup(func() {
+		newAESCipher = oldCipher
+	})
+
+	newAESCipher = func([]byte) (cipher.Block, error) {
+		return nil, errors.New("cipher failure")
+	}
+	if _, err := New(bytes.Repeat([]byte{1}, KeySize)); err == nil {
+		t.Fatal("expected middleware constructor to return encryptor error")
+	}
+}
+
 func TestEncryptor_DecryptInvalidPayload(t *testing.T) {
 	key, _ := GenerateKey()
 	enc, _ := NewEncryptor(key)
@@ -83,6 +148,25 @@ func TestEncryptor_DecryptInvalidPayload(t *testing.T) {
 				t.Errorf("expected %v, got %v", tt.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestEncryptor_EncryptAndDecryptEdgeCases(t *testing.T) {
+	key, _ := GenerateKey()
+	enc, _ := NewEncryptor(key)
+
+	decrypted, err := enc.Decrypt(nil)
+	if err != nil || decrypted != nil {
+		t.Fatalf("expected nil plaintext for empty input, got %v %v", decrypted, err)
+	}
+
+	oldRead := randRead
+	randRead = failingReader{}.Read
+	t.Cleanup(func() {
+		randRead = oldRead
+	})
+	if _, err := enc.Encrypt([]byte("test")); err == nil {
+		t.Fatal("expected encrypt error when rand reader fails")
 	}
 }
 
@@ -248,6 +332,31 @@ func TestMiddleware_ExcludedContentType(t *testing.T) {
 	}
 }
 
+func TestMiddleware_ExcludedContentTypePrefix(t *testing.T) {
+	key, _ := GenerateKey()
+
+	app := aarv.New(aarv.WithBanner(false))
+	middleware, _ := New(key, Config{
+		EncryptResponse: true,
+		ExcludedTypes:   []string{"image/"},
+	})
+	app.Use(middleware)
+
+	app.Get("/img", func(c *aarv.Context) error {
+		c.Response().Header().Set("Content-Type", "image/png")
+		_, _ = c.Response().Write([]byte("png"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "/img", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("expected prefix-excluded content type, got %q", got)
+	}
+}
+
 func TestMiddleware_DisableEncryption(t *testing.T) {
 	key, _ := GenerateKey()
 
@@ -269,6 +378,157 @@ func TestMiddleware_DisableEncryption(t *testing.T) {
 	ct := rec.Header().Get("Content-Type")
 	if ct == EncryptedContentType {
 		t.Errorf("expected non-encrypted response when encryption disabled")
+	}
+}
+
+func TestEncryptResponseWriterHelpers(t *testing.T) {
+	key, _ := GenerateKey()
+	enc, _ := NewEncryptor(key)
+
+	rec := httptest.NewRecorder()
+	w := &encryptResponseWriter{
+		ResponseWriter: rec,
+		encryptor:      enc,
+		statusCode:     http.StatusAccepted,
+	}
+	if w.Unwrap() != rec {
+		t.Fatal("unwrap should return underlying writer")
+	}
+	if err := w.finish(); err != nil {
+		t.Fatalf("finish on empty body failed: %v", err)
+	}
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	w = &encryptResponseWriter{
+		ResponseWriter: rec,
+		encryptor:      enc,
+		skipEncrypt:    true,
+	}
+	if err := w.finish(); err != nil {
+		t.Fatalf("finish on skipped encryption failed: %v", err)
+	}
+
+	rec = httptest.NewRecorder()
+	w = &encryptResponseWriter{
+		ResponseWriter: rec,
+		encryptor:      enc,
+	}
+	_, _ = w.Write([]byte("body"))
+	oldRead := randRead
+	randRead = failingReader{}.Read
+	defer func() {
+		randRead = oldRead
+	}()
+	if err := w.finish(); err == nil {
+		t.Fatal("expected finish to propagate encryption error")
+	}
+}
+
+func TestMiddleware_DecryptReadErrorWithoutHandler(t *testing.T) {
+	key, _ := GenerateKey()
+
+	called := false
+	handler, err := New(key, Config{
+		DecryptRequest:  true,
+		EncryptResponse: false,
+		OnDecryptError:  nil,
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/test", nil)
+	req.Body = failingBody{}
+	req.ContentLength = 10
+	req.Header.Set("Content-Type", EncryptedContentType)
+	rec := httptest.NewRecorder()
+	handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rec, req)
+
+	if called {
+		t.Fatal("handler should not run when decrypt read fails")
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("expected empty response body, got %q", rec.Body.String())
+	}
+}
+
+func TestMiddleware_DecryptReadErrorInvokesCallback(t *testing.T) {
+	key, _ := GenerateKey()
+
+	callbackCalled := false
+	handler, err := New(key, Config{
+		DecryptRequest:  true,
+		EncryptResponse: false,
+		OnDecryptError: func(w http.ResponseWriter, r *http.Request, err error) {
+			callbackCalled = true
+			http.Error(w, "bad decrypt", http.StatusBadRequest)
+		},
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/test", nil)
+	req.Body = failingBody{}
+	req.ContentLength = 10
+	req.Header.Set("Content-Type", EncryptedContentType)
+	rec := httptest.NewRecorder()
+	handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not run")
+	})).ServeHTTP(rec, req)
+
+	if !callbackCalled {
+		t.Fatal("expected decrypt error callback")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestMiddleware_DecryptRestoresOriginalContentType(t *testing.T) {
+	key, _ := GenerateKey()
+	enc, _ := NewEncryptor(key)
+
+	var receivedCT string
+	var receivedBody string
+	middleware, _ := New(key, Config{
+		EncryptResponse: false,
+		DecryptRequest:  true,
+	})
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedCT = r.Header.Get("Content-Type")
+		body, _ := io.ReadAll(r.Body)
+		receivedBody = string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	payload := []byte(`hello`)
+	encrypted, _ := enc.Encrypt(payload)
+	req := httptest.NewRequest("POST", "/test", bytes.NewReader(encrypted))
+	req.Header.Set("Content-Type", EncryptedContentType)
+	req.Header.Set("X-Original-Content-Type", "text/plain")
+	req.ContentLength = int64(len(encrypted))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if receivedCT != "text/plain" {
+		t.Fatalf("expected restored content-type text/plain, got %q", receivedCT)
+	}
+	if receivedBody != "hello" {
+		t.Fatalf("expected decrypted body hello, got %q", receivedBody)
+	}
+}
+
+func TestMustNewSuccess(t *testing.T) {
+	key, _ := GenerateKey()
+	if MustNew(key) == nil {
+		t.Fatal("expected middleware instance")
 	}
 }
 
