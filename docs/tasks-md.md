@@ -24,17 +24,17 @@
 - [x] Create `.github/workflows/lint.yml` - runs `golangci-lint`
 - [x] Create `CHANGELOG.md` - version tracking
 - [x] Create `CONTRIBUTING.md` - contributor guide
-- [ ] **Push to GitHub and verify CI runs** ⬅️ DO THIS FIRST
-- [ ] Fix any linting errors CI reports
+- [x] **Push to GitHub and verify CI runs** ⬅️ DO THIS FIRST
+- [x] Fix any linting errors CI reports
 
 ### PR1: Core Test Coverage (HIGH PRIORITY)
-- [ ] `aarv_test.go` - App creation, configuration, Listen/Shutdown
-- [ ] `context_test.go` - Context methods, Get/Set, JSON, Text, etc.
-- [ ] `router_test.go` - Route registration, path params, groups
-- [ ] `middleware_test.go` - Middleware chain, ordering, error handling
-- [ ] `bind_test.go` - JSON binding, form binding, query binding
-- [ ] `validate_test.go` - All validation rules
-- [ ] `hooks_test.go` - Lifecycle hooks execution order
+- [x] `aarv_test.go` - App creation, configuration, Listen/Shutdown
+- [x] `context_test.go` - Context methods, Get/Set, JSON, Text, etc.
+- [x] `router_test.go` - Route registration, path params, groups
+- [x] `middleware_test.go` - Middleware chain, ordering, error handling
+- [x] `bind_test.go` - JSON binding, form binding, query binding
+- [x] `validate_test.go` - All validation rules
+- [x] `hooks_test.go` - Lifecycle hooks execution order
 
 ### PR2: Plugin Test Coverage (HIGH PRIORITY)
 - [ ] `plugins/logger/logger_test.go` (currently 0%)
@@ -65,11 +65,11 @@
 - [ ] Review TLS configuration defaults
 - [ ] Run `govulncheck ./...`
 
-### PR6: First Release (v0.1.0)
+### PR6: Second Release (v0.5.0)
 - [ ] All CI checks passing
 - [ ] Test coverage > 80%
 - [ ] All GoDoc comments complete
-- [ ] `git tag -a v0.1.0 -m "Initial release"`
+- [ ] `git tag -a v0.5.0 -m <Proper message>`
 - [ ] Create GitHub Release
 
 ---
