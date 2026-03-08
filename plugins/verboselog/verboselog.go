@@ -228,6 +228,12 @@ func New(config ...Config) aarv.Middleware {
 		sensitiveHeaders[strings.ToLower(h)] = struct{}{}
 	}
 
+	// Build sensitive field set for body and query redaction.
+	sensitiveFields := make(map[string]struct{}, len(cfg.SensitiveFields))
+	for _, field := range cfg.SensitiveFields {
+		sensitiveFields[strings.ToLower(field)] = struct{}{}
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
@@ -275,6 +281,12 @@ func New(config ...Config) aarv.Middleware {
 			if cfg.LogQueryParams {
 				queryParams = make(map[string]string, len(r.URL.Query()))
 				for k, v := range r.URL.Query() {
+					if cfg.RedactSensitive {
+						if _, sensitive := sensitiveFields[strings.ToLower(k)]; sensitive {
+							queryParams[k] = "[REDACTED]"
+							continue
+						}
+					}
 					queryParams[k] = strings.Join(v, ", ")
 				}
 			}

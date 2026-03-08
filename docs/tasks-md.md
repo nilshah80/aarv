@@ -12,12 +12,12 @@
 
 | Area | Current State | Target | Priority |
 |------|---------------|--------|----------|
-| **Tests** | Core: ~31%, Plugins: variable | 80%+ coverage | **HIGH** |
-| **Documentation** | Basic README | GoDoc comments on all exports | **HIGH** |
+| **Tests** | Non-example packages: 98.7% coverage | 80%+ coverage | **HIGH** |
+| **Documentation** | Public API GoDoc complete | GoDoc comments on all exports | **HIGH** |
 | **CI/CD** | ✅ Files created | Push & verify workflows run | **HIGH** |
-| **Error handling** | Basic | All edge cases handled gracefully | **MEDIUM** |
-| **Security review** | Unknown | Audit for OWASP top 10 | **MEDIUM** |
-| **API stability** | Unversioned | Semantic versioning, v0.1.0 release | **HIGH** |
+| **Error handling** | Audited and hardened | All edge cases handled gracefully | **MEDIUM** |
+| **Security review** | Completed locally | Audit for OWASP top 10 | **MEDIUM** |
+| **API stability** | Pre-1.0, one prior tag (`v0.1.0`) | Semantic versioning, `v0.3.0` release | **HIGH** |
 
 ### PR0: CI/CD & Infrastructure ✅ (Files created)
 - [x] Create `.github/workflows/test.yml` - runs `go test -race` on Go 1.22/1.23
@@ -44,33 +44,37 @@
 - [x] All other plugins need tests
 
 ### PR3: GoDoc Comments (HIGH PRIORITY)
-- [ ] `aarv.go` - App, New(), Listen(), Use(), Get/Post/etc.
-- [ ] `context.go` - Context, JSON(), Text(), Param(), Query()
-- [ ] `router.go` - RouteGroup, Group()
-- [ ] `bind.go` - Bind(), BindReq()
-- [ ] `validate.go` - Validation rules
-- [ ] `hooks.go` - Hook types, AddHook()
-- [ ] All plugins and codecs
+- [x] `aarv.go` - App, New(), Listen(), Use(), Get/Post/etc.
+- [x] `context.go` - Context, JSON(), Text(), Param(), Query()
+- [x] `router.go` - RouteGroup, Group()
+- [x] `bind.go` - Bind(), BindReq()
+- [x] `validate.go` - Validation rules
+- [x] `hooks.go` - Hook types, AddHook()
+- [x] All plugins and codecs
 
 ### PR4: Error Handling Audit
-- [ ] Review all error returns in core code
-- [ ] Ensure panics are recovered in middleware
-- [ ] Test nil pointer scenarios
-- [ ] Test malformed JSON, missing fields
-- [ ] Test concurrent access scenarios
+- [x] Review all error returns in core code
+- [x] Ensure panics are recovered in middleware
+- [x] Test nil pointer scenarios
+- [x] Test malformed JSON, missing fields
+- [x] Test concurrent access scenarios
 
 ### PR5: Security Review
-- [ ] Review for OWASP top 10 vulnerabilities
-- [ ] Ensure no secrets logged, proper redaction
-- [ ] Review TLS configuration defaults
-- [ ] Run `govulncheck ./...`
+- [x] Review for OWASP top 10 vulnerabilities
+- [x] Ensure no secrets logged, proper redaction
+- [x] Review TLS configuration defaults
+- [x] Run `govulncheck ./...`
 
-### PR6: Second Release (v0.5.0)
+Note: `govulncheck` reports 4 Go standard library vulnerabilities in `go1.26.0`, all fixed in `go1.26.1`. Follow-up remediation is a Go toolchain upgrade rather than a repo code change.
+
+### PR6: Release Prep (v0.3.0)
 - [ ] All CI checks passing
-- [ ] Test coverage > 80%
-- [ ] All GoDoc comments complete
-- [ ] `git tag -a v0.5.0 -m <Proper message>`
+- [x] Test coverage > 80%
+- [x] All GoDoc comments complete
+- [ ] `git tag -a v0.3.0 -m <Proper message>`
 - [ ] Create GitHub Release
+
+Note: excluding `examples/...`, combined package coverage is 98.7%. Release notes are prepared for `v0.3.0`, but CI workflow status and release publication still need verification on GitHub before tagging/publishing.
 
 ---
 

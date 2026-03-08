@@ -112,7 +112,7 @@ func TestErrorHandling(t *testing.T) {
 	})
 
 	tc := NewTestClient(app)
-	
+
 	resp := tc.Get("/err")
 	resp.AssertStatus(t, 404)
 
@@ -124,13 +124,13 @@ func TestErrorHandling(t *testing.T) {
 		t.Errorf("expected error code 'not_found', got %q", body.Error)
 	}
 
-	// The panic isn't recovered by default without recovery middleware plugin. 
+	// The panic isn't recovered by default without recovery middleware plugin.
 	// The HTTP standard library recovers panics and drops the connection, returning empty response via TestClient implicitly
-	// Or HTTP 500 when using testclient wrapper. 
-	
+	// Or HTTP 500 when using testclient wrapper.
+
 	req := httptest.NewRequest("GET", "/panic", nil)
 	w := httptest.NewRecorder()
-	
+
 	defer func() {
 		if r := recover(); r == nil {
 			t.Errorf("expected panic to bubble up")
@@ -147,7 +147,7 @@ func TestWrapMiddleware(t *testing.T) {
 		}
 	}
 	mw := WrapMiddleware(mwFunc)
-	
+
 	app := New()
 	app.Use(mw)
 	app.Get("/wrap", func(c *Context) error { return c.NoContent(200) })
@@ -216,4 +216,44 @@ func TestMiddlewareBranchCoverage(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("unexpected recovery status without context: %d", rec.Code)
 	}
+}
+
+func TestMiddlewareNilAndPanicRecoveryPaths(t *testing.T) {
+	t.Run("nil wrapped middleware becomes passthrough", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Use(WrapMiddleware(nil))
+		app.Get("/ok", func(c *Context) error { return c.NoContent(http.StatusNoContent) })
+
+		resp := NewTestClient(app).Get("/ok")
+		resp.AssertStatus(t, http.StatusNoContent)
+	})
+
+	t.Run("recovery catches panic in downstream middleware", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Use(Recovery())
+		app.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				panic("middleware boom")
+			})
+		})
+		app.Get("/panic", func(c *Context) error { return c.NoContent(http.StatusOK) })
+
+		resp := NewTestClient(app).Get("/panic")
+		resp.AssertStatus(t, http.StatusInternalServerError)
+	})
+
+	t.Run("recovery catches panic in route middleware", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Use(Recovery())
+		app.Get("/panic", func(c *Context) error {
+			return c.NoContent(http.StatusOK)
+		}, WithRouteMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				panic("route middleware boom")
+			})
+		}))
+
+		resp := NewTestClient(app).Get("/panic")
+		resp.AssertStatus(t, http.StatusInternalServerError)
+	})
 }

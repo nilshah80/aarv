@@ -131,9 +131,12 @@ func (tc *TestClient) doRequest(method, path string, body any) *TestResponse {
 
 // TestResponse wraps an httptest.ResponseRecorder result.
 type TestResponse struct {
-	Status  int
+	// Status is the recorded HTTP status code.
+	Status int
+	// Headers contains the recorded response headers.
 	Headers http.Header
-	Body    []byte
+	// Body contains the recorded response body bytes.
+	Body []byte
 }
 
 func newTestResponse(rec *httptest.ResponseRecorder) *TestResponse {

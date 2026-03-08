@@ -6,16 +6,26 @@ import "sort"
 type HookPhase int
 
 const (
-	OnRequest     HookPhase = iota // Immediately after request received
-	PreRouting                     // Before route matching
-	PreParsing                     // Before body parsing
-	PreValidation                  // After parsing, before validation
-	PreHandler                     // After validation, before handler
-	OnResponse                     // After handler, before sending
-	OnSend                         // Just before bytes go to wire
-	OnError                        // On any error in the chain
-	OnStartup                      // Server starts listening
-	OnShutdown                     // Server shutdown initiated
+	// OnRequest runs immediately after the framework acquires the request context.
+	OnRequest HookPhase = iota
+	// PreRouting is reserved for hooks that should run before route matching.
+	PreRouting
+	// PreParsing is reserved for hooks that should run before body parsing.
+	PreParsing
+	// PreValidation is reserved for hooks that should run after parsing and before validation.
+	PreValidation
+	// PreHandler is reserved for hooks that should run after validation and before the handler.
+	PreHandler
+	// OnResponse runs after the handler completes and before the final response lifecycle ends.
+	OnResponse
+	// OnSend runs just before buffered response bytes are flushed to the client.
+	OnSend
+	// OnError runs when the framework handles an error returned from the chain.
+	OnError
+	// OnStartup runs before the server begins accepting requests.
+	OnStartup
+	// OnShutdown runs when graceful shutdown starts.
+	OnShutdown
 )
 
 // HookFunc is a lifecycle hook function.
@@ -64,5 +74,5 @@ func (hr *hookRegistry) run(phase HookPhase, c *Context) error {
 	return nil
 }
 
-// ShutdownHook is called during graceful shutdown.
+// ShutdownHook runs during graceful shutdown with the shutdown context.
 type ShutdownHook func(ctx interface{ Done() <-chan struct{} }) error

@@ -117,6 +117,37 @@ func TestDumpLogger_SensitiveBodyRedaction(t *testing.T) {
 	}
 }
 
+func TestDumpLogger_SensitiveQueryRedaction(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(old)
+	})
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New())
+
+	app.Get("/search", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	req := httptest.NewRequest("GET", "/search?token=top-secret&apikey=abc123&q=visible", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, "top-secret") || strings.Contains(logOutput, "abc123") {
+		t.Fatalf("sensitive query params should be redacted, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "[REDACTED]") {
+		t.Fatalf("expected redaction marker in query params, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "visible") {
+		t.Fatalf("expected non-sensitive query param to remain visible, got: %s", logOutput)
+	}
+}
+
 func TestDumpLogger_SkipPaths(t *testing.T) {
 	var logBuf bytes.Buffer
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))

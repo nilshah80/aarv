@@ -24,22 +24,27 @@ type Codec interface {
 // StdJSONCodec implements Codec using encoding/json from the standard library.
 type StdJSONCodec struct{}
 
+// Decode reads JSON from r into v using encoding/json.
 func (StdJSONCodec) Decode(r io.Reader, v any) error {
 	return json.NewDecoder(r).Decode(v)
 }
 
+// Encode writes v to w as JSON using encoding/json.
 func (StdJSONCodec) Encode(w io.Writer, v any) error {
 	return json.NewEncoder(w).Encode(v)
 }
 
+// UnmarshalBytes decodes JSON bytes into v using encoding/json.
 func (StdJSONCodec) UnmarshalBytes(data []byte, v any) error {
 	return json.Unmarshal(data, v)
 }
 
+// MarshalBytes encodes v to JSON bytes using encoding/json.
 func (StdJSONCodec) MarshalBytes(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
+// ContentType returns the MIME type produced by StdJSONCodec.
 func (StdJSONCodec) ContentType() string {
 	return "application/json"
 }
@@ -61,10 +66,12 @@ func NewOptimizedJSONCodec() *OptimizedJSONCodec {
 	}
 }
 
+// Decode reads JSON from r into v using encoding/json.
 func (c *OptimizedJSONCodec) Decode(r io.Reader, v any) error {
 	return json.NewDecoder(r).Decode(v)
 }
 
+// Encode writes v to w as JSON using a pooled buffer to reduce allocations.
 func (c *OptimizedJSONCodec) Encode(w io.Writer, v any) error {
 	buf := c.pool.Get().(*bytes.Buffer)
 	buf.Reset()
@@ -77,10 +84,12 @@ func (c *OptimizedJSONCodec) Encode(w io.Writer, v any) error {
 	return err
 }
 
+// UnmarshalBytes decodes JSON bytes into v using encoding/json.
 func (c *OptimizedJSONCodec) UnmarshalBytes(data []byte, v any) error {
 	return json.Unmarshal(data, v)
 }
 
+// MarshalBytes encodes v to JSON bytes using a pooled buffer.
 func (c *OptimizedJSONCodec) MarshalBytes(v any) ([]byte, error) {
 	buf := c.pool.Get().(*bytes.Buffer)
 	buf.Reset()
@@ -95,6 +104,7 @@ func (c *OptimizedJSONCodec) MarshalBytes(v any) ([]byte, error) {
 	return result, nil
 }
 
+// ContentType returns the MIME type produced by OptimizedJSONCodec.
 func (c *OptimizedJSONCodec) ContentType() string {
 	return "application/json"
 }

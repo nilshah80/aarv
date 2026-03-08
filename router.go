@@ -7,15 +7,21 @@ import (
 
 // RouteInfo describes a registered route for introspection.
 type RouteInfo struct {
-	Method      string   `json:"method"`
-	Pattern     string   `json:"pattern"`
-	Name        string   `json:"name,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Deprecated  bool     `json:"deprecated,omitempty"`
+	// Method is the HTTP method registered for the route.
+	Method string `json:"method"`
+	// Pattern is the path pattern registered for the route.
+	Pattern string `json:"pattern"`
+	// Name is the optional application-defined route name.
+	Name string `json:"name,omitempty"`
+	// Tags contains optional route classification tags.
+	Tags []string `json:"tags,omitempty"`
+	// Description is the optional long-form route description.
+	Description string `json:"description,omitempty"`
+	// Deprecated reports whether the route is marked deprecated.
+	Deprecated bool `json:"deprecated,omitempty"`
 }
 
-// RouteOption configures per-route metadata.
+// RouteOption configures per-route metadata and behavior.
 type RouteOption func(*routeConfig)
 
 type routeConfig struct {
@@ -29,34 +35,42 @@ type routeConfig struct {
 	operationID string
 }
 
+// WithName sets a stable human-readable name for the route.
 func WithName(name string) RouteOption {
 	return func(rc *routeConfig) { rc.name = name }
 }
 
+// WithTags associates one or more tags with the route.
 func WithTags(tags ...string) RouteOption {
 	return func(rc *routeConfig) { rc.tags = tags }
 }
 
+// WithDescription sets the long-form description for the route.
 func WithDescription(desc string) RouteOption {
 	return func(rc *routeConfig) { rc.description = desc }
 }
 
+// WithDeprecated marks the route as deprecated in route metadata.
 func WithDeprecated() RouteOption {
 	return func(rc *routeConfig) { rc.deprecated = true }
 }
 
+// WithRouteMiddleware attaches middleware that runs only for this route.
 func WithRouteMiddleware(mw ...Middleware) RouteOption {
 	return func(rc *routeConfig) { rc.middleware = mw }
 }
 
+// WithRouteMaxBodySize overrides the global body limit for this route.
 func WithRouteMaxBodySize(bytes int64) RouteOption {
 	return func(rc *routeConfig) { rc.maxBodySize = bytes }
 }
 
+// WithOperationID sets a machine-readable identifier for the route.
 func WithOperationID(id string) RouteOption {
 	return func(rc *routeConfig) { rc.operationID = id }
 }
 
+// WithSummary sets a short summary for the route.
 func WithSummary(s string) RouteOption {
 	return func(rc *routeConfig) { rc.summary = s }
 }
@@ -120,41 +134,49 @@ func (g *RouteGroup) addRoute(method, pattern string, handler any, opts ...Route
 	})
 }
 
+// Get registers a GET route within the group.
 func (g *RouteGroup) Get(pattern string, handler any, opts ...RouteOption) *RouteGroup {
 	g.addRoute("GET", pattern, handler, opts...)
 	return g
 }
 
+// Post registers a POST route within the group.
 func (g *RouteGroup) Post(pattern string, handler any, opts ...RouteOption) *RouteGroup {
 	g.addRoute("POST", pattern, handler, opts...)
 	return g
 }
 
+// Put registers a PUT route within the group.
 func (g *RouteGroup) Put(pattern string, handler any, opts ...RouteOption) *RouteGroup {
 	g.addRoute("PUT", pattern, handler, opts...)
 	return g
 }
 
+// Delete registers a DELETE route within the group.
 func (g *RouteGroup) Delete(pattern string, handler any, opts ...RouteOption) *RouteGroup {
 	g.addRoute("DELETE", pattern, handler, opts...)
 	return g
 }
 
+// Patch registers a PATCH route within the group.
 func (g *RouteGroup) Patch(pattern string, handler any, opts ...RouteOption) *RouteGroup {
 	g.addRoute("PATCH", pattern, handler, opts...)
 	return g
 }
 
+// Head registers a HEAD route within the group.
 func (g *RouteGroup) Head(pattern string, handler any, opts ...RouteOption) *RouteGroup {
 	g.addRoute("HEAD", pattern, handler, opts...)
 	return g
 }
 
+// Options registers an OPTIONS route within the group.
 func (g *RouteGroup) Options(pattern string, handler any, opts ...RouteOption) *RouteGroup {
 	g.addRoute("OPTIONS", pattern, handler, opts...)
 	return g
 }
 
+// Any registers the handler for the common HTTP methods within the group.
 func (g *RouteGroup) Any(pattern string, handler any, opts ...RouteOption) *RouteGroup {
 	for _, m := range []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"} {
 		g.addRoute(m, pattern, handler, opts...)
@@ -162,11 +184,13 @@ func (g *RouteGroup) Any(pattern string, handler any, opts ...RouteOption) *Rout
 	return g
 }
 
+// Use appends middleware scoped to routes registered on this group.
 func (g *RouteGroup) Use(middlewares ...Middleware) *RouteGroup {
 	g.middleware = append(g.middleware, middlewares...)
 	return g
 }
 
+// Group creates a nested route group under the current group's prefix.
 func (g *RouteGroup) Group(prefix string, fn func(g *RouteGroup)) *RouteGroup {
 	sub := &RouteGroup{
 		mux:    http.NewServeMux(),

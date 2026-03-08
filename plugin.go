@@ -19,8 +19,13 @@ type PluginWithDeps interface {
 // PluginFunc adapts a function to the Plugin interface.
 type PluginFunc func(app *PluginContext) error
 
-func (f PluginFunc) Name() string                       { return "anonymous" }
-func (f PluginFunc) Version() string                    { return "0.0.0" }
+// Name returns the default plugin name for a PluginFunc adapter.
+func (f PluginFunc) Name() string { return "anonymous" }
+
+// Version returns the default plugin version for a PluginFunc adapter.
+func (f PluginFunc) Version() string { return "0.0.0" }
+
+// Register invokes the adapted plugin function.
 func (f PluginFunc) Register(app *PluginContext) error { return f(app) }
 
 // PluginContext is a scoped view of the App given to plugins during registration.
@@ -102,7 +107,9 @@ func (pc *PluginContext) Group(prefix string, fn func(g *RouteGroup)) *PluginCon
 
 // AddHook adds a lifecycle hook from this plugin.
 func (pc *PluginContext) AddHook(phase HookPhase, fn HookFunc) {
-	pc.app.hooks.add(phase, fn)
+	if fn != nil {
+		pc.app.hooks.add(phase, fn)
+	}
 }
 
 // Decorate registers a shared service by key.

@@ -11,12 +11,20 @@ type Option func(*App)
 
 // WithCodec sets the JSON codec.
 func WithCodec(codec Codec) Option {
-	return func(a *App) { a.codec = codec }
+	return func(a *App) {
+		if codec != nil {
+			a.codec = codec
+		}
+	}
 }
 
 // WithLogger sets the structured logger.
 func WithLogger(logger *slog.Logger) Option {
-	return func(a *App) { a.logger = logger }
+	return func(a *App) {
+		if logger != nil {
+			a.logger = logger
+		}
+	}
 }
 
 // WithErrorHandler sets a custom error handler.
@@ -91,18 +99,31 @@ func WithRedirectTrailingSlash(enabled bool) Option {
 
 // Config holds server configuration values.
 type Config struct {
-	ReadTimeout          time.Duration
-	ReadHeaderTimeout    time.Duration
-	WriteTimeout         time.Duration
-	IdleTimeout          time.Duration
-	ShutdownTimeout      time.Duration
-	MaxHeaderBytes       int
-	MaxBodySize          int64
-	TLSConfig            *tls.Config
-	TrustedProxies       []string
-	DisableHTTP2         bool
-	Banner               bool
-	Debug                bool
+	// ReadTimeout is the maximum duration for reading the entire request.
+	ReadTimeout time.Duration
+	// ReadHeaderTimeout is the maximum duration for reading request headers.
+	ReadHeaderTimeout time.Duration
+	// WriteTimeout is the maximum duration before timing out response writes.
+	WriteTimeout time.Duration
+	// IdleTimeout is the maximum keep-alive idle time between requests.
+	IdleTimeout time.Duration
+	// ShutdownTimeout is the maximum time allowed for graceful shutdown.
+	ShutdownTimeout time.Duration
+	// MaxHeaderBytes limits the size of incoming request headers.
+	MaxHeaderBytes int
+	// MaxBodySize is the default request body limit applied by the framework.
+	MaxBodySize int64
+	// TLSConfig provides the TLS configuration used by HTTPS listeners.
+	TLSConfig *tls.Config
+	// TrustedProxies contains CIDRs or IPs whose forwarding headers are trusted.
+	TrustedProxies []string
+	// DisableHTTP2 forces HTTPS listeners to serve HTTP/1.1 only.
+	DisableHTTP2 bool
+	// Banner controls whether the startup banner is printed.
+	Banner bool
+	// Debug enables framework-level debug behavior where supported.
+	Debug bool
+	// RedirectTrailingSlash enables redirects between slash and non-slash route variants.
 	RedirectTrailingSlash bool
 }
 

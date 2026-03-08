@@ -140,7 +140,7 @@ func TestBindAllSources(t *testing.T) {
 	}))
 
 	tc := NewTestClient(app)
-	
+
 	reqBody := map[string]string{"payload": "hello"}
 	resp := tc.
 		WithHeader("User-Agent", "TestClient/1.0").
@@ -154,13 +154,27 @@ func TestBindAllSources(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if res.ID != 42 { t.Errorf("ID mismatch: %v", res.ID) }
-	if !res.Active { t.Errorf("Active mismatch: %v", res.Active) }
-	if res.UserGen != "TestClient/1.0" { t.Errorf("Header mismatch: %v", res.UserGen) }
-	if res.Session != "abc-123" { t.Errorf("Cookie mismatch: %v", res.Session) }
-	if len(res.Items) != 1 || res.Items[0] != "a" { t.Errorf("Slice mismatch: %v", res.Items) }
-	if res.Payload != "hello" { t.Errorf("JSON mismatch: %v", res.Payload) }
-	if res.DefField != "xyz" { t.Errorf("Default mismatch: %v", res.DefField) }
+	if res.ID != 42 {
+		t.Errorf("ID mismatch: %v", res.ID)
+	}
+	if !res.Active {
+		t.Errorf("Active mismatch: %v", res.Active)
+	}
+	if res.UserGen != "TestClient/1.0" {
+		t.Errorf("Header mismatch: %v", res.UserGen)
+	}
+	if res.Session != "abc-123" {
+		t.Errorf("Cookie mismatch: %v", res.Session)
+	}
+	if len(res.Items) != 1 || res.Items[0] != "a" {
+		t.Errorf("Slice mismatch: %v", res.Items)
+	}
+	if res.Payload != "hello" {
+		t.Errorf("JSON mismatch: %v", res.Payload)
+	}
+	if res.DefField != "xyz" {
+		t.Errorf("Default mismatch: %v", res.DefField)
+	}
 }
 
 func TestBindingAndHandlerAdditionalCoverage(t *testing.T) {
@@ -364,6 +378,65 @@ func TestBindingAndHandlerAdditionalCoverage(t *testing.T) {
 		}()
 		_ = adaptHandler(123)
 	})
+}
+
+func TestBindErrorHandlingCases(t *testing.T) {
+	type req struct {
+		Name string `json:"name" validate:"required"`
+	}
+
+	app := New(WithBanner(false))
+	app.Post("/bind", BindReq(func(c *Context, payload req) error {
+		return c.JSON(http.StatusOK, payload)
+	}))
+
+	t.Run("malformed json small payload", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/bind", strings.NewReader(`{"name":`))
+		req.Header.Set("Content-Type", "application/json")
+		req.ContentLength = int64(len(`{"name":`))
+
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for malformed json, got %d", rec.Code)
+		}
+	})
+
+	t.Run("malformed json large payload", func(t *testing.T) {
+		bad := `{"name":"` + strings.Repeat("x", 11000)
+		req := httptest.NewRequest(http.MethodPost, "/bind", strings.NewReader(bad))
+		req.Header.Set("Content-Type", "application/json")
+		req.ContentLength = int64(len(bad))
+
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for large malformed json, got %d", rec.Code)
+		}
+	})
+
+	t.Run("missing required field", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/bind", strings.NewReader(`{}`)))
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expected 422 for missing required fields, got %d", rec.Code)
+		}
+	})
+}
+
+func TestBindNilDestinationCodecFallback(t *testing.T) {
+	app := New(WithBanner(false), WithCodec(nil))
+	app.Post("/decode", BindReq(func(c *Context, payload struct {
+		Name string `json:"name"`
+	}) error {
+		return c.Text(http.StatusOK, payload.Name)
+	}))
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/decode", strings.NewReader(`{"name":"ok"}`)))
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "ok" {
+		t.Fatalf("expected default codec to decode successfully, got status=%d body=%q", rec.Code, rec.Body.String())
+	}
 }
 
 func TestBinderBranchCoverage(t *testing.T) {

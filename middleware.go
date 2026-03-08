@@ -10,6 +10,9 @@ type MiddlewareFunc func(next HandlerFunc) HandlerFunc
 
 // WrapMiddleware converts a framework MiddlewareFunc to a stdlib Middleware.
 func WrapMiddleware(fn MiddlewareFunc) Middleware {
+	if fn == nil {
+		return func(next http.Handler) http.Handler { return next }
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx, ok := r.Context().Value(ctxKey{}).(*Context)
