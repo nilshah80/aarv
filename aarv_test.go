@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -13,7 +14,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -78,7 +82,7 @@ func TestListenShutdownGraceful(t *testing.T) {
 	_ = syscall.Kill(p, syscall.SIGINT)
 
 	// The app.Listen() should return cleanly after graceful shutdown
-	
+
 	// Direct shutdown
 	err := app.Shutdown(context.Background())
 	if err != nil && err.Error() != "http: Server closed" {
@@ -213,7 +217,8 @@ func TestServerLifecycleAdditionalCoverage(t *testing.T) {
 
 	t.Run("listen helpers and shutdown flows", func(t *testing.T) {
 		app := New(WithBanner(false), WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
-		app.server = &http.Server{}
+		server := &http.Server{}
+		app.setServer(server)
 		var hookCalled, legacyCalled bool
 		app.AddHook(OnShutdown, func(*Context) error {
 			hookCalled = true
@@ -224,7 +229,7 @@ func TestServerLifecycleAdditionalCoverage(t *testing.T) {
 			return errors.New("legacy failed")
 		})
 
-		err := app.listenAndShutdown(func() error { return http.ErrServerClosed })
+		err := app.listenAndShutdown(server, func() error { return http.ErrServerClosed })
 		if err != nil && err.Error() != "http: Server closed" {
 			t.Fatalf("expected nil or closed error, got %v", err)
 		}
@@ -232,7 +237,7 @@ func TestServerLifecycleAdditionalCoverage(t *testing.T) {
 			t.Fatal("expected shutdown hooks to run")
 		}
 
-		if err := app.listenAndShutdown(func() error { return errors.New("serve failed") }); err == nil || !strings.Contains(err.Error(), "server error") {
+		if err := app.listenAndShutdown(server, func() error { return errors.New("serve failed") }); err == nil || !strings.Contains(err.Error(), "server error") {
 			t.Fatalf("expected wrapped server error, got %v", err)
 		}
 	})
@@ -361,6 +366,126 @@ func TestAppInternalBranchCoverage(t *testing.T) {
 	})
 }
 
+func TestAppNilGuardPaths(t *testing.T) {
+	app := New(WithBanner(false), WithCodec(nil), WithLogger(nil))
+
+	app.SetNotFoundHandler(nil)
+	app.SetMethodNotAllowedHandler(nil)
+	app.AddHook(OnRequest, nil)
+	app.AddHookWithPriority(OnResponse, 10, nil)
+	app.OnShutdown(nil)
+	app.ReleaseContext(nil)
+
+	app.Get("/json", func(c *Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"ok": "true"})
+	})
+
+	resp := NewTestClient(app).Get("/json")
+	resp.AssertStatus(t, http.StatusOK)
+
+	var body map[string]string
+	if err := resp.JSON(&body); err != nil {
+		t.Fatalf("expected default codec to remain usable, got %v", err)
+	}
+	if body["ok"] != "true" {
+		t.Fatalf("unexpected response body: %#v", body)
+	}
+}
+
+func TestEffectiveTLSConfigSecurityDefaults(t *testing.T) {
+	t.Run("defaults are enforced and config is cloned", func(t *testing.T) {
+		base := &tls.Config{}
+		app := New(WithBanner(false), WithTLSConfig(base), WithDisableHTTP2(true))
+
+		cfg := app.effectiveTLSConfig(false)
+		if cfg == base {
+			t.Fatal("expected tls config clone, not original pointer")
+		}
+		if cfg.MinVersion != tls.VersionTLS12 {
+			t.Fatalf("expected TLS 1.2 minimum, got %v", cfg.MinVersion)
+		}
+		if len(cfg.NextProtos) != 1 || cfg.NextProtos[0] != "http/1.1" {
+			t.Fatalf("expected http/1.1 only when disabling http2, got %#v", cfg.NextProtos)
+		}
+		if base.MinVersion != 0 || len(base.NextProtos) != 0 {
+			t.Fatal("expected original tls config to remain unmodified")
+		}
+	})
+
+	t.Run("stronger config is preserved and mutual tls is enabled", func(t *testing.T) {
+		base := &tls.Config{
+			MinVersion: tls.VersionTLS13,
+			NextProtos: []string{"h2", "http/1.1"},
+		}
+		app := New(WithBanner(false), WithTLSConfig(base))
+
+		cfg := app.effectiveTLSConfig(true)
+		if cfg.MinVersion != tls.VersionTLS13 {
+			t.Fatalf("expected stronger min version to be preserved, got %v", cfg.MinVersion)
+		}
+		if cfg.ClientAuth != tls.RequireAndVerifyClientCert {
+			t.Fatalf("expected mutual tls client auth, got %v", cfg.ClientAuth)
+		}
+		if len(cfg.NextProtos) != 2 || cfg.NextProtos[0] != "h2" {
+			t.Fatalf("expected next protos to remain intact, got %#v", cfg.NextProtos)
+		}
+	})
+}
+
+func TestConcurrentServeHTTP(t *testing.T) {
+	app := New(WithBanner(false))
+	var served atomic.Int64
+
+	app.Get("/items/{id}", func(c *Context) error {
+		served.Add(1)
+		return c.JSON(http.StatusOK, map[string]string{
+			"id":   c.Param("id"),
+			"echo": c.QueryDefault("echo", "none"),
+		})
+	})
+
+	const workers = 64
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+
+			req := httptest.NewRequest(http.MethodGet, "/items/"+strconv.Itoa(i)+"?echo=value", nil)
+			rec := httptest.NewRecorder()
+			app.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				errCh <- errors.New("unexpected status")
+				return
+			}
+
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				errCh <- err
+				return
+			}
+			if body["id"] != strconv.Itoa(i) || body["echo"] != "value" {
+				errCh <- errors.New("unexpected body payload")
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if served.Load() != workers {
+		t.Fatalf("expected %d requests served, got %d", workers, served.Load())
+	}
+}
+
 type errReadCloser struct {
 	err error
 }
@@ -443,8 +568,10 @@ type failingCodec struct{}
 func (failingCodec) Decode(io.Reader, any) error      { return errors.New("decode failure") }
 func (failingCodec) Encode(io.Writer, any) error      { return errors.New("encode failure") }
 func (failingCodec) UnmarshalBytes([]byte, any) error { return errors.New("unmarshal failure") }
-func (failingCodec) MarshalBytes(any) ([]byte, error) { return nil, errors.New("marshal bytes failure") }
-func (failingCodec) ContentType() string              { return "application/fail" }
+func (failingCodec) MarshalBytes(any) ([]byte, error) {
+	return nil, errors.New("marshal bytes failure")
+}
+func (failingCodec) ContentType() string { return "application/fail" }
 
 type basePlugin struct{}
 

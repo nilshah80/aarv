@@ -7,33 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-08
+
 ### Added
-- Initial framework implementation
-- Type-safe request binding with generics (`Bind[Req, Res]`)
-- Multi-source binding (path, query, header, cookie, body, form)
-- Built-in validation engine with struct tags
-- Fastify-style lifecycle hooks (OnRequest, PreHandler, OnResponse, etc.)
-- Scoped plugin system with decorators
-- Pooled Context with `sync.Pool` for minimal GC pressure
-- Pluggable JSON codec support (encoding/json, segmentio, sonic, json/v2)
-- Standard middleware compatibility (`func(http.Handler) http.Handler`)
-- Graceful shutdown with signal handling
-- TLS / HTTP/2 / mTLS support
+- Core framework APIs for routing, grouped routes, middleware, hooks, binding, validation, and structured error handling
+- Pooled request context, pluggable JSON codecs, graceful shutdown, TLS, HTTP/2, and mutual TLS support
+- Test helpers and expanded plugin coverage across the built-in plugin packages
 
-### Plugins
-- `plugins/logger` - Request logging middleware using slog
-- `plugins/verboselog` - Full request/response dump logging with sensitive data redaction
-- `plugins/encrypt` - AES-256-GCM encryption middleware for request/response bodies
-- `plugins/securityheaders` - Security headers middleware (HSTS, CSP, etc.)
+### Changed
+- Raised non-example package coverage to 98.7%
+- Completed GoDoc coverage for the public API surface
+- Hardened nil-handling and panic-recovery paths in the core app and middleware integration
+- Improved TLS configuration handling by cloning caller configs, enforcing secure minimums, and honoring HTTP/2 disablement safely
+- Redacted sensitive query parameters in the verbose logging plugin in addition to existing header and body redaction
 
-### Codecs
-- `codec/segmentio` - High-performance JSON using segmentio/encoding
-- `codec/sonic` - Fastest JSON using bytedance/sonic (amd64 only)
-- `codec/jsonv2` - Modern JSON using go-json-experiment/json
-
-## [0.1.0] - Unreleased
-
-Initial public release.
+### Security
+- Completed an OWASP-focused review of the current framework surface
+- Verified that standard and verbose logging avoid exposing secrets by default-sensitive redaction paths
+- Ran `govulncheck ./...`; findings are limited to Go standard library issues in `go1.26.0`, fixed upstream in `go1.26.1`
 
 ### Performance
 - 154K RPS with logger middleware (comparable to Gin/Mach)
@@ -50,3 +41,6 @@ Initial public release.
 3. Tag: `git tag -a vX.Y.Z -m "Release vX.Y.Z"`
 4. Push: `git push origin vX.Y.Z`
 5. Create GitHub Release with notes from this file
+
+[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/nilshah80/aarv/compare/v0.1.0...v0.3.0

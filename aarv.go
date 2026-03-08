@@ -19,6 +19,7 @@ import (
 type App struct {
 	mux          *http.ServeMux
 	server       *http.Server
+	serverMu     sync.RWMutex
 	config       *Config
 	codec        Codec
 	errorHandler ErrorHandler
@@ -101,15 +102,19 @@ func New(opts ...Option) *App {
 	return a
 }
 
-// SetNotFoundHandler sets a custom 404 handler.
+// SetNotFoundHandler replaces the default 404 handler used for unmatched routes.
 func (a *App) SetNotFoundHandler(h HandlerFunc) *App {
-	a.notFoundHandler = h
+	if h != nil {
+		a.notFoundHandler = h
+	}
 	return a
 }
 
-// SetMethodNotAllowedHandler sets a custom 405 handler.
+// SetMethodNotAllowedHandler replaces the default 405 handler used for method mismatches.
 func (a *App) SetMethodNotAllowedHandler(h HandlerFunc) *App {
-	a.methodNotAllowedHandler = h
+	if h != nil {
+		a.methodNotAllowedHandler = h
+	}
 	return a
 }
 
@@ -123,7 +128,46 @@ func (a *App) AcquireContext(w http.ResponseWriter, r *http.Request) *Context {
 
 // ReleaseContext returns a Context to the pool.
 func (a *App) ReleaseContext(c *Context) {
+	if c == nil {
+		return
+	}
 	a.ctxPool.Put(c)
+}
+
+func (a *App) setServer(server *http.Server) {
+	a.serverMu.Lock()
+	a.server = server
+	a.serverMu.Unlock()
+}
+
+func (a *App) getServer() *http.Server {
+	a.serverMu.RLock()
+	defer a.serverMu.RUnlock()
+	return a.server
+}
+
+func (a *App) effectiveTLSConfig(mutualTLS bool) *tls.Config {
+	var tlsCfg *tls.Config
+	if a.config.TLSConfig != nil {
+		tlsCfg = a.config.TLSConfig.Clone()
+	} else {
+		tlsCfg = &tls.Config{}
+	}
+
+	// Enforce a secure minimum unless the caller already chose something stronger.
+	if tlsCfg.MinVersion == 0 || tlsCfg.MinVersion < tls.VersionTLS12 {
+		tlsCfg.MinVersion = tls.VersionTLS12
+	}
+
+	if mutualTLS {
+		tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	if a.config.DisableHTTP2 {
+		tlsCfg.NextProtos = []string{"http/1.1"}
+	}
+
+	return tlsCfg
 }
 
 // --- Route Registration ---
@@ -185,34 +229,42 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 	return a
 }
 
+// Get registers a GET route for the given pattern.
 func (a *App) Get(pattern string, handler any, opts ...RouteOption) *App {
 	return a.addRoute("GET", pattern, handler, opts...)
 }
 
+// Post registers a POST route for the given pattern.
 func (a *App) Post(pattern string, handler any, opts ...RouteOption) *App {
 	return a.addRoute("POST", pattern, handler, opts...)
 }
 
+// Put registers a PUT route for the given pattern.
 func (a *App) Put(pattern string, handler any, opts ...RouteOption) *App {
 	return a.addRoute("PUT", pattern, handler, opts...)
 }
 
+// Delete registers a DELETE route for the given pattern.
 func (a *App) Delete(pattern string, handler any, opts ...RouteOption) *App {
 	return a.addRoute("DELETE", pattern, handler, opts...)
 }
 
+// Patch registers a PATCH route for the given pattern.
 func (a *App) Patch(pattern string, handler any, opts ...RouteOption) *App {
 	return a.addRoute("PATCH", pattern, handler, opts...)
 }
 
+// Head registers a HEAD route for the given pattern.
 func (a *App) Head(pattern string, handler any, opts ...RouteOption) *App {
 	return a.addRoute("HEAD", pattern, handler, opts...)
 }
 
+// Options registers an OPTIONS route for the given pattern.
 func (a *App) Options(pattern string, handler any, opts ...RouteOption) *App {
 	return a.addRoute("OPTIONS", pattern, handler, opts...)
 }
 
+// Any registers the handler for the common HTTP methods on the same pattern.
 func (a *App) Any(pattern string, handler any, opts ...RouteOption) *App {
 	for _, m := range []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"} {
 		a.addRoute(m, pattern, handler, opts...)
@@ -220,7 +272,7 @@ func (a *App) Any(pattern string, handler any, opts ...RouteOption) *App {
 	return a
 }
 
-// Use adds global middleware.
+// Use appends middleware to the global middleware chain.
 func (a *App) Use(middlewares ...Middleware) *App {
 	a.globalMiddleware = append(a.globalMiddleware, middlewares...)
 	return a
@@ -250,7 +302,7 @@ func (a *App) Group(prefix string, fn func(g *RouteGroup)) *App {
 	return a
 }
 
-// Mount mounts an http.Handler at the given prefix.
+// Mount mounts a standard library http.Handler below the given prefix.
 func (a *App) Mount(prefix string, handler http.Handler) *App {
 	p := prefix
 	if len(p) > 0 && p[len(p)-1] != '/' {
@@ -260,7 +312,7 @@ func (a *App) Mount(prefix string, handler http.Handler) *App {
 	return a
 }
 
-// Routes returns all registered routes.
+// Routes returns the registered route metadata in registration order.
 func (a *App) Routes() []RouteInfo {
 	return a.routes
 }
@@ -269,19 +321,25 @@ func (a *App) Routes() []RouteInfo {
 
 // AddHook registers a lifecycle hook.
 func (a *App) AddHook(phase HookPhase, fn HookFunc) *App {
-	a.hooks.add(phase, fn)
+	if fn != nil {
+		a.hooks.add(phase, fn)
+	}
 	return a
 }
 
 // AddHookWithPriority registers a hook with priority (lower = runs first).
 func (a *App) AddHookWithPriority(phase HookPhase, priority int, fn HookFunc) *App {
-	a.hooks.addWithPriority(phase, priority, fn)
+	if fn != nil {
+		a.hooks.addWithPriority(phase, priority, fn)
+	}
 	return a
 }
 
 // OnShutdown registers a shutdown hook.
 func (a *App) OnShutdown(fn ShutdownHook) *App {
-	a.shutdownHooks = append(a.shutdownHooks, fn)
+	if fn != nil {
+		a.shutdownHooks = append(a.shutdownHooks, fn)
+	}
 	return a
 }
 
@@ -418,6 +476,7 @@ func (p *probeResponseWriter) Write(b []byte) (int, error) {
 
 // --- ServeHTTP (the main entry point) ---
 
+// ServeHTTP implements http.Handler for the application.
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Pre-build middleware chain once (thread-safe)
 	a.handlerOnce.Do(func() {
@@ -623,7 +682,7 @@ func (a *App) defaultErrorHandler(c *Context, err error) {
 
 // Listen starts the HTTP server and blocks until shutdown.
 func (a *App) Listen(addr string) error {
-	a.server = &http.Server{
+	server := &http.Server{
 		Addr:              addr,
 		Handler:           a,
 		ReadTimeout:       a.config.ReadTimeout,
@@ -632,6 +691,7 @@ func (a *App) Listen(addr string) error {
 		IdleTimeout:       a.config.IdleTimeout,
 		MaxHeaderBytes:    a.config.MaxHeaderBytes,
 	}
+	a.setServer(server)
 
 	// Run OnStartup hooks
 	if err := a.hooks.run(OnStartup, nil); err != nil {
@@ -642,26 +702,16 @@ func (a *App) Listen(addr string) error {
 		a.printBanner(addr, "HTTP")
 	}
 
-	return a.listenAndShutdown(func() error {
-		return a.server.ListenAndServe()
+	return a.listenAndShutdown(server, func() error {
+		return server.ListenAndServe()
 	})
 }
 
 // ListenTLS starts the HTTPS server with TLS.
 func (a *App) ListenTLS(addr, certFile, keyFile string) error {
-	tlsCfg := a.config.TLSConfig
-	if tlsCfg == nil {
-		tlsCfg = &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		}
-	}
+	tlsCfg := a.effectiveTLSConfig(false)
 
-	// Disable HTTP/2 if configured
-	if a.config.DisableHTTP2 {
-		tlsCfg.NextProtos = []string{"http/1.1"}
-	}
-
-	a.server = &http.Server{
+	server := &http.Server{
 		Addr:              addr,
 		Handler:           a,
 		TLSConfig:         tlsCfg,
@@ -671,6 +721,7 @@ func (a *App) ListenTLS(addr, certFile, keyFile string) error {
 		IdleTimeout:       a.config.IdleTimeout,
 		MaxHeaderBytes:    a.config.MaxHeaderBytes,
 	}
+	a.setServer(server)
 
 	if err := a.hooks.run(OnStartup, nil); err != nil {
 		return fmt.Errorf("aarv: startup hook failed: %w", err)
@@ -680,8 +731,8 @@ func (a *App) ListenTLS(addr, certFile, keyFile string) error {
 		a.printBanner(addr, "HTTPS")
 	}
 
-	return a.listenAndShutdown(func() error {
-		return a.server.ListenAndServeTLS(certFile, keyFile)
+	return a.listenAndShutdown(server, func() error {
+		return server.ListenAndServeTLS(certFile, keyFile)
 	})
 }
 
@@ -692,18 +743,7 @@ func (a *App) ListenMutualTLS(addr, certFile, keyFile, clientCAFile string) erro
 		return fmt.Errorf("aarv: failed to read client CA: %w", err)
 	}
 
-	tlsCfg := a.config.TLSConfig
-	if tlsCfg == nil {
-		tlsCfg = &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		}
-	}
-	tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
-
-	// Disable HTTP/2 if configured
-	if a.config.DisableHTTP2 {
-		tlsCfg.NextProtos = []string{"http/1.1"}
-	}
+	tlsCfg := a.effectiveTLSConfig(true)
 
 	// Use crypto/x509 to parse the client CA
 	pool := tlsCfg.ClientCAs
@@ -713,7 +753,7 @@ func (a *App) ListenMutualTLS(addr, certFile, keyFile, clientCAFile string) erro
 	pool.AppendCertsFromPEM(clientCACert)
 	tlsCfg.ClientCAs = pool
 
-	a.server = &http.Server{
+	server := &http.Server{
 		Addr:              addr,
 		Handler:           a,
 		TLSConfig:         tlsCfg,
@@ -723,6 +763,7 @@ func (a *App) ListenMutualTLS(addr, certFile, keyFile, clientCAFile string) erro
 		IdleTimeout:       a.config.IdleTimeout,
 		MaxHeaderBytes:    a.config.MaxHeaderBytes,
 	}
+	a.setServer(server)
 
 	if err := a.hooks.run(OnStartup, nil); err != nil {
 		return fmt.Errorf("aarv: startup hook failed: %w", err)
@@ -732,23 +773,24 @@ func (a *App) ListenMutualTLS(addr, certFile, keyFile, clientCAFile string) erro
 		a.printBanner(addr, "mTLS")
 	}
 
-	return a.listenAndShutdown(func() error {
-		return a.server.ListenAndServeTLS(certFile, keyFile)
+	return a.listenAndShutdown(server, func() error {
+		return server.ListenAndServeTLS(certFile, keyFile)
 	})
 }
 
 // Shutdown gracefully shuts down the server.
 func (a *App) Shutdown(ctx context.Context) error {
-	if a.server == nil {
+	server := a.getServer()
+	if server == nil {
 		return nil
 	}
-	return a.server.Shutdown(ctx)
+	return server.Shutdown(ctx)
 }
 
-func (a *App) listenAndShutdown(serve func() error) error {
+func (a *App) listenAndShutdown(server *http.Server, serve func() error) error {
 	errCh := make(chan error, 1)
 	go func() {
-		a.logger.Info("server started", "addr", a.server.Addr)
+		a.logger.Info("server started", "addr", server.Addr)
 		if err := serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -783,7 +825,7 @@ func (a *App) listenAndShutdown(serve func() error) error {
 		}
 	}
 
-	return a.server.Shutdown(ctx)
+	return server.Shutdown(ctx)
 }
 
 func (a *App) printBanner(addr, protocol string) {

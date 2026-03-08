@@ -9,30 +9,28 @@
 
 ## ⭐ PRIORITY: Production Readiness
 
-> **Before any new features, complete these items for v0.1.0 release.**
+> **The initial `v0.1.0` baseline is already tagged. The current production-readiness pass is preparing the next pre-1.0 release.**
 
 | Phase | Focus | Status | Priority |
 |-------|-------|--------|----------|
-| **PR0** | CI/CD Setup | ✅ Files created, need push | **IMMEDIATE** |
-| **PR1** | Core Test Coverage (target: 80%+) | 🔴 Core: ~31% | **HIGH** |
-| **PR2** | Plugin Test Coverage | 🟡 Variable (0-90%) | **HIGH** |
-| **PR3** | GoDoc Comments | ⚪ Not started | **HIGH** |
-| **PR4** | Error Handling Audit | ⚪ Not started | **MEDIUM** |
-| **PR5** | Security Review (OWASP) | ⚪ Not started | **MEDIUM** |
-| **PR6** | First Release (v0.1.0) | ⚪ Blocked by above | **HIGH** |
+| **PR0** | CI/CD Setup | ✅ Files created, need push verification | **IMMEDIATE** |
+| **PR1** | Core Test Coverage (target: 80%+) | ✅ Complete | **HIGH** |
+| **PR2** | Plugin Test Coverage | ✅ Complete | **HIGH** |
+| **PR3** | GoDoc Comments | ✅ Complete | **HIGH** |
+| **PR4** | Error Handling Audit | ✅ Complete | **MEDIUM** |
+| **PR5** | Security Review (OWASP) | ✅ Complete locally | **MEDIUM** |
+| **PR6** | Release Prep (`v0.3.0`) | 🔶 In progress | **HIGH** |
 
-**Current Coverage Baseline:**
-- Core (`aarv`): 30.8%
-- `plugins/encrypt`: 86.4%
-- `plugins/verboselog`: 90.1%
-- Other plugins: 0%
+**Current Quality Snapshot:**
+- Non-example combined coverage: 98.7%
+- Root package coverage: 98.0%
+- Built-in plugin packages: 100%
 
 **Next Actions:**
-1. Push to GitHub → verify CI workflows run
-2. Fix any linting errors
-3. Write tests to increase coverage to 80%+
-4. Add GoDoc comments to all exported types/functions
-5. Tag and release v0.1.0
+1. Push current release prep to GitHub and verify CI workflows run
+2. Upgrade the Go toolchain from `go1.26.0` to `go1.26.1+` to clear current `govulncheck` stdlib findings
+3. Create the `v0.3.0` release commit and tag
+4. Publish the GitHub Release using the prepared notes
 
 See `tasks-md.md` for detailed task breakdown.
 
