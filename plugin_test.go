@@ -34,20 +34,20 @@ func (p *dummyPlugin) Register(pc *PluginContext) error {
 	pc.Post("/dummy", func(c *Context) error { return c.NoContent(200) })
 	pc.Put("/dummy", func(c *Context) error { return c.NoContent(200) })
 	pc.Delete("/dummy", func(c *Context) error { return c.NoContent(200) })
-	
+
 	// Ensure group creation works through wrapper
 	pc.Group("/g", func(g *RouteGroup) {
 		g.Get("/child", func(c *Context) error { return c.NoContent(200) })
 	})
-	
+
 	pc.AddHook(OnRequest, func(c *Context) error { return nil })
-	
+
 	pc.Decorate("dummyIface", nil)
 
 	// Resolve
 	val, ok := pc.Resolve("dummyIface")
 	if !ok || val != nil {
-		// Just registering
+		panic("unexpected decorated value")
 	}
 
 	return nil
