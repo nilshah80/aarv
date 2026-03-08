@@ -14,6 +14,8 @@ import (
 	"strings"
 )
 
+const maxReusableBodyCache = 16 << 10
+
 // Context wraps the http.Request and http.ResponseWriter with convenience helpers.
 // It is pooled via sync.Pool — do NOT hold references to it beyond the handler lifetime.
 type Context struct {
@@ -32,14 +34,17 @@ type Context struct {
 func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.req = r
 	c.res = w
-	c.bodyCache = nil
+	if cap(c.bodyCache) > maxReusableBodyCache {
+		c.bodyCache = nil
+	} else if c.bodyCache != nil {
+		c.bodyCache = c.bodyCache[:0]
+	}
 	c.bodyRead = false
 	c.written = false
 	c.statusCode = http.StatusOK
 	c.query = nil
 	c.cachedLogger = nil
-	// Allocate fresh map — faster than delete loop for small maps
-	c.store = make(map[string]any, 4)
+	c.store = nil
 }
 
 // Request returns the underlying *http.Request.
@@ -287,13 +292,47 @@ func (c *Context) Body() ([]byte, error) {
 	if c.bodyRead {
 		return c.bodyCache, nil
 	}
-	data, err := io.ReadAll(c.req.Body)
+	data, err := readBodyInto(c.req.Body, c.bodyCache, c.req.ContentLength)
 	if err != nil {
 		return nil, err
 	}
 	c.bodyCache = data
 	c.bodyRead = true
 	return data, nil
+}
+
+func readBodyInto(r io.Reader, buf []byte, contentLength int64) ([]byte, error) {
+	if contentLength >= 0 && contentLength <= int64(^uint(0)>>1) {
+		size := int(contentLength)
+		if cap(buf) < size {
+			buf = make([]byte, size)
+		} else {
+			buf = buf[:size]
+		}
+		n, err := io.ReadFull(r, buf)
+		if err == nil {
+			return buf, nil
+		}
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return buf[:n], nil
+		}
+		return nil, err
+	}
+
+	var chunk [512]byte
+	buf = buf[:0]
+	for {
+		n, err := r.Read(chunk[:])
+		if n > 0 {
+			buf = append(buf, chunk[:n]...)
+		}
+		if err == io.EOF {
+			return buf, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 }
 
 // Bind decodes the request body into dest using the configured codec.
@@ -474,6 +513,9 @@ func (c *Context) SendStatus(code int) error {
 
 // Set stores a key-value pair in the request-scoped store.
 func (c *Context) Set(key string, value any) {
+	if c.store == nil {
+		c.store = make(map[string]any, 4)
+	}
 	c.store[key] = value
 }
 
