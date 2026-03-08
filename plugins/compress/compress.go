@@ -144,7 +144,7 @@ func (grw *gzipResponseWriter) Write(b []byte) (int, error) {
 func (grw *gzipResponseWriter) finish() {
 	if grw.compressed {
 		// Flush and close the gzip writer
-		grw.gzWriter.Close()
+		_ = grw.gzWriter.Close()
 		grw.pool.Put(grw.gzWriter)
 		return
 	}
@@ -222,7 +222,7 @@ func (drw *deflateResponseWriter) Write(b []byte) (int, error) {
 
 func (drw *deflateResponseWriter) finish() {
 	if drw.compressed {
-		drw.deflateWriter.Close()
+		_ = drw.deflateWriter.Close()
 		drw.pool.Put(drw.deflateWriter)
 		return
 	}

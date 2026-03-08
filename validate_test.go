@@ -145,6 +145,12 @@ func TestValidatorAdditionalCoverage(t *testing.T) {
 		if buildStructValidator(reflect.TypeOf(&timeHolder{})) != nil {
 			t.Fatal("expected nil validator for time-only struct without rules")
 		}
+		type hiddenOnly struct {
+			value string `validate:"required"` //nolint:unused // intentionally unexported to test validator skips it
+		}
+		if buildStructValidator(reflect.TypeOf(hiddenOnly{})) != nil {
+			t.Fatal("expected unexported validation fields to be skipped")
+		}
 
 		got := sv.validate(&payload{
 			Name:   "a",

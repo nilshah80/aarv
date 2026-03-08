@@ -363,6 +363,23 @@ func TestAppInternalBranchCoverage(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("expected standard 404 fallback for malformed route key case, got %d", rec.Code)
 		}
+
+		app.SetNotFoundHandler(func(c *Context) error { return errors.New("404 fail") })
+		silentMux := http.NewServeMux()
+		silentMux.Handle("/mounted/", http.StripPrefix("/mounted", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})))
+		mux = &routingMux{
+			mux:         silentMux,
+			app:         app,
+			routesByKey: map[string]struct{}{},
+		}
+		req = httptest.NewRequest(http.MethodGet, "/mounted/path", nil)
+		ctx, rec = newAppContext(app, req)
+		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, ctx))
+		ctx.req = req
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("expected fallback error handling on not found failure, got %d", rec.Code)
+		}
 	})
 }
 
@@ -484,6 +501,53 @@ func TestConcurrentServeHTTP(t *testing.T) {
 	if served.Load() != workers {
 		t.Fatalf("expected %d requests served, got %d", workers, served.Load())
 	}
+}
+
+func TestAdditionalCoreCoverage(t *testing.T) {
+	t.Run("wildcard prefix mismatch", func(t *testing.T) {
+		if matchesPattern("/files/{path...}", "/users/a/b") {
+			t.Fatal("expected wildcard pattern prefix mismatch to fail")
+		}
+	})
+
+	t.Run("listenAndShutdown signal path", func(t *testing.T) {
+		app := New(WithBanner(false), WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+		server := &http.Server{Addr: "127.0.0.1:0"}
+		done := make(chan struct{})
+
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+			time.Sleep(25 * time.Millisecond)
+			close(done)
+		}()
+
+		err := app.listenAndShutdown(server, func() error {
+			<-done
+			return http.ErrServerClosed
+		})
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("expected clean shutdown or server closed error, got %v", err)
+		}
+	})
+
+	t.Run("assert status mismatch helper", func(t *testing.T) {
+		reporter := &recordingStatusReporter{}
+		(&TestResponse{Status: http.StatusOK, Body: []byte("body")}).assertStatus(reporter, http.StatusCreated)
+		if reporter.calls != 1 {
+			t.Fatalf("expected one status mismatch report, got %d", reporter.calls)
+		}
+	})
+}
+
+type recordingStatusReporter struct {
+	calls int
+}
+
+func (r *recordingStatusReporter) Helper() {}
+
+func (r *recordingStatusReporter) Errorf(string, ...any) {
+	r.calls++
 }
 
 type errReadCloser struct {

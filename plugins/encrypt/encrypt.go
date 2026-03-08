@@ -24,6 +24,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -320,7 +321,13 @@ func New(key []byte, config ...Config) (aarv.Middleware, error) {
 				ct := r.Header.Get("Content-Type")
 				if ct == EncryptedContentType {
 					body, err := io.ReadAll(r.Body)
-					r.Body.Close()
+					if closeErr := r.Body.Close(); closeErr != nil {
+						if c, ok := aarv.FromRequest(r); ok {
+							c.Logger().Warn("encrypt request body close failed", "error", closeErr)
+						} else {
+							slog.Warn("encrypt request body close failed", "error", closeErr, "path", r.URL.Path)
+						}
+					}
 					if err != nil {
 						if cfg.OnDecryptError != nil {
 							cfg.OnDecryptError(w, r, err)
@@ -351,10 +358,10 @@ func New(key []byte, config ...Config) (aarv.Middleware, error) {
 			// Encrypt response if enabled
 			if cfg.EncryptResponse {
 				erw := &encryptResponseWriter{
-					ResponseWriter:   w,
-					encryptor:        encryptor,
-					statusCode:       http.StatusOK,
-					isExcludedFunc:   isExcludedType,
+					ResponseWriter: w,
+					encryptor:      encryptor,
+					statusCode:     http.StatusOK,
+					isExcludedFunc: isExcludedType,
 				}
 
 				defer func() { _ = erw.finish() }()

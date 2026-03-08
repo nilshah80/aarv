@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,6 +28,12 @@ func (failingBody) Read([]byte) (int, error) {
 }
 
 func (failingBody) Close() error { return nil }
+
+type failingCloseReadCloser struct {
+	io.Reader
+}
+
+func (failingCloseReadCloser) Close() error { return errors.New("close failure") }
 
 func TestGenerateKey(t *testing.T) {
 	key, err := GenerateKey()
@@ -257,6 +264,87 @@ func TestMiddleware_DecryptRequest(t *testing.T) {
 
 	if receivedBody != plaintext {
 		t.Errorf("expected body %s, got %s", plaintext, receivedBody)
+	}
+}
+
+func TestMiddleware_DecryptRequestLogsBodyCloseFailure(t *testing.T) {
+	key, _ := GenerateKey()
+	enc, _ := NewEncryptor(key)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	var receivedBody string
+	app := aarv.New(aarv.WithBanner(false), aarv.WithLogger(logger))
+	middleware, _ := New(key)
+	app.Use(middleware)
+
+	app.Post("/test", func(c *aarv.Context) error {
+		body, _ := io.ReadAll(c.Request().Body)
+		receivedBody = string(body)
+		return c.Text(200, "ok")
+	})
+
+	plaintext := `{"name":"alice"}`
+	encrypted, _ := enc.Encrypt([]byte(plaintext))
+
+	req := httptest.NewRequest("POST", "/test", nil)
+	req.Body = failingCloseReadCloser{Reader: bytes.NewReader(encrypted)}
+	req.Header.Set("Content-Type", EncryptedContentType)
+	req.ContentLength = int64(len(encrypted))
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if receivedBody != plaintext {
+		t.Fatalf("expected body %s, got %s", plaintext, receivedBody)
+	}
+	if !strings.Contains(logBuf.String(), "encrypt request body close failed") {
+		t.Fatalf("expected close warning log, got %s", logBuf.String())
+	}
+}
+
+func TestMiddleware_DecryptRequestLogsBodyCloseFailureWithoutAarvContext(t *testing.T) {
+	key, _ := GenerateKey()
+	enc, _ := NewEncryptor(key)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	old := slog.Default()
+	slog.SetDefault(logger)
+	t.Cleanup(func() {
+		slog.SetDefault(old)
+	})
+
+	plaintext := []byte(`{"name":"alice"}`)
+	encrypted, _ := enc.Encrypt(plaintext)
+
+	middleware, err := New(key, Config{
+		EncryptResponse: false,
+		DecryptRequest:  true,
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/test", nil)
+	req.Body = failingCloseReadCloser{Reader: bytes.NewReader(encrypted)}
+	req.Header.Set("Content-Type", EncryptedContentType)
+	req.ContentLength = int64(len(encrypted))
+
+	rec := httptest.NewRecorder()
+	middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected status 204, got %d", rec.Code)
+	}
+	if !strings.Contains(logBuf.String(), "encrypt request body close failed") {
+		t.Fatalf("expected fallback close warning log, got %s", logBuf.String())
 	}
 }
 

@@ -210,10 +210,14 @@ func TestBindingAndHandlerAdditionalCoverage(t *testing.T) {
 	})
 
 	t.Run("struct binder and parameter parsing", func(t *testing.T) {
+		type EmbeddedBody struct {
+			Body string `json:"body"`
+		}
 		type Embedded struct {
 			Role string `header:"X-Role"`
 		}
 		type payload struct {
+			EmbeddedBody
 			Embedded
 			ID      int         `param:"id"`
 			Name    string      `query:"name"`
@@ -264,6 +268,12 @@ func TestBindingAndHandlerAdditionalCoverage(t *testing.T) {
 		if buildStructBinder(reflect.TypeOf(&payload{})) == nil {
 			t.Fatal("pointer struct binder should be supported")
 		}
+		type hiddenOnly struct {
+			visible string `query:"hidden"` //nolint:unused // intentionally unexported to test binder skips it
+		}
+		if hidden := buildStructBinder(reflect.TypeOf(hiddenOnly{})); hidden == nil || len(hidden.fields) != 0 {
+			t.Fatalf("expected unexported binding fields to be skipped, got %+v", hidden)
+		}
 	})
 
 	t.Run("custom binder, query and form helpers, set field value", func(t *testing.T) {
@@ -308,6 +318,28 @@ func TestBindingAndHandlerAdditionalCoverage(t *testing.T) {
 		ctx.query = nil
 		if err := bindQueryParams(ctx, &badInt); err == nil {
 			t.Fatal("expected query bind failure")
+		}
+
+		type parserFailurePayload struct {
+			Value parserValue `query:"value"`
+		}
+		ctx.req.URL.RawQuery = "value=bad"
+		ctx.query = nil
+		sb = buildStructBinder(reflect.TypeOf(parserFailurePayload{}))
+		var parserFailure parserFailurePayload
+		if err := sb.bind(ctx, &parserFailure); err == nil {
+			t.Fatal("expected parser-based bind failure")
+		}
+
+		type bindFailurePayload struct {
+			Page int `query:"page"`
+		}
+		ctx.req.URL.RawQuery = "page=bad"
+		ctx.query = nil
+		sb = buildStructBinder(reflect.TypeOf(bindFailurePayload{}))
+		var bindFailure bindFailurePayload
+		if err := sb.bind(ctx, &bindFailure); err == nil {
+			t.Fatal("expected setFieldValue bind failure")
 		}
 
 		if err := setFieldValue(reflect.ValueOf(&badInt.Page).Elem(), "bad"); err == nil {
@@ -532,6 +564,18 @@ func TestBinderBranchCoverage(t *testing.T) {
 	if err := bindQueryParams(qctx, &skippedQuery); err != nil {
 		t.Fatalf("unexpected skipped query bind error: %v", err)
 	}
+	var noTagQuery struct {
+		Page int
+	}
+	if err := bindQueryParams(qctx, &noTagQuery); err != nil {
+		t.Fatalf("unexpected no-tag query bind error: %v", err)
+	}
+	var unexportedQuery struct {
+		page int `query:"page"`
+	}
+	if err := bindQueryParams(qctx, &unexportedQuery); err != nil {
+		t.Fatalf("unexpected unexported query bind error: %v", err)
+	}
 	app.ReleaseContext(qctx)
 
 	formReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
@@ -549,5 +593,43 @@ func TestBinderBranchCoverage(t *testing.T) {
 	if err := bindFormValues(formCtx, &unexported); err != nil {
 		t.Fatalf("unexpected unexported form bind error: %v", err)
 	}
+	var emptyForm struct {
+		Name string `form:"name"`
+	}
+	if err := bindFormValues(formCtx, &emptyForm); err != nil {
+		t.Fatalf("unexpected empty form bind error: %v", err)
+	}
+	badFormReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("age=bad"))
+	badFormReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	badFormCtx, _ := newAppContext(app, badFormReq)
+	var badForm struct {
+		Age int `form:"age"`
+	}
+	if err := bindFormValues(badFormCtx, &badForm); err == nil {
+		t.Fatal("expected form bind parse failure")
+	}
+	app.ReleaseContext(badFormCtx)
 	app.ReleaseContext(formCtx)
+}
+
+func TestBindAdditionalErrorBranches(t *testing.T) {
+	app := New(WithBanner(false))
+	app.Get("/bind-error", Bind(func(c *Context, req struct {
+		Page int `query:"page"`
+	}) (map[string]int, error) {
+		return map[string]int{"page": req.Page}, nil
+	}))
+	app.Get("/bind-handler-error", Bind(func(c *Context, req struct{}) (map[string]string, error) {
+		return nil, errors.New("bind handler failed")
+	}))
+	app.Get("/bindreq-error", BindReq(func(c *Context, req struct {
+		Page int `query:"page"`
+	}) error {
+		return c.NoContent(http.StatusNoContent)
+	}))
+
+	tc := NewTestClient(app)
+	tc.Get("/bind-error?page=bad").AssertStatus(t, http.StatusBadRequest)
+	tc.Get("/bind-handler-error").AssertStatus(t, http.StatusInternalServerError)
+	tc.Get("/bindreq-error?page=bad").AssertStatus(t, http.StatusBadRequest)
 }

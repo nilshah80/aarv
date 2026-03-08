@@ -139,6 +139,11 @@ type TestResponse struct {
 	Body []byte
 }
 
+type statusReporter interface {
+	Helper()
+	Errorf(format string, args ...any)
+}
+
 func newTestResponse(rec *httptest.ResponseRecorder) *TestResponse {
 	return &TestResponse{
 		Status:  rec.Code,
@@ -159,6 +164,10 @@ func (tr *TestResponse) Text() string {
 
 // AssertStatus checks that the response status matches expected.
 func (tr *TestResponse) AssertStatus(t *testing.T, expected int) {
+	tr.assertStatus(t, expected)
+}
+
+func (tr *TestResponse) assertStatus(t statusReporter, expected int) {
 	t.Helper()
 	if tr.Status != expected {
 		t.Errorf("expected status %d, got %d. Body: %s", expected, tr.Status, string(tr.Body))
