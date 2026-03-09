@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -389,14 +391,14 @@ func TestContextAdditionalCoverage(t *testing.T) {
 			t.Fatal("expected bind JSON body-read error")
 		}
 
-		app.codec = failingCodec{}
+		app.setCodec(failingCodec{})
 		req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"large"}`))
 		req.ContentLength = 20000
 		ctx, _ = newAppContext(app, req)
 		if err := ctx.BindJSON(&large); err == nil {
 			t.Fatal("expected bind JSON decode error")
 		}
-		app.codec = StdJSONCodec{}
+		app.setCodec(StdJSONCodec{})
 
 		var queryTarget struct {
 			Page int `query:"page" default:"5"`
@@ -466,11 +468,11 @@ func TestContextAdditionalCoverage(t *testing.T) {
 			t.Fatalf("unexpected JSONPretty error: %v", err)
 		}
 		ctx, _ = newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
-		app.codec = failingCodec{}
+		app.setCodec(failingCodec{})
 		if err := ctx.JSONPretty(http.StatusOK, map[string]string{"fail": "yes"}); err == nil {
 			t.Fatal("expected JSONPretty error from codec")
 		}
-		app.codec = StdJSONCodec{}
+		app.setCodec(StdJSONCodec{})
 
 		ctx, rec = newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
 		if err := ctx.HTML(http.StatusAccepted, "<b>ok</b>"); err != nil || rec.Code != http.StatusAccepted {
@@ -602,4 +604,45 @@ func TestContextInternalHelpers(t *testing.T) {
 			t.Fatalf("expected streaming read error, got %v", err)
 		}
 	})
+}
+
+func TestContextDirectPathParamOverflow(t *testing.T) {
+	app := New(WithBanner(false))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/overflow", nil)
+	ctx := app.AcquireContext(rec, req)
+	defer app.ReleaseContext(ctx)
+
+	for i := 0; i < len(ctx.pathParamNames); i++ {
+		ctx.setDirectPathParam(fmt.Sprintf("k%d", i), fmt.Sprintf("v%d", i))
+	}
+	ctx.setDirectPathParam("overflow", "value")
+
+	if got := ctx.Request().PathValue("overflow"); got != "value" {
+		t.Fatalf("expected overflow param to materialize into request, got %q", got)
+	}
+	if got := ctx.Param("k0"); got != "v0" {
+		t.Fatalf("expected cached direct param to remain available, got %q", got)
+	}
+}
+
+func TestContextXMLAdditionalCoverage(t *testing.T) {
+	type xmlPayload struct {
+		XMLName xml.Name `xml:"payload"`
+		Message string   `xml:"message"`
+	}
+
+	app := New(WithBanner(false))
+	app.Get("/xml-created", func(c *Context) error {
+		return c.XML(http.StatusCreated, xmlPayload{Message: "hello"})
+	})
+
+	resp := NewTestClient(app).Get("/xml-created")
+	resp.AssertStatus(t, http.StatusCreated)
+	if got := resp.Headers.Get("Content-Type"); got != "application/xml; charset=utf-8" {
+		t.Fatalf("unexpected content-type %q", got)
+	}
+	if !strings.Contains(resp.Text(), "<message>hello</message>") {
+		t.Fatalf("unexpected xml body %q", resp.Text())
+	}
 }

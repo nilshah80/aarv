@@ -33,14 +33,14 @@ const (
 
 // fieldBinding describes how to populate a single struct field from the request.
 type fieldBinding struct {
-	source          bindSource
-	name            string // tag value (e.g., "userId")
-	fieldIndex      []int  // reflect field index path
-	kind            reflect.Kind
-	fieldType       reflect.Type
-	defaultValue    string
-	hasDefault      bool
-	hasParamParser  bool // true if field type implements ParamParser
+	source         bindSource
+	name           string // tag value (e.g., "userId")
+	fieldIndex     []int  // reflect field index path
+	kind           reflect.Kind
+	fieldType      reflect.Type
+	defaultValue   string
+	hasDefault     bool
+	hasParamParser bool // true if field type implements ParamParser
 }
 
 // paramParserType is the reflect.Type for the ParamParser interface.
@@ -48,8 +48,9 @@ var paramParserType = reflect.TypeOf((*ParamParser)(nil)).Elem()
 
 // structBinder holds pre-computed binding info for a struct type.
 type structBinder struct {
-	fields   []fieldBinding
-	needBody bool // true if any field uses json tag (body binding)
+	fields      []fieldBinding
+	hasDefaults bool
+	needBody    bool // true if any field uses json tag (body binding)
 }
 
 // buildStructBinder inspects a struct type at registration time and returns a binder.
@@ -97,6 +98,7 @@ func buildStructBinder(t reflect.Type) *structBinder {
 		if tag := f.Tag.Get("default"); tag != "" {
 			fb.defaultValue = tag
 			fb.hasDefault = true
+			sb.hasDefaults = true
 		}
 
 		if tag := f.Tag.Get("param"); tag != "" {

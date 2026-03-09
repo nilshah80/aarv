@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"slices"
 	"strings"
@@ -23,6 +24,10 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/mrshabel/mach"
 	"github.com/nilshah80/aarv"
+	jsonv2codec "github.com/nilshah80/aarv/codec/jsonv2"
+	segmentiocodec "github.com/nilshah80/aarv/codec/segmentio"
+	soniccodec "github.com/nilshah80/aarv/codec/sonic"
+	"github.com/nilshah80/aarv/internal/benchutil"
 	"github.com/nilshah80/aarv/plugins/encrypt"
 	"github.com/nilshah80/aarv/plugins/logger"
 	"github.com/nilshah80/aarv/plugins/verboselog"
@@ -130,6 +135,14 @@ func newAarv_Param() http.Handler {
 
 func newAarv_Bind() http.Handler {
 	app := aarv.New(aarv.WithBanner(false))
+	app.Post("/users", aarv.Bind(func(c *aarv.Context, req BindReq) (BindRes, error) {
+		return BindRes{ID: "1", Name: req.Name, Email: req.Email}, nil
+	}))
+	return app
+}
+
+func newAarv_BindWithCodec(codec aarv.Codec) http.Handler {
+	app := aarv.New(aarv.WithBanner(false), aarv.WithCodec(codec))
 	app.Post("/users", aarv.Bind(func(c *aarv.Context, req BindReq) (BindRes, error) {
 		return BindRes{ID: "1", Name: req.Name, Email: req.Email}, nil
 	}))
@@ -532,6 +545,51 @@ func BenchmarkBind_Mach(b *testing.B)  { benchHTTP(b, newMach_Bind(), "POST", "/
 func BenchmarkBind_Gin(b *testing.B)   { benchHTTP(b, newGin_Bind(), "POST", "/users", jsonBody) }
 func BenchmarkBind_Fiber(b *testing.B) { benchFiber(b, newFiber_Bind(), "POST", "/users", jsonBody) }
 
+// --- Light net/http variants (reduced httptest noise) ---
+func BenchmarkStaticLight_Aarv(b *testing.B) {
+	benchHTTPLight(b, newAarv_Static(), "GET", "/hello", nil)
+}
+func BenchmarkStaticLight_Mach(b *testing.B) {
+	benchHTTPLight(b, newMach_Static(), "GET", "/hello", nil)
+}
+func BenchmarkStaticLight_Gin(b *testing.B) { benchHTTPLight(b, newGin_Static(), "GET", "/hello", nil) }
+
+func BenchmarkJSONLight_Aarv(b *testing.B) { benchHTTPLight(b, newAarv_JSON(), "GET", "/json", nil) }
+func BenchmarkJSONLight_Mach(b *testing.B) { benchHTTPLight(b, newMach_JSON(), "GET", "/json", nil) }
+func BenchmarkJSONLight_Gin(b *testing.B)  { benchHTTPLight(b, newGin_JSON(), "GET", "/json", nil) }
+
+func BenchmarkParamLight_Aarv(b *testing.B) {
+	benchHTTPLight(b, newAarv_Param(), "GET", "/users/123", nil)
+}
+func BenchmarkParamLight_Mach(b *testing.B) {
+	benchHTTPLight(b, newMach_Param(), "GET", "/users/123", nil)
+}
+func BenchmarkParamLight_Gin(b *testing.B) {
+	benchHTTPLight(b, newGin_Param(), "GET", "/users/123", nil)
+}
+
+func BenchmarkBindLight_Aarv(b *testing.B) {
+	benchHTTPLight(b, newAarv_Bind(), "POST", "/users", jsonBody)
+}
+func BenchmarkBindLight_AarvSegmentio(b *testing.B) {
+	benchHTTPLight(b, newAarv_BindWithCodec(segmentiocodec.New()), "POST", "/users", jsonBody)
+}
+func BenchmarkBindLight_AarvJSONv2(b *testing.B) {
+	benchHTTPLight(b, newAarv_BindWithCodec(jsonv2codec.New()), "POST", "/users", jsonBody)
+}
+func BenchmarkBindLight_AarvSonic(b *testing.B) {
+	benchHTTPLight(b, newAarv_BindWithCodec(soniccodec.New()), "POST", "/users", jsonBody)
+}
+func BenchmarkBindLight_AarvSonicFastest(b *testing.B) {
+	benchHTTPLight(b, newAarv_BindWithCodec(soniccodec.NewFastest()), "POST", "/users", jsonBody)
+}
+func BenchmarkBindLight_Mach(b *testing.B) {
+	benchHTTPLight(b, newMach_Bind(), "POST", "/users", jsonBody)
+}
+func BenchmarkBindLight_Gin(b *testing.B) {
+	benchHTTPLight(b, newGin_Bind(), "POST", "/users", jsonBody)
+}
+
 // --- Parallel variants ---
 func BenchmarkStaticParallel_Aarv(b *testing.B) {
 	benchHTTPParallel(b, newAarv_Static(), "GET", "/hello", nil)
@@ -805,15 +863,15 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Log same fields as Aarv
-		slog.Info("request",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", sw.statusCode,
-			"latency", time.Since(start).String(),
-			"client_ip", clientIPFromRequest(r),
-			"user_agent", r.UserAgent(),
-			"bytes_out", sw.bytesWritten,
-			"request_id", requestID,
+		slog.LogAttrs(r.Context(), slog.LevelInfo, "request",
+			slog.String("method", r.Method),
+			slog.String("path", r.URL.Path),
+			slog.Int("status", sw.statusCode),
+			slog.Duration("latency", time.Since(start)),
+			slog.String("client_ip", clientIPFromRequest(r)),
+			slog.String("user_agent", r.UserAgent()),
+			slog.Int64("bytes_out", sw.bytesWritten),
+			slog.String("request_id", requestID),
 		)
 	})
 }
@@ -829,8 +887,14 @@ func clientIPFromRequest(r *http.Request) string {
 		}
 		return xff
 	}
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-	return ip
+	addr := r.RemoteAddr
+	if addr == "" {
+		return ""
+	}
+	if i := strings.LastIndexByte(addr, ':'); i > 0 && strings.IndexByte(addr, ']') == -1 {
+		return addr[:i]
+	}
+	return addr
 }
 
 // Sensitive headers and fields for redaction (same as Aarv's verboselog)
@@ -1004,6 +1068,45 @@ func BenchmarkLogger_Fiber(b *testing.B) {
 	benchFiber(b, newFiber_Logger(), "POST", "/api/users", jsonBody)
 }
 
+var loggerIsolatedResponse = []byte(`{"ok":true,"message":"logger benchmark"}`)
+
+func newLoggerTerminalHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(loggerIsolatedResponse)
+	})
+}
+
+func newAarv_LoggerIsolated() http.Handler {
+	return logger.New()(newLoggerTerminalHandler())
+}
+
+func newEquivalent_LoggerIsolated() http.Handler {
+	return loggingMiddleware(newLoggerTerminalHandler())
+}
+
+func benchLoggerIsolated(b *testing.B, handler http.Handler) {
+	var w benchutil.DiscardResponseWriter
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := newLightRequest("GET", "/logger-only", nil)
+		req.RemoteAddr = "192.0.2.10:1234"
+		req.Header.Set("User-Agent", "bench/1.0")
+		w.Reset()
+		handler.ServeHTTP(&w, req)
+	}
+}
+
+func BenchmarkLoggerIsolated_Aarv(b *testing.B) {
+	benchLoggerIsolated(b, newAarv_LoggerIsolated())
+}
+
+func BenchmarkLoggerIsolated_Equivalent(b *testing.B) {
+	benchLoggerIsolated(b, newEquivalent_LoggerIsolated())
+}
+
 // --- Verbose Logger Benchmarks ---
 
 func newAarv_VerboseLog() http.Handler {
@@ -1159,6 +1262,32 @@ func benchHTTP(b *testing.B, handler http.Handler, method, path string, body []b
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 	}
+}
+
+func benchHTTPLight(b *testing.B, handler http.Handler, method, path string, body []byte) {
+	var w benchutil.DiscardResponseWriter
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := newLightRequest(method, path, body)
+		w.Reset()
+		handler.ServeHTTP(&w, req)
+	}
+}
+
+func newLightRequest(method, path string, body []byte) *http.Request {
+	req := &http.Request{
+		Method: method,
+		URL:    &url.URL{Path: path},
+		Header: make(http.Header, 1),
+	}
+	if body != nil {
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.ContentLength = int64(len(body))
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return req
 }
 
 func benchHTTPParallel(b *testing.B, handler http.Handler, method, path string, body []byte) {

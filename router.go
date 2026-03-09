@@ -1,8 +1,11 @@
 package aarv
 
 import (
+	"context"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 )
 
 // RouteInfo describes a registered route for introspection.
@@ -94,7 +97,7 @@ func (g *RouteGroup) addRoute(method, pattern string, handler any, opts ...Route
 
 	// Build the route handler: wrap with route-level middleware
 	var httpHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, ok := r.Context().Value(ctxKey{}).(*Context)
+		ctx, ok := contextFromRequest(r)
 		if !ok {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -213,16 +216,92 @@ func (g *RouteGroup) Group(prefix string, fn func(g *RouteGroup)) *RouteGroup {
 	if !strings.HasSuffix(p, "/") {
 		p += "/"
 	}
-	g.mux.Handle(p, http.StripPrefix(prefix, wrapped))
+	g.mux.Handle(p, stripPrefixPreserveContext(prefix, wrapped))
 	return g
 }
 
 // ctxKey is the context key for storing the aarv Context in request context.
 type ctxKey struct{}
 
+var requestContextRegistry = struct {
+	mu sync.RWMutex
+	m  map[*http.Request]*Context
+}{
+	m: make(map[*http.Request]*Context),
+}
+
+func storeRequestContext(r *http.Request, c *Context) {
+	if r != nil && c != nil {
+		requestContextRegistry.mu.Lock()
+		requestContextRegistry.m[r] = c
+		requestContextRegistry.mu.Unlock()
+	}
+}
+
+func deleteRequestContext(r *http.Request) {
+	if r != nil {
+		requestContextRegistry.mu.Lock()
+		delete(requestContextRegistry.m, r)
+		requestContextRegistry.mu.Unlock()
+	}
+}
+
+func contextFromRequest(r *http.Request) (*Context, bool) {
+	if r == nil {
+		return nil, false
+	}
+	requestContextRegistry.mu.RLock()
+	c, ok := requestContextRegistry.m[r]
+	requestContextRegistry.mu.RUnlock()
+	if ok {
+		return c, true
+	}
+	if c, ok := r.Context().Value(ctxKey{}).(*Context); ok {
+		return c, true
+	}
+	return nil, false
+}
+
+func withFrameworkContext(r *http.Request, c *Context) *http.Request {
+	if r == nil || c == nil {
+		return r
+	}
+	if existing, ok := r.Context().Value(ctxKey{}).(*Context); ok && existing == c {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), ctxKey{}, c))
+}
+
+func stripPrefixPreserveContext(prefix string, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if !strings.HasPrefix(path, prefix) {
+			http.NotFound(w, r)
+			return
+		}
+
+		trimmedPath := strings.TrimPrefix(path, prefix)
+		if trimmedPath == "" || trimmedPath[0] != '/' {
+			trimmedPath = "/" + trimmedPath
+		}
+
+		req := new(http.Request)
+		*req = *r
+		urlCopy := new(url.URL)
+		*urlCopy = *r.URL
+		urlCopy.Path = trimmedPath
+		req.URL = urlCopy
+		req.RequestURI = trimmedPath
+		if c, ok := contextFromRequest(r); ok {
+			storeRequestContext(req, c)
+			defer deleteRequestContext(req)
+		}
+		h.ServeHTTP(w, req)
+	})
+}
+
 // FromRequest extracts the aarv Context from an http.Request.
 // This is exported so sub-packages (plugins) can access the aarv Context.
 func FromRequest(r *http.Request) (*Context, bool) {
-	c, ok := r.Context().Value(ctxKey{}).(*Context)
-	return c, ok
+	return contextFromRequest(r)
 }

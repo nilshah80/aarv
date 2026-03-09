@@ -19,20 +19,26 @@ const maxReusableBodyCache = 16 << 10
 // Context wraps the http.Request and http.ResponseWriter with convenience helpers.
 // It is pooled via sync.Pool — do NOT hold references to it beyond the handler lifetime.
 type Context struct {
-	req          *http.Request
-	res          http.ResponseWriter
-	app          *App
-	store        map[string]any
-	query        url.Values // cached parsed query params
-	bodyCache    []byte
-	bodyRead     bool
-	written      bool
-	statusCode   int // pending status code for chaining
-	cachedLogger *slog.Logger
+	req               *http.Request
+	rootReq           *http.Request
+	res               http.ResponseWriter
+	app               *App
+	store             map[string]any
+	query             url.Values // cached parsed query params
+	bodyCache         []byte
+	bodyRead          bool
+	written           bool
+	statusCode        int // pending status code for chaining
+	cachedLogger      *slog.Logger
+	pathParamNames    [16]string
+	pathParamValues   [16]string
+	pathParamCount    int
+	pathParamsApplied bool
 }
 
 func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.req = r
+	c.rootReq = r
 	c.res = w
 	if cap(c.bodyCache) > maxReusableBodyCache {
 		c.bodyCache = nil
@@ -45,10 +51,15 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.query = nil
 	c.cachedLogger = nil
 	c.store = nil
+	c.pathParamCount = 0
+	c.pathParamsApplied = false
 }
 
 // Request returns the underlying *http.Request.
-func (c *Context) Request() *http.Request { return c.req }
+func (c *Context) Request() *http.Request {
+	c.materializePathParams()
+	return c.req
+}
 
 // Response returns the underlying http.ResponseWriter.
 func (c *Context) Response() http.ResponseWriter { return c.res }
@@ -58,7 +69,11 @@ func (c *Context) Context() context.Context { return c.req.Context() }
 
 // SetContext replaces the request's context.
 func (c *Context) SetContext(ctx context.Context) {
-	c.req = c.req.WithContext(ctx)
+	ctx = context.WithValue(ctx, ctxKey{}, c)
+	req := c.req.WithContext(ctx)
+	c.req = req
+	c.pathParamsApplied = false
+	storeRequestContext(req, c)
 }
 
 // Method returns the HTTP method.
@@ -143,26 +158,52 @@ func (c *Context) isTrustedProxy(ip string) bool {
 
 // Param returns a path parameter by name.
 func (c *Context) Param(name string) string {
+	for i := 0; i < c.pathParamCount; i++ {
+		if c.pathParamNames[i] == name {
+			return c.pathParamValues[i]
+		}
+	}
 	return c.req.PathValue(name)
 }
 
 // ParamInt returns a path parameter parsed as int.
 func (c *Context) ParamInt(name string) (int, error) {
-	return strconv.Atoi(c.req.PathValue(name))
+	return strconv.Atoi(c.Param(name))
 }
 
 // ParamInt64 returns a path parameter parsed as int64.
 func (c *Context) ParamInt64(name string) (int64, error) {
-	return strconv.ParseInt(c.req.PathValue(name), 10, 64)
+	return strconv.ParseInt(c.Param(name), 10, 64)
 }
 
 // ParamUUID returns a path parameter validated as UUID format.
 func (c *Context) ParamUUID(name string) (string, error) {
-	v := c.req.PathValue(name)
+	v := c.Param(name)
 	if !isValidUUID(v) {
 		return "", fmt.Errorf("invalid UUID: %s", v)
 	}
 	return v, nil
+}
+
+func (c *Context) setDirectPathParam(name, value string) {
+	if c.pathParamCount < len(c.pathParamNames) {
+		c.pathParamNames[c.pathParamCount] = name
+		c.pathParamValues[c.pathParamCount] = value
+		c.pathParamCount++
+		return
+	}
+	c.materializePathParams()
+	c.req.SetPathValue(name, value)
+}
+
+func (c *Context) materializePathParams() {
+	if c.pathParamsApplied || c.pathParamCount == 0 {
+		return
+	}
+	for i := 0; i < c.pathParamCount; i++ {
+		c.req.SetPathValue(c.pathParamNames[i], c.pathParamValues[i])
+	}
+	c.pathParamsApplied = true
 }
 
 // --- Query Parameters ---
@@ -263,6 +304,10 @@ func (c *Context) SetHeader(name, value string) {
 	c.res.Header().Set(name, value)
 }
 
+func (c *Context) setContentType(value string) {
+	c.res.Header()["Content-Type"] = []string{value}
+}
+
 // AddHeader adds a response header value.
 func (c *Context) AddHeader(name, value string) {
 	c.res.Header().Add(name, value)
@@ -347,9 +392,9 @@ func (c *Context) BindJSON(dest any) error {
 		if err != nil {
 			return err
 		}
-		return c.app.codec.UnmarshalBytes(body, dest)
+		return c.app.codecUnmarshal(body, dest)
 	}
-	return c.app.codec.Decode(c.req.Body, dest)
+	return c.app.codecDecode(c.req.Body, dest)
 }
 
 // BindQuery decodes query parameters into a struct using the query struct tag.
@@ -384,19 +429,21 @@ func (c *Context) JSON(status int, v any) error {
 	if status == 0 {
 		status = c.statusCode
 	}
-	c.SetHeader("Content-Type", c.app.codec.ContentType())
-	c.res.WriteHeader(status)
-	return c.app.codec.Encode(c.res, v)
+	c.setContentType(c.app.codecContentType)
+	if status != http.StatusOK {
+		c.res.WriteHeader(status)
+	}
+	return c.app.codecEncode(c.res, v)
 }
 
 // JSONPretty serializes v as indented JSON.
 func (c *Context) JSONPretty(status int, v any) error {
 	c.written = true
-	data, err := c.app.codec.MarshalBytes(v)
+	data, err := c.app.codecMarshal(v)
 	if err != nil {
 		return err
 	}
-	c.SetHeader("Content-Type", c.app.codec.ContentType())
+	c.setContentType(c.app.codecContentType)
 	c.res.WriteHeader(status)
 	// Re-encode with indentation — simple approach
 	_, err = c.res.Write(data)
@@ -406,34 +453,42 @@ func (c *Context) JSONPretty(status int, v any) error {
 // Text writes a plain text response.
 func (c *Context) Text(status int, text string) error {
 	c.written = true
-	c.SetHeader("Content-Type", "text/plain; charset=utf-8")
-	c.res.WriteHeader(status)
-	_, err := c.res.Write([]byte(text))
+	c.setContentType("text/plain; charset=utf-8")
+	if status != http.StatusOK {
+		c.res.WriteHeader(status)
+	}
+	_, err := io.WriteString(c.res, text)
 	return err
 }
 
 // HTML writes an HTML response.
 func (c *Context) HTML(status int, html string) error {
 	c.written = true
-	c.SetHeader("Content-Type", "text/html; charset=utf-8")
-	c.res.WriteHeader(status)
-	_, err := c.res.Write([]byte(html))
+	c.setContentType("text/html; charset=utf-8")
+	if status != http.StatusOK {
+		c.res.WriteHeader(status)
+	}
+	_, err := io.WriteString(c.res, html)
 	return err
 }
 
 // XML serializes v as XML.
 func (c *Context) XML(status int, v any) error {
 	c.written = true
-	c.SetHeader("Content-Type", "application/xml; charset=utf-8")
-	c.res.WriteHeader(status)
+	c.setContentType("application/xml; charset=utf-8")
+	if status != http.StatusOK {
+		c.res.WriteHeader(status)
+	}
 	return xml.NewEncoder(c.res).Encode(v)
 }
 
 // Blob writes raw bytes with the given content type.
 func (c *Context) Blob(status int, contentType string, data []byte) error {
 	c.written = true
-	c.SetHeader("Content-Type", contentType)
-	c.res.WriteHeader(status)
+	c.setContentType(contentType)
+	if status != http.StatusOK {
+		c.res.WriteHeader(status)
+	}
 	_, err := c.res.Write(data)
 	return err
 }
@@ -446,7 +501,7 @@ func (c *Context) Stream(status int, contentType string, reader io.Reader) error
 	if bw, ok := c.res.(*bufferedResponseWriter); ok {
 		bw.Bypass()
 	}
-	c.SetHeader("Content-Type", contentType)
+	c.setContentType(contentType)
 	c.res.WriteHeader(status)
 	_, err := io.Copy(c.res, reader)
 	return err

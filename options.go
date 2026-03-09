@@ -9,12 +9,22 @@ import (
 // Option configures the App.
 type Option func(*App)
 
+func (a *App) setCodec(codec Codec) {
+	if codec == nil {
+		return
+	}
+	a.codec = codec
+	a.codecDecode = codec.Decode
+	a.codecEncode = codec.Encode
+	a.codecMarshal = codec.MarshalBytes
+	a.codecUnmarshal = codec.UnmarshalBytes
+	a.codecContentType = codec.ContentType()
+}
+
 // WithCodec sets the JSON codec.
 func WithCodec(codec Codec) Option {
 	return func(a *App) {
-		if codec != nil {
-			a.codec = codec
-		}
+		a.setCodec(codec)
 	}
 }
 
