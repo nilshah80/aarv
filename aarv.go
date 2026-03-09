@@ -5,8 +5,10 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
@@ -17,13 +19,18 @@ import (
 
 // App is the central framework instance.
 type App struct {
-	mux          *http.ServeMux
-	server       *http.Server
-	serverMu     sync.RWMutex
-	config       *Config
-	codec        Codec
-	errorHandler ErrorHandler
-	logger       *slog.Logger
+	mux              *http.ServeMux
+	server           *http.Server
+	serverMu         sync.RWMutex
+	config           *Config
+	codec            Codec
+	codecDecode      func(io.Reader, any) error
+	codecEncode      func(io.Writer, any) error
+	codecMarshal     func(any) ([]byte, error)
+	codecUnmarshal   func([]byte, any) error
+	codecContentType string
+	errorHandler     ErrorHandler
+	logger           *slog.Logger
 
 	// Custom handlers
 	notFoundHandler         HandlerFunc
@@ -38,17 +45,20 @@ type App struct {
 	handlerOnce      sync.Once
 
 	// Hooks
-	hooks        *hookRegistry
-	hasOnRequest bool // fast check to skip empty hook iteration
-	hasOnSend    bool // fast check for OnSend hooks
+	hooks         *hookRegistry
+	hasOnRequest  bool // fast check to skip empty hook iteration
+	hasOnResponse bool // fast check for OnResponse hooks
+	hasOnSend     bool // fast check for OnSend hooks
 
 	// Plugins
 	plugins    []pluginEntry
 	decorators map[string]any
 
 	// Routes (for introspection)
-	routes      []RouteInfo
-	routesByKey map[string]struct{} // "METHOD /path" for 405 detection
+	routes              []RouteInfo
+	routesByKey         map[string]struct{} // "METHOD /path" for 405 detection
+	routeHandlers       map[string]routeRuntimeHandler
+	directDynamicRoutes map[string][]directDynamicRoute
 
 	// Shutdown
 	shutdownHooks []ShutdownHook
@@ -56,15 +66,18 @@ type App struct {
 
 // New creates a new App with the given options.
 func New(opts ...Option) *App {
+	defaultCodec := StdJSONCodec{}
 	a := &App{
-		mux:         http.NewServeMux(),
-		config:      defaultConfig(),
-		codec:       StdJSONCodec{},
-		logger:      slog.New(slog.NewTextHandler(os.Stdout, nil)),
-		hooks:       newHookRegistry(),
-		decorators:  make(map[string]any),
-		routesByKey: make(map[string]struct{}),
+		mux:                 http.NewServeMux(),
+		config:              defaultConfig(),
+		logger:              slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		hooks:               newHookRegistry(),
+		decorators:          make(map[string]any),
+		routesByKey:         make(map[string]struct{}),
+		routeHandlers:       make(map[string]routeRuntimeHandler),
+		directDynamicRoutes: make(map[string][]directDynamicRoute),
 	}
+	a.setCodec(defaultCodec)
 
 	a.ctxPool = sync.Pool{
 		New: func() any {
@@ -187,7 +200,7 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 	}
 
 	var httpHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, ok := r.Context().Value(ctxKey{}).(*Context)
+		ctx, ok := contextFromRequest(r)
 		if !ok {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -207,6 +220,18 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 			ctx.app.handleError(ctx, err)
 		}
 	})
+	internalHandler := routeRuntimeHandler(func(ctx *Context, w http.ResponseWriter, r *http.Request) {
+		ctx.req = r
+		ctx.res = w
+
+		if routeBodyLimit > 0 && r.Body != nil && (r.ContentLength < 0 || r.ContentLength > routeBodyLimit) {
+			r.Body = http.MaxBytesReader(w, r.Body, routeBodyLimit)
+		}
+
+		if err := h(ctx); err != nil {
+			ctx.app.handleError(ctx, err)
+		}
+	})
 
 	if len(rc.middleware) > 0 {
 		httpHandler = buildChain(httpHandler, rc.middleware)
@@ -214,6 +239,15 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 
 	muxPattern := method + " " + pattern
 	a.mux.Handle(muxPattern, httpHandler)
+	if len(rc.middleware) == 0 {
+		a.routeHandlers[muxPattern] = internalHandler
+		if strings.Contains(pattern, "{") {
+			a.directDynamicRoutes[method] = append(a.directDynamicRoutes[method], directDynamicRoute{
+				handler: internalHandler,
+				pattern: compileDirectPattern(pattern),
+			})
+		}
+	}
 
 	// Track route for 405 detection
 	a.routesByKey[muxPattern] = struct{}{}
@@ -298,7 +332,7 @@ func (a *App) Group(prefix string, fn func(g *RouteGroup)) *App {
 	if len(p) > 0 && p[len(p)-1] != '/' {
 		p += "/"
 	}
-	a.mux.Handle(p, http.StripPrefix(prefix, handler))
+	a.mux.Handle(p, stripPrefixPreserveContext(prefix, handler))
 
 	return a
 }
@@ -309,7 +343,7 @@ func (a *App) Mount(prefix string, handler http.Handler) *App {
 	if len(p) > 0 && p[len(p)-1] != '/' {
 		p += "/"
 	}
-	a.mux.Handle(p, http.StripPrefix(prefix, handler))
+	a.mux.Handle(p, stripPrefixPreserveContext(prefix, handler))
 	return a
 }
 
@@ -392,23 +426,37 @@ func WithPrefix(prefix string) PluginOption {
 func (a *App) buildHandler() http.Handler {
 	// Wrap mux to intercept 404/405 responses
 	wrappedMux := &routingMux{
-		mux:         a.mux,
-		app:         a,
-		routesByKey: a.routesByKey,
+		mux:           a.mux,
+		app:           a,
+		routesByKey:   a.routesByKey,
+		routeHandlers: a.routeHandlers,
 	}
 	return buildChain(wrappedMux, a.globalMiddleware)
 }
 
+type routeRuntimeHandler func(*Context, http.ResponseWriter, *http.Request)
+
 // routingMux wraps http.ServeMux to intercept 404/405 and call custom handlers.
 type routingMux struct {
-	mux         *http.ServeMux
-	app         *App
-	routesByKey map[string]struct{}
+	mux           *http.ServeMux
+	app           *App
+	routesByKey   map[string]struct{}
+	routeHandlers map[string]routeRuntimeHandler
 }
 
 func (m *routingMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if _, pattern := m.mux.Handler(r); pattern != "" {
+	if h, pattern := m.mux.Handler(r); pattern != "" {
 		if _, ok := m.routesByKey[pattern]; ok {
+			if !strings.Contains(pattern, "{") {
+				if c, ok := contextFromRequest(r); ok {
+					if rh, ok := m.routeHandlers[pattern]; ok {
+						rh(c, w, r)
+						return
+					}
+				}
+				h.ServeHTTP(w, r)
+				return
+			}
 			m.mux.ServeHTTP(w, r)
 			return
 		}
@@ -419,7 +467,7 @@ func (m *routingMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		probe := &probeResponseWriter{ResponseWriter: w}
 		m.mux.ServeHTTP(probe, r)
 		if !probe.written {
-			c, _ := r.Context().Value(ctxKey{}).(*Context)
+			c, _ := contextFromRequest(r)
 			if c != nil {
 				if err := m.app.notFoundHandler(c); err != nil {
 					m.app.handleError(c, err)
@@ -435,7 +483,7 @@ func (m *routingMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if matchesPattern(parts[1], r.URL.Path) {
-			c, _ := r.Context().Value(ctxKey{}).(*Context)
+			c, _ := contextFromRequest(r)
 			if c != nil {
 				if err := m.app.methodNotAllowedHandler(c); err != nil {
 					m.app.handleError(c, err)
@@ -446,7 +494,7 @@ func (m *routingMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	c, _ := r.Context().Value(ctxKey{}).(*Context)
+	c, _ := contextFromRequest(r)
 	if c == nil {
 		m.mux.ServeHTTP(w, r)
 		return
@@ -481,6 +529,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.hooks.finalize()
 		a.handler = a.buildHandler()
 		a.hasOnRequest = len(a.hooks.hooks[OnRequest]) > 0
+		a.hasOnResponse = len(a.hooks.hooks[OnResponse]) > 0
 		a.hasOnSend = len(a.hooks.hooks[OnSend]) > 0
 	})
 
@@ -501,15 +550,26 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if len(a.globalMiddleware) == 0 && !a.hasOnRequest && !a.hasOnResponse && !a.hasOnSend {
+		c := a.ctxPool.Get().(*Context)
+		c.reset(w, r)
+		c.app = a
+		defer a.ctxPool.Put(c)
+
+		if a.serveDirect(c, w, r) {
+			return
+		}
+	}
+
+	var c *Context
+
 	// Use buffered response writer if OnSend hooks are registered
 	var bw *bufferedResponseWriter
 	if a.hasOnSend {
 		bw = acquireBufferedWriter(w)
 		defer func() {
 			// Run OnSend hooks before flushing
-			if c, ok := r.Context().Value(ctxKey{}).(*Context); ok {
-				_ = a.hooks.run(OnSend, c)
-			}
+			_ = a.hooks.run(OnSend, c)
 			bw.flush()
 			releaseBufferedWriter(bw)
 		}()
@@ -517,17 +577,19 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Acquire context from pool
-	c := a.ctxPool.Get().(*Context)
+	c = a.ctxPool.Get().(*Context)
 	c.reset(w, r)
 	c.app = a
-
-	// Embed aarv context in request context for middleware access
-	// Use context.WithValue on the existing context — avoids cloning *http.Request
-	ctx := context.WithValue(r.Context(), ctxKey{}, c)
-	r = r.WithContext(ctx)
+	r = withFrameworkContext(r, c)
 	c.req = r
+	c.rootReq = r
+	storeRequestContext(r, c)
 
 	defer func() {
+		deleteRequestContext(c.rootReq)
+		if c.req != c.rootReq {
+			deleteRequestContext(c.req)
+		}
 		a.ctxPool.Put(c)
 	}()
 
@@ -544,9 +606,140 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	a.handler.ServeHTTP(w, r)
 
 	// Run OnResponse hooks after handler completes
-	if len(a.hooks.hooks[OnResponse]) > 0 {
+	if a.hasOnResponse {
 		_ = a.hooks.run(OnResponse, c)
 	}
+}
+
+func (a *App) serveDirect(c *Context, w http.ResponseWriter, r *http.Request) bool {
+	if rt, ok := a.routeHandlers[r.Method+" "+r.URL.Path]; ok {
+		rt(c, w, r)
+		return true
+	}
+	for _, route := range a.directDynamicRoutes[r.Method] {
+		if route.pattern.match(r.URL.Path, c) {
+			route.handler(c, w, r)
+			return true
+		}
+	}
+	h, pattern := a.mux.Handler(r)
+	if pattern == "" {
+		return false
+	}
+	if _, ok := a.routesByKey[pattern]; !ok {
+		return false
+	}
+	if !strings.Contains(pattern, "{") {
+		req := withFrameworkContext(r, c)
+		c.req = req
+		h.ServeHTTP(w, req)
+		return true
+	}
+	// Direct dispatch only runs when there is no global middleware or hooks.
+	// Dynamic routes still need a request-to-context association so the mux-served
+	// handler can resolve the aarv Context, but they do not need request cloning
+	// for middleware compatibility on this path.
+	storeRequestContext(r, c)
+	defer deleteRequestContext(r)
+	a.mux.ServeHTTP(w, r)
+	return true
+}
+
+type directDynamicRoute struct {
+	handler routeRuntimeHandler
+	pattern directPattern
+}
+
+type directPattern struct {
+	parts []directPatternPart
+}
+
+type directPatternPart struct {
+	literal  string
+	name     string
+	catchAll bool
+}
+
+func compileDirectPattern(pattern string) directPattern {
+	trimmed := strings.Trim(pattern, "/")
+	if trimmed == "" {
+		return directPattern{}
+	}
+	segments := strings.Split(trimmed, "/")
+	parts := make([]directPatternPart, 0, len(segments))
+	for _, seg := range segments {
+		if len(seg) >= 2 && seg[0] == '{' && seg[len(seg)-1] == '}' {
+			name := seg[1 : len(seg)-1]
+			part := directPatternPart{}
+			if strings.HasSuffix(name, "...") {
+				part.catchAll = true
+				name = strings.TrimSuffix(name, "...")
+			}
+			part.name = name
+			parts = append(parts, part)
+			continue
+		}
+		parts = append(parts, directPatternPart{literal: seg})
+	}
+	return directPattern{parts: parts}
+}
+
+func (p directPattern) match(path string, c *Context) bool {
+	remaining := strings.TrimPrefix(path, "/")
+	var names [16]string
+	var values [16]string
+	n := 0
+	for i, part := range p.parts {
+		if part.catchAll {
+			if part.name != "" {
+				names[n] = part.name
+				values[n] = decodePathValue(remaining)
+				n++
+			}
+			for i := 0; i < n; i++ {
+				c.setDirectPathParam(names[i], values[i])
+			}
+			return true
+		}
+		if remaining == "" {
+			return false
+		}
+		seg := remaining
+		if idx := strings.IndexByte(remaining, '/'); idx >= 0 {
+			seg = remaining[:idx]
+			remaining = remaining[idx+1:]
+		} else {
+			remaining = ""
+		}
+		if part.name != "" {
+			names[n] = part.name
+			values[n] = decodePathValue(seg)
+			n++
+		} else if part.literal != seg {
+			return false
+		}
+		if i == len(p.parts)-1 {
+			if remaining != "" {
+				return false
+			}
+			for i := 0; i < n; i++ {
+				c.setDirectPathParam(names[i], values[i])
+			}
+			return true
+		}
+	}
+	return remaining == ""
+}
+
+func decodePathValue(seg string) string {
+	if !strings.Contains(seg, "%") {
+		return seg
+	}
+	decoded, err := url.PathUnescape(seg)
+	if err != nil {
+		return seg
+	}
+	return decoded
 }
 
 // shouldRedirectTrailingSlash checks if we should redirect based on trailing slash.

@@ -16,12 +16,41 @@ func Bind[Req any, Res any](fn func(*Context, Req) (Res, error)) HandlerFunc {
 	binder := buildStructBinder(reqType)
 	validator := buildStructValidator(reqType)
 	needBody := binder != nil && binder.needBody
+	needBinding := binder != nil && len(binder.fields) > 0
+	needDefaults := binder != nil && binder.hasDefaults
+
+	if needBody && !needBinding && !needDefaults {
+		return func(c *Context) error {
+			var req Req
+
+			if c.req.ContentLength > 0 {
+				if err := c.BindJSON(&req); err != nil {
+					return &BindError{Err: err, Source: "body"}
+				}
+			}
+
+			if validator != nil {
+				if errs := validator.validate(&req); len(errs) > 0 {
+					return &ValidationErrors{Errors: errs}
+				}
+			}
+
+			res, err := fn(c, req)
+			if err != nil {
+				return err
+			}
+			if !c.Written() {
+				return c.JSON(http.StatusOK, res)
+			}
+			return nil
+		}
+	}
 
 	return func(c *Context) error {
 		var req Req
 
 		// Step 1: Multi-source binding (param, query, header, cookie, form)
-		if binder != nil && len(binder.fields) > 0 {
+		if needBinding {
 			if err := binder.bind(c, &req); err != nil {
 				return &BindError{Err: err, Source: "binding"}
 			}
@@ -35,7 +64,7 @@ func Bind[Req any, Res any](fn func(*Context, Req) (Res, error)) HandlerFunc {
 		}
 
 		// Step 3: Apply defaults for zero-value fields
-		if binder != nil {
+		if needDefaults {
 			binder.applyDefaults(&req)
 		}
 
@@ -67,11 +96,33 @@ func BindReq[Req any](fn func(*Context, Req) error) HandlerFunc {
 	binder := buildStructBinder(reqType)
 	validator := buildStructValidator(reqType)
 	needBody := binder != nil && binder.needBody
+	needBinding := binder != nil && len(binder.fields) > 0
+	needDefaults := binder != nil && binder.hasDefaults
+
+	if needBody && !needBinding && !needDefaults {
+		return func(c *Context) error {
+			var req Req
+
+			if c.req.ContentLength > 0 {
+				if err := c.BindJSON(&req); err != nil {
+					return &BindError{Err: err, Source: "body"}
+				}
+			}
+
+			if validator != nil {
+				if errs := validator.validate(&req); len(errs) > 0 {
+					return &ValidationErrors{Errors: errs}
+				}
+			}
+
+			return fn(c, req)
+		}
+	}
 
 	return func(c *Context) error {
 		var req Req
 
-		if binder != nil && len(binder.fields) > 0 {
+		if needBinding {
 			if err := binder.bind(c, &req); err != nil {
 				return &BindError{Err: err, Source: "binding"}
 			}
@@ -83,7 +134,7 @@ func BindReq[Req any](fn func(*Context, Req) error) HandlerFunc {
 			}
 		}
 
-		if binder != nil {
+		if needDefaults {
 			binder.applyDefaults(&req)
 		}
 

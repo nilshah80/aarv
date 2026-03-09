@@ -267,6 +267,24 @@ func TestMiddleware_DecryptRequest(t *testing.T) {
 	}
 }
 
+func TestEncryptResponseWriterWriteHeader(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w := &encryptResponseWriter{
+		ResponseWriter: rec,
+		statusCode:     http.StatusOK,
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	w.WriteHeader(http.StatusAccepted)
+
+	if w.statusCode != http.StatusAccepted {
+		t.Fatalf("expected latest buffered status to stick until body write, got %d", w.statusCode)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("write header should remain buffered until finish, got %d", rec.Code)
+	}
+}
+
 func TestMiddleware_DecryptRequestLogsBodyCloseFailure(t *testing.T) {
 	key, _ := GenerateKey()
 	enc, _ := NewEncryptor(key)

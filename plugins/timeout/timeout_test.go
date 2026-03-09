@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nilshah80/aarv"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -94,4 +96,22 @@ func TestNewRePanicsOnHandlerPanic(t *testing.T) {
 		panic("boom")
 	}))
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+}
+
+func TestNewWithAarvContextUpdatesRequestContext(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(50 * time.Millisecond))
+
+	app.Get("/ctx", func(c *aarv.Context) error {
+		if _, ok := c.Request().Context().Deadline(); !ok {
+			t.Fatal("expected timeout middleware to install deadline on aarv request context")
+		}
+		return c.NoContent(http.StatusNoContent)
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ctx", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected no content, got %d", rec.Code)
+	}
 }

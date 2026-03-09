@@ -3,6 +3,7 @@ package logger
 import (
 	"bytes"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -53,13 +54,19 @@ func TestResponseWriterHelpers(t *testing.T) {
 	if n != 4 || rw.statusCode != 200 || !rw.written {
 		t.Fatalf("unexpected write-before-header state status=%d written=%v n=%d", rw.statusCode, rw.written, n)
 	}
+
+	releaseResponseWriter(nil)
+	releaseResponseWriter(rw)
+	if rw.ResponseWriter != nil || rw.statusCode != http.StatusOK || rw.bytesWritten != 0 || rw.written {
+		t.Fatalf("expected release to reset pooled writer, got %#v", rw)
+	}
 }
 
 func TestClientIP(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		setup func() string
-		want string
+		want  string
 	}{
 		{
 			name: "x-real-ip",
@@ -96,6 +103,24 @@ func TestClientIP(t *testing.T) {
 				return clientIP(req)
 			},
 			want: "5.5.5.5",
+		},
+		{
+			name: "empty remote addr",
+			setup: func() string {
+				req := httptest.NewRequest("GET", "/", nil)
+				req.RemoteAddr = ""
+				return clientIP(req)
+			},
+			want: "",
+		},
+		{
+			name: "ipv6 remote addr",
+			setup: func() string {
+				req := httptest.NewRequest("GET", "/", nil)
+				req.RemoteAddr = "[2001:db8::1]:4321"
+				return clientIP(req)
+			},
+			want: "[2001:db8::1]:4321",
 		},
 	}
 

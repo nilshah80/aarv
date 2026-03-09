@@ -145,13 +145,15 @@ func New(config ...Config) aarv.Middleware {
 			// Set the request ID on the response header
 			w.Header().Set(cfg.Header, id)
 
-			// Store the request ID in the request context
+			// Store the request ID in the request context and keep aarv's
+			// request-to-context mapping aligned if the request gets cloned.
 			ctx := context.WithValue(r.Context(), contextKey{}, id)
-			r = r.WithContext(ctx)
-
-			// Also store in aarv Context if available (so c.RequestID() works)
 			if c, ok := aarv.FromRequest(r); ok {
 				c.Set("requestId", id)
+				c.SetContext(ctx)
+				r = c.Request()
+			} else {
+				r = r.WithContext(ctx)
 			}
 
 			next.ServeHTTP(w, r)

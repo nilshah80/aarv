@@ -15,7 +15,7 @@ func WrapMiddleware(fn MiddlewareFunc) Middleware {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, ok := r.Context().Value(ctxKey{}).(*Context)
+			ctx, ok := contextFromRequest(r)
 			if !ok {
 				next.ServeHTTP(w, r)
 				return
@@ -46,7 +46,7 @@ func Recovery() Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
-					ctx, ok := r.Context().Value(ctxKey{}).(*Context)
+					ctx, ok := contextFromRequest(r)
 					if ok {
 						ctx.app.logger.Error("panic recovered",
 							"error", rec,
@@ -71,7 +71,7 @@ func Recovery() Middleware {
 func Logger() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, ok := r.Context().Value(ctxKey{}).(*Context)
+			ctx, ok := contextFromRequest(r)
 			if ok {
 				ctx.app.logger.Info("request",
 					"method", r.Method,

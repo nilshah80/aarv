@@ -71,17 +71,11 @@ func (c *OptimizedJSONCodec) Decode(r io.Reader, v any) error {
 	return json.NewDecoder(r).Decode(v)
 }
 
-// Encode writes v to w as JSON using a pooled buffer to reduce allocations.
+// Encode writes v to w as JSON.
+// For stdlib encoding/json, streaming directly to w is cheaper than encoding
+// into an intermediate pooled buffer and then copying to the destination.
 func (c *OptimizedJSONCodec) Encode(w io.Writer, v any) error {
-	buf := c.pool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer c.pool.Put(buf)
-
-	if err := json.NewEncoder(buf).Encode(v); err != nil {
-		return err
-	}
-	_, err := w.Write(buf.Bytes())
-	return err
+	return json.NewEncoder(w).Encode(v)
 }
 
 // UnmarshalBytes decodes JSON bytes into v using encoding/json.
