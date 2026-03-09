@@ -46,6 +46,174 @@ func TestBind(t *testing.T) {
 	}
 }
 
+func TestBindFastPathAdditionalCoverage(t *testing.T) {
+	t.Run("bind fast path zero content length and written response", func(t *testing.T) {
+		type req struct {
+			Name string `json:"name"`
+		}
+
+		app := New(WithBanner(false))
+		app.Post("/fast", Bind(func(c *Context, payload req) (map[string]string, error) {
+			if payload.Name != "" {
+				t.Fatalf("expected zero-value payload when body length is zero, got %+v", payload)
+			}
+			if err := c.NoContent(http.StatusAccepted); err != nil {
+				t.Fatalf("unexpected no-content error: %v", err)
+			}
+			return map[string]string{"ignored": "true"}, nil
+		}))
+
+		httpReq := httptest.NewRequest(http.MethodPost, "/fast", http.NoBody)
+		httpReq.ContentLength = 0
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httpReq)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected accepted status, got %d", rec.Code)
+		}
+	})
+
+	t.Run("bind fast path body decode and handler error", func(t *testing.T) {
+		type req struct {
+			Name string `json:"name"`
+		}
+
+		app := New(WithBanner(false))
+		app.Post("/fast", Bind(func(c *Context, payload req) (map[string]string, error) {
+			if payload.Name != "alice" {
+				t.Fatalf("unexpected payload %+v", payload)
+			}
+			return nil, errors.New("fast bind failed")
+		}))
+
+		resp := NewTestClient(app).Post("/fast", map[string]string{"name": "alice"})
+		resp.AssertStatus(t, http.StatusInternalServerError)
+	})
+
+	t.Run("bindreq fast path validation and handler success", func(t *testing.T) {
+		type req struct {
+			Name string `json:"name" validate:"required,min=2"`
+		}
+
+		app := New(WithBanner(false))
+		app.Post("/fastreq", BindReq(func(c *Context, payload req) error {
+			return c.JSON(http.StatusOK, map[string]string{"name": payload.Name})
+		}))
+
+		NewTestClient(app).Post("/fastreq", map[string]string{"name": "a"}).AssertStatus(t, http.StatusUnprocessableEntity)
+
+		resp := NewTestClient(app).Post("/fastreq", map[string]string{"name": "alice"})
+		resp.AssertStatus(t, http.StatusOK)
+	})
+
+	t.Run("multi-source bind applies defaults without body", func(t *testing.T) {
+		type req struct {
+			Value string `default:"fallback"`
+		}
+
+		app := New(WithBanner(false))
+		app.Get("/defaults", BindReq(func(c *Context, payload req) error {
+			if payload.Value != "fallback" {
+				t.Fatalf("expected defaulted value, got %+v", payload)
+			}
+			return c.NoContent(http.StatusNoContent)
+		}))
+
+		httpReq := httptest.NewRequest(http.MethodGet, "/defaults", http.NoBody)
+		httpReq.ContentLength = 0
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httpReq)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("expected no content, got %d", rec.Code)
+		}
+	})
+
+	t.Run("bind general path body error defaults validation and written response", func(t *testing.T) {
+		type req struct {
+			ID    string `param:"id"`
+			Name  string `json:"name" validate:"required,min=2"`
+			Alias string `default:"fallback"`
+		}
+
+		app := New(WithBanner(false))
+		app.Post("/users/{id}", Bind(func(c *Context, payload req) (map[string]string, error) {
+			if payload.ID != "42" || payload.Alias != "fallback" {
+				t.Fatalf("unexpected payload %+v", payload)
+			}
+			if err := c.NoContent(http.StatusAccepted); err != nil {
+				t.Fatalf("unexpected no-content error: %v", err)
+			}
+			return map[string]string{"ignored": "true"}, nil
+		}))
+
+		reqBadJSON := httptest.NewRequest(http.MethodPost, "/users/42", strings.NewReader("{"))
+		reqBadJSON.SetPathValue("id", "42")
+		reqBadJSON.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, reqBadJSON)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected bind body failure status, got %d", rec.Code)
+		}
+
+		NewTestClient(app).Post("/users/42", map[string]string{"name": "a"}).AssertStatus(t, http.StatusUnprocessableEntity)
+
+		reqOK := httptest.NewRequest(http.MethodPost, "/users/42", strings.NewReader(`{"name":"alice"}`))
+		reqOK.SetPathValue("id", "42")
+		reqOK.Header.Set("Content-Type", "application/json")
+		rec = httptest.NewRecorder()
+		app.ServeHTTP(rec, reqOK)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected written response path to win, got %d", rec.Code)
+		}
+	})
+
+	t.Run("bind general path returns serialized response when not written", func(t *testing.T) {
+		type req struct {
+			ID   string `param:"id"`
+			Name string `json:"name"`
+		}
+
+		app := New(WithBanner(false))
+		app.Post("/users/{id}", Bind(func(c *Context, payload req) (map[string]string, error) {
+			return map[string]string{"id": payload.ID, "name": payload.Name}, nil
+		}))
+
+		reqOK := httptest.NewRequest(http.MethodPost, "/users/24", strings.NewReader(`{"name":"bob"}`))
+		reqOK.SetPathValue("id", "24")
+		reqOK.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, reqOK)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected OK status, got %d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), `"id":"24"`) || !strings.Contains(rec.Body.String(), `"name":"bob"`) {
+			t.Fatalf("unexpected response body %q", rec.Body.String())
+		}
+	})
+
+	t.Run("bindreq general path body error and validation", func(t *testing.T) {
+		type req struct {
+			ID   string `param:"id"`
+			Name string `json:"name" validate:"required,min=2"`
+		}
+
+		app := New(WithBanner(false))
+		app.Post("/users/{id}", BindReq(func(c *Context, payload req) error {
+			return c.NoContent(http.StatusNoContent)
+		}))
+
+		reqBadJSON := httptest.NewRequest(http.MethodPost, "/users/42", strings.NewReader("{"))
+		reqBadJSON.SetPathValue("id", "42")
+		reqBadJSON.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, reqBadJSON)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected bindreq body failure status, got %d", rec.Code)
+		}
+
+		NewTestClient(app).Post("/users/42", map[string]string{"name": "a"}).AssertStatus(t, http.StatusUnprocessableEntity)
+	})
+}
+
 func TestBindValidation(t *testing.T) {
 	type Req struct {
 		Name  string `json:"name" validate:"required,min=2"`

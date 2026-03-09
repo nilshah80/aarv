@@ -291,6 +291,25 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Latest `main
 
 ## Phase 4: Middleware & Hooks (M4) ✅ COMPLETE
 
+### 4.0 Priority First
+- [ ] Reduce default logger overhead in full route-level benchmarks
+  Current benchmark signal: isolated logger middleware is at parity, but default logger paths still trail Mach/Gin (`Logger_Standard`: aarv `2888 ns/op`, Mach `3144`, Gin `3244`; `BareMinLogger`: aarv `3167`, Mach `2666`, Gin `2740`; `StandardLogger`: aarv `3545`)
+- [ ] Revisit single-request bind path vs Mach on the std codec
+  Current benchmark signal: aarv is now ahead of Gin on bind, but Mach still leads on std-codec single-request bind (`BindLight`: aarv `1072 ns/op`, Mach `960.6`; `Bind`: aarv `2379`, Mach `2140`)
+- [ ] Reduce default encrypt path overhead
+  Current benchmark signal: fair encrypt is strong, but default encrypt configurations still trail Mach on route-level benchmarks (`Encrypt`: aarv `3127 ns/op`, Mach `2940`; `BareMinEncrypt`: aarv `3256`, Mach `2759`; `StandardEncrypt`: aarv `3248`)
+- [ ] Decide whether to do one more stdlib-only pass on the static/vanilla path
+  Current benchmark signal: light static is essentially tied with Gin and ahead of Mach (`StaticLight`: aarv `189.2 ns/op`, Mach `212.7`, Gin `187.6`), but full vanilla request path still trails Mach slightly (`Vanilla`: aarv `1882`, Mach `1830`)
+
+Notes from latest benchmark pass:
+- Validator internals are in good shape and should not be the next optimization target
+- Context pooling is already a clear win over alloc-per-request
+- Codec encode path is effectively solved: std/optimized/raw are now at parity
+- JSONLight and ParamLight are now ahead of both Mach and Gin
+- Verbose logging is now ahead of Gin and Mach in current benchmarks
+- Parallel bind performance is one of aarv's strongest areas
+- Opt-in decode codecs are a separate lane: `segmentio` is materially faster than the std codec and beats Mach on `BindLight`, but it should remain opt-in
+
 ### 4.1 Middleware Chain ✅
 - [x] Implement middleware chain builder: `[]Middleware` → single `http.Handler`
 - [x] Pre-build chain at startup (not per request)

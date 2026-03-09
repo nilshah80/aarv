@@ -6,9 +6,9 @@ package logger
 
 import (
 	"log/slog"
-	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nilshah80/aarv"
@@ -40,11 +40,30 @@ type responseWriter struct {
 	written      bool
 }
 
+var responseWriterPool = sync.Pool{
+	New: func() any {
+		return &responseWriter{}
+	},
+}
+
 func newResponseWriter(w http.ResponseWriter) *responseWriter {
-	return &responseWriter{
-		ResponseWriter: w,
-		statusCode:     http.StatusOK,
+	rw := responseWriterPool.Get().(*responseWriter)
+	rw.ResponseWriter = w
+	rw.statusCode = http.StatusOK
+	rw.bytesWritten = 0
+	rw.written = false
+	return rw
+}
+
+func releaseResponseWriter(rw *responseWriter) {
+	if rw == nil {
+		return
 	}
+	rw.ResponseWriter = nil
+	rw.statusCode = http.StatusOK
+	rw.bytesWritten = 0
+	rw.written = false
+	responseWriterPool.Put(rw)
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
@@ -80,8 +99,14 @@ func clientIP(r *http.Request) string {
 		}
 		return xff
 	}
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-	return ip
+	addr := r.RemoteAddr
+	if addr == "" {
+		return ""
+	}
+	if i := strings.LastIndexByte(addr, ':'); i > 0 && strings.IndexByte(addr, ']') == -1 {
+		return addr[:i]
+	}
+	return addr
 }
 
 // New creates a request logging middleware with optional configuration.
@@ -109,6 +134,7 @@ func New(config ...Config) aarv.Middleware {
 
 			start := time.Now()
 			rw := newResponseWriter(w)
+			defer releaseResponseWriter(rw)
 
 			next.ServeHTTP(rw, r)
 
@@ -120,16 +146,16 @@ func New(config ...Config) aarv.Middleware {
 				requestID = c.RequestID()
 			}
 
-			// Log request completion with all fields
-			slog.Log(r.Context(), cfg.Level, "request",
-				"method", r.Method,
-				"path", path,
-				"status", rw.statusCode,
-				"latency", latency.String(),
-				"client_ip", clientIP(r),
-				"user_agent", r.UserAgent(),
-				"bytes_out", rw.bytesWritten,
-				"request_id", requestID,
+			// Log request completion with all fields.
+			slog.LogAttrs(r.Context(), cfg.Level, "request",
+				slog.String("method", r.Method),
+				slog.String("path", path),
+				slog.Int("status", rw.statusCode),
+				slog.Duration("latency", latency),
+				slog.String("client_ip", clientIP(r)),
+				slog.String("user_agent", r.UserAgent()),
+				slog.Int64("bytes_out", rw.bytesWritten),
+				slog.String("request_id", requestID),
 			)
 		})
 	}

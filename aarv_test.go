@@ -296,6 +296,249 @@ func TestServerLifecycleAdditionalCoverage(t *testing.T) {
 	})
 }
 
+func TestDirectRoutingAdditionalCoverage(t *testing.T) {
+	t.Run("serveDirect covers static and dynamic routes", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Get("/static", func(c *Context) error {
+			return c.Text(http.StatusOK, "static")
+		})
+		app.Get("/users/{id}", func(c *Context) error {
+			return c.JSON(http.StatusOK, map[string]string{
+				"id":      c.Param("id"),
+				"request": c.Request().PathValue("id"),
+			})
+		})
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/static", nil)
+		ctx := app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+		if !app.serveDirect(ctx, rec, req) {
+			t.Fatal("expected direct static route dispatch")
+		}
+		if rec.Code != http.StatusOK || rec.Body.String() != "static" {
+			t.Fatalf("unexpected static direct response code=%d body=%q", rec.Code, rec.Body.String())
+		}
+
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodGet, "/users/42", nil)
+		ctx = app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+		if !app.serveDirect(ctx, rec, req) {
+			t.Fatal("expected direct dynamic route dispatch")
+		}
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"42"`) || !strings.Contains(rec.Body.String(), `"request":"42"`) {
+			t.Fatalf("unexpected dynamic direct response code=%d body=%q", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("serveDirect decodes wildcard path values and catch-all routes", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Get("/files/{path...}", func(c *Context) error {
+			return c.JSON(http.StatusOK, map[string]string{"path": c.Param("path")})
+		})
+		app.Get("/users/{id}", func(c *Context) error {
+			return c.JSON(http.StatusOK, map[string]string{"id": c.Param("id")})
+		})
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/files/a%2Fb/c", nil)
+		ctx := app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+		if !app.serveDirect(ctx, rec, req) {
+			t.Fatal("expected catch-all direct route dispatch")
+		}
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"path":"a/b/c"`) {
+			t.Fatalf("unexpected catch-all direct response code=%d body=%q", rec.Code, rec.Body.String())
+		}
+
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodGet, "/users/one/posts", nil)
+		ctx = app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+		if app.serveDirect(ctx, rec, req) {
+			t.Fatal("expected non-matching dynamic route to skip direct dispatch")
+		}
+	})
+
+	t.Run("serveDirect false branches and routing mux fallback", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.mux.Handle("/mounted/", http.StripPrefix("/mounted", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+		})))
+		app.Get("/middleware", func(c *Context) error {
+			return c.NoContent(http.StatusAccepted)
+		}, WithRouteMiddleware(func(next http.Handler) http.Handler { return next }))
+
+		req := httptest.NewRequest(http.MethodGet, "/missing", nil)
+		rec := httptest.NewRecorder()
+		ctx := app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+		if app.serveDirect(ctx, rec, req) {
+			t.Fatal("expected missing route to skip direct dispatch")
+		}
+
+		req = httptest.NewRequest(http.MethodGet, "/mounted/x", nil)
+		rec = httptest.NewRecorder()
+		ctx = app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+		if app.serveDirect(ctx, rec, req) {
+			t.Fatal("expected non-aarv mounted route to skip direct dispatch")
+		}
+
+		req = httptest.NewRequest(http.MethodGet, "/middleware", nil)
+		rec = httptest.NewRecorder()
+		ctx = app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+		if !app.serveDirect(ctx, rec, req) {
+			t.Fatal("expected tracked route with route middleware to dispatch through mux handler")
+		}
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected mux-served route to succeed with attached framework context, got %d", rec.Code)
+		}
+
+		dynApp := New(WithBanner(false))
+		dynApp.Get("/users/{id}", func(c *Context) error {
+			return c.JSON(http.StatusOK, map[string]string{"id": c.Param("id")})
+		}, WithRouteMiddleware(func(next http.Handler) http.Handler { return next }))
+
+		req = httptest.NewRequest(http.MethodGet, "/users/77", nil)
+		rec = httptest.NewRecorder()
+		ctx = dynApp.AcquireContext(rec, req)
+		defer dynApp.ReleaseContext(ctx)
+		if !dynApp.serveDirect(ctx, rec, req) {
+			t.Fatal("expected dynamic route with middleware to dispatch through mux")
+		}
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"77"`) {
+			t.Fatalf("unexpected dynamic mux fallback response code=%d body=%q", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("direct pattern helpers", func(t *testing.T) {
+		app := New(WithBanner(false))
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		ctx := app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+
+		root := compileDirectPattern("/")
+		if !root.match("/", ctx) {
+			t.Fatal("expected empty direct pattern to match root path")
+		}
+
+		ctx.reset(rec, httptest.NewRequest(http.MethodGet, "/users/99", nil))
+		if !compileDirectPattern("/users/{id}").match("/users/99", ctx) {
+			t.Fatal("expected param direct pattern to match")
+		}
+		if got := ctx.Param("id"); got != "99" {
+			t.Fatalf("expected cached direct param, got %q", got)
+		}
+
+		ctx.reset(rec, httptest.NewRequest(http.MethodGet, "/users", nil))
+		if compileDirectPattern("/users/{id}").match("/users", ctx) {
+			t.Fatal("unexpected direct pattern match for missing param")
+		}
+
+		ctx.reset(rec, httptest.NewRequest(http.MethodGet, "/files", nil))
+		if !compileDirectPattern("/files/{path...}").match("/files", ctx) {
+			t.Fatal("expected catch-all direct pattern to match empty tail")
+		}
+		if got := ctx.Param("path"); got != "" {
+			t.Fatalf("expected empty catch-all param, got %q", got)
+		}
+
+		if got := decodePathValue("%zz"); got != "%zz" {
+			t.Fatalf("expected invalid escape to be returned unchanged, got %q", got)
+		}
+		if got := decodePathValue("a%2Fb"); got != "a/b" {
+			t.Fatalf("expected valid escape to be decoded, got %q", got)
+		}
+	})
+
+	t.Run("routing mux mounted handler no-write fallback and 405 without context", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.SetNotFoundHandler(func(c *Context) error {
+			return c.Text(http.StatusNotFound, "custom-not-found")
+		})
+		app.SetMethodNotAllowedHandler(func(c *Context) error {
+			return c.Text(http.StatusMethodNotAllowed, "custom-method")
+		})
+		app.Get("/users/{id}", func(c *Context) error { return c.NoContent(http.StatusOK) })
+
+		app.mux.Handle("/mount/", http.StripPrefix("/mount", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})))
+
+		rm := &routingMux{
+			mux:           app.mux,
+			app:           app,
+			routesByKey:   app.routesByKey,
+			routeHandlers: app.routeHandlers,
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/mount/child", nil)
+		rec := httptest.NewRecorder()
+		ctx := app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+		storeRequestContext(req, ctx)
+		defer deleteRequestContext(req)
+		rm.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound || rec.Body.String() != "custom-not-found" {
+			t.Fatalf("unexpected mounted fallback response code=%d body=%q", rec.Code, rec.Body.String())
+		}
+
+		req = httptest.NewRequest(http.MethodPost, "/users/42", nil)
+		rec = httptest.NewRecorder()
+		rm.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected stdlib 405 without aarv context, got %d", rec.Code)
+		}
+	})
+}
+
+func TestAddRouteMiddlewarePathAdditionalCoverage(t *testing.T) {
+	t.Run("route middleware body limit and handler error use wrapped route handler", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			})
+		})
+		app.Post("/limited", func(c *Context) error {
+			_, err := c.Body()
+			return err
+		}, WithRouteMaxBodySize(1), WithRouteMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			})
+		}))
+
+		resp := NewTestClient(app).Post("/limited", map[string]string{"value": "too-large"})
+		resp.AssertStatus(t, http.StatusInternalServerError)
+	})
+
+	t.Run("dynamic route with global middleware goes through routing mux servehttp path", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-MW", "true")
+				next.ServeHTTP(w, r)
+			})
+		})
+		app.Get("/users/{id}", func(c *Context) error {
+			return c.JSON(http.StatusOK, map[string]string{"id": c.Param("id")})
+		})
+
+		resp := NewTestClient(app).Get("/users/99")
+		resp.AssertStatus(t, http.StatusOK)
+		if resp.Headers.Get("X-MW") != "true" {
+			t.Fatalf("expected middleware header, got %q", resp.Headers.Get("X-MW"))
+		}
+		if !strings.Contains(resp.Text(), `"id":"99"`) {
+			t.Fatalf("unexpected body %q", resp.Text())
+		}
+	})
+}
+
 func TestAppInternalBranchCoverage(t *testing.T) {
 	t.Run("with prefix and mount branch", func(t *testing.T) {
 		var prefix string

@@ -79,7 +79,12 @@ func New(d time.Duration) aarv.Middleware {
 			ctx, cancel := context.WithTimeout(r.Context(), d)
 			defer cancel()
 
-			r = r.WithContext(ctx)
+			if c, ok := aarv.FromRequest(r); ok {
+				c.SetContext(ctx)
+				r = c.Request()
+			} else {
+				r = r.WithContext(ctx)
+			}
 
 			tw := &timeoutWriter{
 				ResponseWriter: w,
