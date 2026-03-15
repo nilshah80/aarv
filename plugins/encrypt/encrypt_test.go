@@ -463,6 +463,38 @@ func TestMiddleware_ExcludedContentTypePrefix(t *testing.T) {
 	}
 }
 
+func TestMiddleware_NoExcludedTypesStillEncrypts(t *testing.T) {
+	key, _ := GenerateKey()
+	enc, _ := NewEncryptor(key)
+
+	app := aarv.New(aarv.WithBanner(false))
+	middleware, _ := New(key, Config{
+		EncryptResponse: true,
+		ExcludedTypes:   nil,
+	})
+	app.Use(middleware)
+
+	app.Get("/text", func(c *aarv.Context) error {
+		c.Response().Header().Set("Content-Type", "text/plain")
+		return c.Text(http.StatusOK, "hello")
+	})
+
+	req := httptest.NewRequest("GET", "/text", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Content-Type"); got != EncryptedContentType {
+		t.Fatalf("expected encrypted content type, got %q", got)
+	}
+	decrypted, err := enc.Decrypt(rec.Body.Bytes())
+	if err != nil {
+		t.Fatalf("expected decryptable response, got %v", err)
+	}
+	if strings.TrimSpace(string(decrypted)) != "hello" {
+		t.Fatalf("expected encrypted plaintext hello, got %q", string(decrypted))
+	}
+}
+
 func TestMiddleware_DisableEncryption(t *testing.T) {
 	key, _ := GenerateKey()
 
@@ -490,6 +522,15 @@ func TestMiddleware_DisableEncryption(t *testing.T) {
 func TestEncryptResponseWriterHelpers(t *testing.T) {
 	key, _ := GenerateKey()
 	enc, _ := NewEncryptor(key)
+
+	releaseEncryptResponseWriter(nil)
+
+	large := &encryptResponseWriter{}
+	large.buf.Write(bytes.Repeat([]byte("x"), maxReusableEncryptedBody+1))
+	releaseEncryptResponseWriter(large)
+	if large.buf.Cap() > maxReusableEncryptedBody {
+		t.Fatalf("expected oversized encrypt buffer to be dropped, got cap=%d", large.buf.Cap())
+	}
 
 	rec := httptest.NewRecorder()
 	w := &encryptResponseWriter{

@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/nilshah80/aarv"
 )
@@ -38,6 +39,8 @@ const (
 	KeySize = 32
 	// EncryptedContentType is the Content-Type for encrypted payloads
 	EncryptedContentType = "application/encrypted"
+	// maxReusableEncryptedBody limits pooled response buffer retention.
+	maxReusableEncryptedBody = 16 << 10
 )
 
 var (
@@ -191,6 +194,42 @@ type encryptResponseWriter struct {
 	skipEncrypt    bool
 }
 
+var encryptResponseWriterPool = sync.Pool{
+	New: func() any {
+		return &encryptResponseWriter{}
+	},
+}
+
+func acquireEncryptResponseWriter(w http.ResponseWriter, encryptor *Encryptor, isExcludedFunc func(string) bool) *encryptResponseWriter {
+	erw := encryptResponseWriterPool.Get().(*encryptResponseWriter)
+	erw.ResponseWriter = w
+	erw.encryptor = encryptor
+	erw.statusCode = http.StatusOK
+	erw.headerWritten = false
+	erw.isExcludedFunc = isExcludedFunc
+	erw.skipEncrypt = false
+	erw.buf.Reset()
+	return erw
+}
+
+func releaseEncryptResponseWriter(w *encryptResponseWriter) {
+	if w == nil {
+		return
+	}
+	w.ResponseWriter = nil
+	w.encryptor = nil
+	w.statusCode = http.StatusOK
+	w.headerWritten = false
+	w.isExcludedFunc = nil
+	w.skipEncrypt = false
+	if w.buf.Cap() > maxReusableEncryptedBody {
+		w.buf = bytes.Buffer{}
+	} else {
+		w.buf.Reset()
+	}
+	encryptResponseWriterPool.Put(w)
+}
+
 func (w *encryptResponseWriter) WriteHeader(code int) {
 	if !w.headerWritten {
 		w.statusCode = code
@@ -276,6 +315,7 @@ func New(key []byte, config ...Config) (aarv.Middleware, error) {
 	for _, p := range cfg.ExcludedPaths {
 		excludedPaths[p] = struct{}{}
 	}
+	hasExcludedPaths := len(excludedPaths) > 0
 
 	// Build excluded types set
 	excludedTypes := make(map[string]struct{})
@@ -287,10 +327,14 @@ func New(key []byte, config ...Config) (aarv.Middleware, error) {
 			excludedTypes[t] = struct{}{}
 		}
 	}
+	hasExcludedTypes := len(excludedTypes) > 0 || len(excludedPrefixes) > 0
 
 	isExcludedType := func(contentType string) bool {
+		if !hasExcludedTypes {
+			return false
+		}
 		if idx := strings.IndexByte(contentType, ';'); idx >= 0 {
-			contentType = strings.TrimSpace(contentType[:idx])
+			contentType = contentType[:idx]
 		}
 		if _, ok := excludedTypes[contentType]; ok {
 			return true
@@ -311,7 +355,7 @@ func New(key []byte, config ...Config) (aarv.Middleware, error) {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Check if path is excluded
-			if isExcludedPath(r.URL.Path) {
+			if hasExcludedPaths && isExcludedPath(r.URL.Path) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -357,13 +401,8 @@ func New(key []byte, config ...Config) (aarv.Middleware, error) {
 
 			// Encrypt response if enabled
 			if cfg.EncryptResponse {
-				erw := &encryptResponseWriter{
-					ResponseWriter: w,
-					encryptor:      encryptor,
-					statusCode:     http.StatusOK,
-					isExcludedFunc: isExcludedType,
-				}
-
+				erw := acquireEncryptResponseWriter(w, encryptor, isExcludedType)
+				defer releaseEncryptResponseWriter(erw)
 				defer func() { _ = erw.finish() }()
 				next.ServeHTTP(erw, r)
 			} else {

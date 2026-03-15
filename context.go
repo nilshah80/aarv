@@ -15,15 +15,17 @@ import (
 )
 
 const maxReusableBodyCache = 16 << 10
+const maxReusableStoreKeys = 32
 
 // Context wraps the http.Request and http.ResponseWriter with convenience helpers.
 // It is pooled via sync.Pool — do NOT hold references to it beyond the handler lifetime.
 type Context struct {
 	req               *http.Request
-	rootReq           *http.Request
 	res               http.ResponseWriter
 	app               *App
 	store             map[string]any
+	requestID         string
+	requestIDSet      bool
 	query             url.Values // cached parsed query params
 	bodyCache         []byte
 	bodyRead          bool
@@ -38,19 +40,26 @@ type Context struct {
 
 func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.req = r
-	c.rootReq = r
 	c.res = w
-	if cap(c.bodyCache) > maxReusableBodyCache {
-		c.bodyCache = nil
-	} else if c.bodyCache != nil {
-		c.bodyCache = c.bodyCache[:0]
+	if c.bodyCache != nil {
+		if cap(c.bodyCache) > maxReusableBodyCache {
+			c.bodyCache = nil
+		} else {
+			c.bodyCache = c.bodyCache[:0]
+		}
 	}
 	c.bodyRead = false
 	c.written = false
 	c.statusCode = http.StatusOK
 	c.query = nil
 	c.cachedLogger = nil
-	c.store = nil
+	if len(c.store) > maxReusableStoreKeys {
+		c.store = nil // release oversized maps
+	} else if c.store != nil {
+		clear(c.store)
+	}
+	c.requestID = ""
+	c.requestIDSet = false
 	c.pathParamCount = 0
 	c.pathParamsApplied = false
 }
@@ -69,11 +78,16 @@ func (c *Context) Context() context.Context { return c.req.Context() }
 
 // SetContext replaces the request's context.
 func (c *Context) SetContext(ctx context.Context) {
-	ctx = context.WithValue(ctx, ctxKey{}, c)
+	prevReq := c.req
+	if existing, ok := ctx.Value(ctxKey{}).(*Context); !ok || existing != c {
+		ctx = context.WithValue(ctx, ctxKey{}, c)
+	}
 	req := c.req.WithContext(ctx)
 	c.req = req
 	c.pathParamsApplied = false
-	storeRequestContext(req, c)
+	if prevReq != nil && prevReq != req {
+		deleteRequestContext(prevReq)
+	}
 }
 
 // Method returns the HTTP method.
@@ -568,6 +582,13 @@ func (c *Context) SendStatus(code int) error {
 
 // Set stores a key-value pair in the request-scoped store.
 func (c *Context) Set(key string, value any) {
+	if key == "requestId" {
+		if s, ok := value.(string); ok {
+			c.requestID = s
+			c.requestIDSet = true
+			return
+		}
+	}
 	if c.store == nil {
 		c.store = make(map[string]any, 4)
 	}
@@ -576,6 +597,9 @@ func (c *Context) Set(key string, value any) {
 
 // Get retrieves a value from the request-scoped store.
 func (c *Context) Get(key string) (any, bool) {
+	if key == "requestId" && c.requestIDSet {
+		return c.requestID, true
+	}
 	v, ok := c.store[key]
 	return v, ok
 }
@@ -593,6 +617,12 @@ func (c *Context) MustGet(key string) any {
 
 // RequestID returns the request ID from the store (set by RequestID middleware).
 func (c *Context) RequestID() string {
+	if c.requestIDSet {
+		return c.requestID
+	}
+	if c.store == nil {
+		return ""
+	}
 	v, ok := c.store["requestId"]
 	if !ok {
 		return ""
@@ -626,6 +656,10 @@ func (c *Context) ErrorWithDetail(status int, message, detail string) error {
 
 // GetTyped retrieves a typed value from the context store.
 func GetTyped[T any](c *Context, key string) (T, bool) {
+	if key == "requestId" && c.requestIDSet {
+		t, ok := any(c.requestID).(T)
+		return t, ok
+	}
 	v, ok := c.store[key]
 	if !ok {
 		var zero T
