@@ -107,6 +107,14 @@ func WithRedirectTrailingSlash(enabled bool) Option {
 	return func(a *App) { a.config.RedirectTrailingSlash = enabled }
 }
 
+// WithRequestContextBridge controls whether Aarv clones requests to keep the
+// framework Context attached through raw r.WithContext(...) middleware chains.
+// Disable it only for middleware stacks that never rely on aarv.FromRequest(...)
+// after cloning requests, in exchange for a slightly cheaper hot path.
+func WithRequestContextBridge(enabled bool) Option {
+	return func(a *App) { a.config.RequestContextBridge = enabled }
+}
+
 // Config holds server configuration values.
 type Config struct {
 	// ReadTimeout is the maximum duration for reading the entire request.
@@ -135,17 +143,22 @@ type Config struct {
 	Debug bool
 	// RedirectTrailingSlash enables redirects between slash and non-slash route variants.
 	RedirectTrailingSlash bool
+	// RequestContextBridge clones requests to keep Aarv Context available through
+	// raw r.WithContext(...) middleware chains. Disable only for fully opt-in
+	// performance-sensitive stacks that do not need that compatibility.
+	RequestContextBridge bool
 }
 
 func defaultConfig() *Config {
 	return &Config{
-		ReadTimeout:       15 * time.Second,
-		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		ShutdownTimeout:   30 * time.Second,
-		MaxHeaderBytes:    1 << 20, // 1 MB
-		MaxBodySize:       4 << 20, // 4 MB
-		Banner:            true,
+		ReadTimeout:          15 * time.Second,
+		ReadHeaderTimeout:    5 * time.Second,
+		WriteTimeout:         15 * time.Second,
+		IdleTimeout:          60 * time.Second,
+		ShutdownTimeout:      30 * time.Second,
+		MaxHeaderBytes:       1 << 20, // 1 MB
+		MaxBodySize:          4 << 20, // 4 MB
+		Banner:               true,
+		RequestContextBridge: true,
 	}
 }

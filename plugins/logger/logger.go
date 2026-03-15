@@ -121,15 +121,19 @@ func New(config ...Config) aarv.Middleware {
 	for _, p := range cfg.SkipPaths {
 		skipPaths[p] = struct{}{}
 	}
+	hasSkipPaths := len(skipPaths) > 0
+	baseLogger := slog.Default()
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
 
 			// Skip logging for configured paths
-			if _, ok := skipPaths[path]; ok {
-				next.ServeHTTP(w, r)
-				return
+			if hasSkipPaths {
+				if _, ok := skipPaths[path]; ok {
+					next.ServeHTTP(w, r)
+					return
+				}
 			}
 
 			start := time.Now()
@@ -139,6 +143,7 @@ func New(config ...Config) aarv.Middleware {
 			next.ServeHTTP(rw, r)
 
 			latency := time.Since(start)
+			userAgent := r.Header.Get("User-Agent")
 
 			// Get request ID if available
 			requestID := ""
@@ -147,13 +152,13 @@ func New(config ...Config) aarv.Middleware {
 			}
 
 			// Log request completion with all fields.
-			slog.LogAttrs(r.Context(), cfg.Level, "request",
+			baseLogger.LogAttrs(r.Context(), cfg.Level, "request",
 				slog.String("method", r.Method),
 				slog.String("path", path),
 				slog.Int("status", rw.statusCode),
 				slog.Duration("latency", latency),
 				slog.String("client_ip", clientIP(r)),
-				slog.String("user_agent", r.UserAgent()),
+				slog.String("user_agent", userAgent),
 				slog.Int64("bytes_out", rw.bytesWritten),
 				slog.String("request_id", requestID),
 			)

@@ -138,40 +138,83 @@ app := aarv.New(aarv.WithCodec(segmentio.New()))
 
 ## Performance
 
-Aarv includes built-in request ID generation and context propagation. When comparing frameworks with **identical functionality**, Aarv matches or outperforms alternatives.
+The core framework stays zero-dependency and production-oriented. The `requestid` plugin is opt-in, but Aarv does preserve framework context across raw `r.WithContext(...)` middleware clones by default so standard Go middleware keeps working.
 
-### Fair Comparison (500K requests, 100 concurrent connections, real TCP)
+### Benchmark Reading Guide
 
-All frameworks implementing identical request ID generation + context storage + retrieval:
+- `vanilla` and `bare-min` benchmarks are baseline framework-overhead comparisons, not full feature-parity comparisons.
+- `fair` logger/encrypt benchmarks are the apples-to-apples comparisons: same request ID generation, same context storage/retrieval pattern, and same middleware behavior.
+- bind benchmarks are most meaningful when all frameworks validate the request, not just decode JSON.
+
+### Current Benchmark Snapshot
+
+Focused microbenchmarks:
 
 | Scenario | Aarv | Mach | Gin |
 |----------|------|------|-----|
-| **Logger Middleware** | | | |
-| Throughput | 154K RPS | 154K RPS | 154K RPS |
-| P50 Latency | **553µs** | 559µs | 557µs |
-| P99 Latency | 1.90ms | 1.88ms | 1.90ms |
-| allocs/op | **82** | 88 | 86 |
-| **Encryption Middleware** | | | |
-| Throughput | 151K RPS | **152K RPS** | 151K RPS |
-| P50 Latency | 559µs | **557µs** | 558µs |
-| P99 Latency | **1.91ms** | 1.93ms | 1.97ms |
-| allocs/op | **78** | 83 | 83 |
+| `Bind` | `2125 ns/op`, `7045 B/op`, `30 allocs/op` | `2570 ns/op`, `7898 B/op`, `38 allocs/op` | `2938 ns/op`, `8490 B/op`, `48 allocs/op` |
+| `BindLight` | `977.7 ns/op`, `1308 B/op`, `16 allocs/op` | `1421 ns/op`, `2154 B/op`, `24 allocs/op` | `1743 ns/op`, `2749 B/op`, `34 allocs/op` |
+| `FairLogger` | `3174 ns/op`, `7713 B/op`, `32 allocs/op` | `3027 ns/op`, `7350 B/op`, `30 allocs/op` | `2981 ns/op`, `7576 B/op`, `28 allocs/op` |
+| `FairEncrypt` | `3046 ns/op`, `8585 B/op`, `34 allocs/op` | `2984 ns/op`, `8581 B/op`, `33 allocs/op` | `3034 ns/op`, `8872 B/op`, `33 allocs/op` |
 
-### Understanding Vanilla Benchmarks
+Isolated middleware-only comparisons:
 
-In "vanilla" benchmarks (no middleware), Aarv shows ~5 extra allocations compared to Mach/Gin. This is because Aarv automatically provides:
+| Scenario | Aarv | Equivalent Baseline |
+|----------|------|---------------------|
+| `LoggerIsolated` | `948.5 ns/op`, `1042 B/op`, `8 allocs/op` | `1031 ns/op`, `1089 B/op`, `9 allocs/op` |
+| `EncryptIsolated` | `564.6 ns/op`, `736 B/op`, `8 allocs/op` | `566.9 ns/op`, `880 B/op`, `10 allocs/op` |
 
-- **Request ID generation** (ULID) on every request
-- **Context propagation** via `context.WithValue` + `r.WithContext`
-- **Request ID retrieval** via `aarv.FromRequest(r).RequestID()`
+Real TCP load test (`500K` requests / framework, `100` concurrent connections):
 
-When other frameworks implement these same features, they incur the same costs — and Aarv often comes out ahead due to its optimized implementation.
+| Scenario | Aarv | Mach | Gin |
+|----------|------|------|-----|
+| `Vanilla` | `158K RPS`, `599.3µs avg`, `1.79ms p99`, `6.0KB/op`, `67 allocs/op`, `79.0% CPU` | `159K RPS`, `599.5µs avg`, `1.77ms p99`, `6.0KB/op`, `67 allocs/op`, `79.2% CPU` | `158K RPS`, `598.4µs avg`, `1.78ms p99`, `6.4KB/op`, `68 allocs/op`, `77.8% CPU` |
+| `FairLogger` | `156K RPS`, `603.9µs avg`, `1.97ms p99`, `7.2KB/op`, `82 allocs/op`, `77.5% CPU` | `159K RPS`, `593.4µs avg`, `1.87ms p99`, `6.8KB/op`, `80 allocs/op`, `76.2% CPU` | `157K RPS`, `600.3µs avg`, `1.90ms p99`, `7.0KB/op`, `78 allocs/op`, `78.1% CPU` |
+| `FairEncrypt` | `154K RPS`, `606.8µs avg`, `1.99ms p99`, `7.9KB/op`, `84 allocs/op`, `77.1% CPU` | `155K RPS`, `605.0µs avg`, `1.93ms p99`, `7.9KB/op`, `83 allocs/op`, `77.6% CPU` | `154K RPS`, `608.0µs avg`, `1.94ms p99`, `8.2KB/op`, `83 allocs/op`, `77.6% CPU` |
+| `BareMinLogger` | `158K RPS`, `601.7µs avg`, `1.87ms p99`, `6.5KB/op`, `73 allocs/op`, `78.1% CPU` | `159K RPS`, `596.5µs avg`, `1.79ms p99`, `6.1KB/op`, `72 allocs/op`, `79.0% CPU` | `157K RPS`, `601.7µs avg`, `1.84ms p99`, `6.4KB/op`, `71 allocs/op`, `78.3% CPU` |
+| `BareMinEncrypt` | `154K RPS`, `612.1µs avg`, `1.91ms p99`, `7.7KB/op`, `75 allocs/op`, `77.8% CPU` | `155K RPS`, `610.1µs avg`, `1.91ms p99`, `7.3KB/op`, `74 allocs/op`, `78.0% CPU` | `154K RPS`, `611.6µs avg`, `1.91ms p99`, `7.6KB/op`, `75 allocs/op`, `78.2% CPU` |
 
-**Bottom line**: The "overhead" in vanilla benchmarks is actually useful work. In production scenarios with middleware, Aarv is fastest or tied.
+Interpretation:
+
+- Aarv's logger and encrypt plugins are already competitive in isolation.
+- Fair logger and fair encrypt are near-parity with other stdlib frameworks when the work is actually identical.
+- The remaining gap on ultra-minimal middleware paths is mostly framework request-context bridging overhead, not plugin logic.
+- On bind, Aarv is ahead once the comparison includes validation work on the other side too.
+
+### Performance Tuning
+
+`WithRequestContextBridge(false)` is an opt-in fast mode for middleware-heavy services that never rely on `aarv.FromRequest(...)` after cloning requests with `r.WithContext(...)`.
+
+Use it when:
+
+- your middleware stack does not need Aarv context recovery from cloned requests
+- you want to reduce the residual `bare-min` logger/encrypt overhead
+
+Do not use it when:
+
+- standard middleware calls `r.WithContext(...)` and downstream code expects `aarv.FromRequest(...)` to still work on the cloned request
+- you need the default compatibility behavior across mixed stdlib middleware
+
+Example:
+
+```go
+app := aarv.New(
+    aarv.WithBanner(false),
+    aarv.WithRequestContextBridge(false),
+)
+```
+
+This mode is intentionally opt-in because it trades away middleware compatibility for a slightly cheaper hot path.
+
+In the current bare-min benchmarks, disabling the bridge trims roughly:
+
+- logger path: about `90 ns/op`, `371 B/op`, and `2 allocs/op`
+- encrypt path: about `59 ns/op`, `369 B/op`, and `2 allocs/op`
 
 Run benchmarks yourself:
+
 ```bash
-cd tests/benchmark && go test -bench=BenchmarkFair -benchmem
+cd tests/benchmark && go test -bench='Benchmark(Fair|BareMin|Bind)' -benchmem
 cd tests/benchmark && go test -v -run TestFairLoadTest -timeout 30m
 ```
 

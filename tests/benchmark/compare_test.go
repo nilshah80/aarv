@@ -2,10 +2,6 @@ package benchmark
 
 import (
 	"bytes"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,11 +13,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	playgroundvalidator "github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
+	"github.com/labstack/echo/v4"
 	"github.com/mrshabel/mach"
 	"github.com/nilshah80/aarv"
 	jsonv2codec "github.com/nilshah80/aarv/codec/jsonv2"
@@ -172,11 +171,16 @@ func newMach_Param() http.Handler {
 }
 
 func newMach_Bind() http.Handler {
+	validate := playgroundvalidator.New()
 	app := mach.New()
 	app.POST("/users", func(c *mach.Context) {
 		var req BindReq
 		if err := c.DecodeJSON(&req); err != nil {
 			c.JSON(400, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := validate.Struct(req); err != nil {
+			c.JSON(422, map[string]string{"error": err.Error()})
 			return
 		}
 		c.JSON(200, BindRes{ID: "1", Name: req.Name, Email: req.Email})
@@ -217,6 +221,50 @@ func newGin_Bind() http.Handler {
 	return r
 }
 
+// --- Echo ---
+
+func newEcho_Static() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.GET("/hello", func(c echo.Context) error { return c.String(200, "ok") })
+	return e
+}
+
+func newEcho_JSON() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.GET("/json", func(c echo.Context) error { return c.JSON(200, map[string]string{"message": "hello"}) })
+	return e
+}
+
+func newEcho_Param() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.GET("/users/:id", func(c echo.Context) error { return c.JSON(200, map[string]string{"id": c.Param("id")}) })
+	return e
+}
+
+func newEcho_Bind() http.Handler {
+	validate := playgroundvalidator.New()
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.POST("/users", func(c echo.Context) error {
+		var req BindReq
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(422, map[string]string{"error": err.Error()})
+		}
+		if err := validate.Struct(req); err != nil {
+			return c.JSON(422, map[string]string{"error": err.Error()})
+		}
+		return c.JSON(200, BindRes{ID: "1", Name: req.Name, Email: req.Email})
+	})
+	return e
+}
+
 // --- Fiber ---
 
 func newFiber_Static() *fiber.App {
@@ -238,10 +286,14 @@ func newFiber_Param() *fiber.App {
 }
 
 func newFiber_Bind() *fiber.App {
+	validate := playgroundvalidator.New()
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Post("/users", func(c *fiber.Ctx) error {
 		var req BindReq
 		if err := c.BodyParser(&req); err != nil {
+			return c.Status(422).JSON(fiber.Map{"error": err.Error()})
+		}
+		if err := validate.Struct(req); err != nil {
 			return c.Status(422).JSON(fiber.Map{"error": err.Error()})
 		}
 		return c.JSON(BindRes{ID: "1", Name: req.Name, Email: req.Email})
@@ -267,9 +319,20 @@ func newAarv_Middleware() http.Handler {
 	return app
 }
 
+func newAarv_MiddlewareFastMode() http.Handler {
+	app := aarv.New(aarv.WithBanner(false), aarv.WithRequestContextBridge(false))
+	app.Use(aarv.Recovery())
+	app.Use(noopMiddlewareHTTP)
+	app.Get("/api/users", func(c *aarv.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return app
+}
+
 func newMach_Middleware() http.Handler {
 	app := mach.New()
 	app.Use(mach.Recovery())
+	app.Use(noopMiddlewareHTTP)
 	app.GET("/api/users", func(c *mach.Context) {
 		c.JSON(200, sampleUser)
 	})
@@ -279,6 +342,7 @@ func newMach_Middleware() http.Handler {
 func newGin_Middleware() http.Handler {
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(func(c *gin.Context) { c.Next() })
 	r.GET("/api/users", func(c *gin.Context) {
 		c.JSON(200, sampleUser)
 	})
@@ -288,10 +352,25 @@ func newGin_Middleware() http.Handler {
 func newFiber_Middleware() *fiber.App {
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Use(func(c *fiber.Ctx) error { return c.Next() }) // recovery equivalent
+	app.Use(func(c *fiber.Ctx) error { return c.Next() })
 	app.Get("/api/users", func(c *fiber.Ctx) error {
 		return c.JSON(sampleUser)
 	})
 	return app
+}
+
+func newEcho_Middleware() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error { return next(c) }
+	})
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error { return next(c) }
+	})
+	e.GET("/api/users", func(c echo.Context) error { return c.JSON(200, sampleUser) })
+	return e
 }
 
 // ========== Real-World Scenario: Query Parameters ==========
@@ -368,6 +447,35 @@ func newFiber_Query() *fiber.App {
 	return app
 }
 
+func newEcho_Query() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.GET("/api/users", func(c echo.Context) error {
+		page := c.QueryParam("page")
+		if page == "" {
+			page = "1"
+		}
+		limit := c.QueryParam("limit")
+		if limit == "" {
+			limit = "10"
+		}
+		sort := c.QueryParam("sort")
+		if sort == "" {
+			sort = "created_at"
+		}
+		order := c.QueryParam("order")
+		if order == "" {
+			order = "desc"
+		}
+		return c.JSON(200, map[string]any{
+			"page": page, "limit": limit, "sort": sort, "order": order,
+			"users": []UserProfile{sampleUser},
+		})
+	})
+	return e
+}
+
 // ========== Real-World Scenario: Multiple Path Params ==========
 
 func newAarv_MultiParam() http.Handler {
@@ -408,6 +516,18 @@ func newFiber_MultiParam() *fiber.App {
 		})
 	})
 	return app
+}
+
+func newEcho_MultiParam() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.GET("/api/orgs/:orgId/teams/:teamId/members/:memberId", func(c echo.Context) error {
+		return c.JSON(200, map[string]string{
+			"org_id": c.Param("orgId"), "team_id": c.Param("teamId"), "member_id": c.Param("memberId"),
+		})
+	})
+	return e
 }
 
 // ========== Real-World Scenario: Headers + Auth-like ==========
@@ -482,6 +602,25 @@ func newFiber_Headers() *fiber.App {
 	return app
 }
 
+func newEcho_Headers() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.GET("/api/protected", func(c echo.Context) error {
+		auth := c.Request().Header.Get("Authorization")
+		requestID := c.Request().Header.Get("X-Request-ID")
+		userAgent := c.Request().Header.Get("User-Agent")
+		if auth == "" {
+			return c.JSON(401, map[string]string{"error": "unauthorized"})
+		}
+		c.Response().Header().Set("X-Request-ID", requestID)
+		return c.JSON(200, map[string]string{
+			"auth": "valid", "request_id": requestID, "user_agent": userAgent,
+		})
+	})
+	return e
+}
+
 // ========== Real-World Scenario: Large JSON List Response ==========
 
 func newAarv_LargeJSON() http.Handler {
@@ -516,6 +655,14 @@ func newFiber_LargeJSON() *fiber.App {
 	return app
 }
 
+func newEcho_LargeJSON() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.GET("/api/users/list", func(c echo.Context) error { return c.JSON(200, sampleUserList) })
+	return e
+}
+
 // ========== Go Benchmark functions (allocs, B/op, ns/op) ==========
 
 // --- Static ---
@@ -523,18 +670,21 @@ func BenchmarkStatic_RawHTTP(b *testing.B) { benchHTTP(b, newRawHTTP_Static(), "
 func BenchmarkStatic_Aarv(b *testing.B)    { benchHTTP(b, newAarv_Static(), "GET", "/hello", nil) }
 func BenchmarkStatic_Mach(b *testing.B)    { benchHTTP(b, newMach_Static(), "GET", "/hello", nil) }
 func BenchmarkStatic_Gin(b *testing.B)     { benchHTTP(b, newGin_Static(), "GET", "/hello", nil) }
+func BenchmarkStatic_Echo(b *testing.B)    { benchHTTP(b, newEcho_Static(), "GET", "/hello", nil) }
 func BenchmarkStatic_Fiber(b *testing.B)   { benchFiber(b, newFiber_Static(), "GET", "/hello", nil) }
 
 // --- JSON ---
 func BenchmarkJSON_Aarv(b *testing.B)  { benchHTTP(b, newAarv_JSON(), "GET", "/json", nil) }
 func BenchmarkJSON_Mach(b *testing.B)  { benchHTTP(b, newMach_JSON(), "GET", "/json", nil) }
 func BenchmarkJSON_Gin(b *testing.B)   { benchHTTP(b, newGin_JSON(), "GET", "/json", nil) }
+func BenchmarkJSON_Echo(b *testing.B)  { benchHTTP(b, newEcho_JSON(), "GET", "/json", nil) }
 func BenchmarkJSON_Fiber(b *testing.B) { benchFiber(b, newFiber_JSON(), "GET", "/json", nil) }
 
 // --- Param ---
 func BenchmarkParam_Aarv(b *testing.B)  { benchHTTP(b, newAarv_Param(), "GET", "/users/123", nil) }
 func BenchmarkParam_Mach(b *testing.B)  { benchHTTP(b, newMach_Param(), "GET", "/users/123", nil) }
 func BenchmarkParam_Gin(b *testing.B)   { benchHTTP(b, newGin_Param(), "GET", "/users/123", nil) }
+func BenchmarkParam_Echo(b *testing.B)  { benchHTTP(b, newEcho_Param(), "GET", "/users/123", nil) }
 func BenchmarkParam_Fiber(b *testing.B) { benchFiber(b, newFiber_Param(), "GET", "/users/123", nil) }
 
 // --- Bind ---
@@ -543,6 +693,7 @@ var jsonBody = []byte(`{"name":"alice","email":"alice@test.com"}`)
 func BenchmarkBind_Aarv(b *testing.B)  { benchHTTP(b, newAarv_Bind(), "POST", "/users", jsonBody) }
 func BenchmarkBind_Mach(b *testing.B)  { benchHTTP(b, newMach_Bind(), "POST", "/users", jsonBody) }
 func BenchmarkBind_Gin(b *testing.B)   { benchHTTP(b, newGin_Bind(), "POST", "/users", jsonBody) }
+func BenchmarkBind_Echo(b *testing.B)  { benchHTTP(b, newEcho_Bind(), "POST", "/users", jsonBody) }
 func BenchmarkBind_Fiber(b *testing.B) { benchFiber(b, newFiber_Bind(), "POST", "/users", jsonBody) }
 
 // --- Light net/http variants (reduced httptest noise) ---
@@ -552,11 +703,13 @@ func BenchmarkStaticLight_Aarv(b *testing.B) {
 func BenchmarkStaticLight_Mach(b *testing.B) {
 	benchHTTPLight(b, newMach_Static(), "GET", "/hello", nil)
 }
-func BenchmarkStaticLight_Gin(b *testing.B) { benchHTTPLight(b, newGin_Static(), "GET", "/hello", nil) }
+func BenchmarkStaticLight_Gin(b *testing.B)  { benchHTTPLight(b, newGin_Static(), "GET", "/hello", nil) }
+func BenchmarkStaticLight_Echo(b *testing.B) { benchHTTPLight(b, newEcho_Static(), "GET", "/hello", nil) }
 
-func BenchmarkJSONLight_Aarv(b *testing.B) { benchHTTPLight(b, newAarv_JSON(), "GET", "/json", nil) }
-func BenchmarkJSONLight_Mach(b *testing.B) { benchHTTPLight(b, newMach_JSON(), "GET", "/json", nil) }
-func BenchmarkJSONLight_Gin(b *testing.B)  { benchHTTPLight(b, newGin_JSON(), "GET", "/json", nil) }
+func BenchmarkJSONLight_Aarv(b *testing.B)  { benchHTTPLight(b, newAarv_JSON(), "GET", "/json", nil) }
+func BenchmarkJSONLight_Mach(b *testing.B)  { benchHTTPLight(b, newMach_JSON(), "GET", "/json", nil) }
+func BenchmarkJSONLight_Gin(b *testing.B)   { benchHTTPLight(b, newGin_JSON(), "GET", "/json", nil) }
+func BenchmarkJSONLight_Echo(b *testing.B)  { benchHTTPLight(b, newEcho_JSON(), "GET", "/json", nil) }
 
 func BenchmarkParamLight_Aarv(b *testing.B) {
 	benchHTTPLight(b, newAarv_Param(), "GET", "/users/123", nil)
@@ -566,6 +719,9 @@ func BenchmarkParamLight_Mach(b *testing.B) {
 }
 func BenchmarkParamLight_Gin(b *testing.B) {
 	benchHTTPLight(b, newGin_Param(), "GET", "/users/123", nil)
+}
+func BenchmarkParamLight_Echo(b *testing.B) {
+	benchHTTPLight(b, newEcho_Param(), "GET", "/users/123", nil)
 }
 
 func BenchmarkBindLight_Aarv(b *testing.B) {
@@ -589,6 +745,9 @@ func BenchmarkBindLight_Mach(b *testing.B) {
 func BenchmarkBindLight_Gin(b *testing.B) {
 	benchHTTPLight(b, newGin_Bind(), "POST", "/users", jsonBody)
 }
+func BenchmarkBindLight_Echo(b *testing.B) {
+	benchHTTPLight(b, newEcho_Bind(), "POST", "/users", jsonBody)
+}
 
 // --- Parallel variants ---
 func BenchmarkStaticParallel_Aarv(b *testing.B) {
@@ -599,6 +758,9 @@ func BenchmarkStaticParallel_Mach(b *testing.B) {
 }
 func BenchmarkStaticParallel_Gin(b *testing.B) {
 	benchHTTPParallel(b, newGin_Static(), "GET", "/hello", nil)
+}
+func BenchmarkStaticParallel_Echo(b *testing.B) {
+	benchHTTPParallel(b, newEcho_Static(), "GET", "/hello", nil)
 }
 func BenchmarkStaticParallel_Fiber(b *testing.B) {
 	benchFiberParallel(b, newFiber_Static(), "GET", "/hello", nil)
@@ -612,6 +774,9 @@ func BenchmarkBindParallel_Mach(b *testing.B) {
 }
 func BenchmarkBindParallel_Gin(b *testing.B) {
 	benchHTTPParallel(b, newGin_Bind(), "POST", "/users", jsonBody)
+}
+func BenchmarkBindParallel_Echo(b *testing.B) {
+	benchHTTPParallel(b, newEcho_Bind(), "POST", "/users", jsonBody)
 }
 func BenchmarkBindParallel_Fiber(b *testing.B) {
 	benchFiberParallel(b, newFiber_Bind(), "POST", "/users", jsonBody)
@@ -630,39 +795,29 @@ var encryptionKey = func() []byte {
 
 // AES-GCM encryptor for non-Aarv frameworks (with excluded paths/types for fair comparison)
 type aesGCMEncryptor struct {
-	gcm              cipher.AEAD
+	enc              *encrypt.Encryptor
 	excludedPaths    map[string]struct{}
 	excludedPrefixes []string
 }
 
 func newAESGCMEncryptor(key []byte) *aesGCMEncryptor {
-	block, _ := aes.NewCipher(key)
-	gcm, _ := cipher.NewGCM(block)
+	enc, _ := encrypt.NewEncryptor(key)
+	cfg := encrypt.DefaultConfig()
+	excludedTypes := cfg.ExcludedTypes
 	return &aesGCMEncryptor{
-		gcm: gcm,
-		excludedPaths: map[string]struct{}{
-			"/health": {},
-			"/public": {},
-		},
-		excludedPrefixes: []string{"image/", "video/", "audio/"},
+		enc:              enc,
+		excludedPaths:    map[string]struct{}{},
+		excludedPrefixes: append([]string(nil), excludedTypes...),
 	}
 }
 
 func (e *aesGCMEncryptor) Encrypt(plaintext []byte) []byte {
-	nonce := make([]byte, 12)
-	rand.Read(nonce)
-	ciphertext := e.gcm.Seal(nonce, nonce, plaintext, nil)
-	encoded := make([]byte, base64.StdEncoding.EncodedLen(len(ciphertext)))
-	base64.StdEncoding.Encode(encoded, ciphertext)
+	encoded, _ := e.enc.Encrypt(plaintext)
 	return encoded
 }
 
 func (e *aesGCMEncryptor) Decrypt(encoded []byte) ([]byte, error) {
-	ciphertext := make([]byte, base64.StdEncoding.DecodedLen(len(encoded)))
-	n, _ := base64.StdEncoding.Decode(ciphertext, encoded)
-	ciphertext = ciphertext[:n]
-	nonce := ciphertext[:12]
-	return e.gcm.Open(nil, nonce, ciphertext[12:], nil)
+	return e.enc.Decrypt(encoded)
 }
 
 func (e *aesGCMEncryptor) isExcludedPath(path string) bool {
@@ -709,7 +864,7 @@ func (w *encryptingResponseWriter) finish() {
 		return
 	}
 	encrypted := w.enc.Encrypt(w.buf.Bytes())
-	w.ResponseWriter.Header().Set("Content-Type", "application/encrypted")
+	w.ResponseWriter.Header().Set("Content-Type", encrypt.EncryptedContentType)
 	w.ResponseWriter.Header().Del("Content-Length")
 	w.ResponseWriter.Write(encrypted)
 }
@@ -803,10 +958,32 @@ func newFiber_Encrypt() *fiber.App {
 	return app
 }
 
+func newEcho_Encrypt() http.Handler {
+	enc := newAESGCMEncryptor(encryptionKey)
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			if enc.isExcludedPath(c.Request().URL.Path) {
+				return next(c)
+			}
+			ew := &encryptingResponseWriter{ResponseWriter: c.Response().Writer, enc: enc}
+			c.Response().Writer = &echoEncryptWriter{encryptingResponseWriter: ew, ResponseWriter: c.Response().Writer}
+			err := next(c)
+			ew.finish()
+			return err
+		}
+	})
+	e.GET("/api/users", func(c echo.Context) error { return c.JSON(200, sampleUser) })
+	return e
+}
+
 // --- Encryption Benchmarks ---
 func BenchmarkEncrypt_Aarv(b *testing.B) { benchHTTP(b, newAarv_Encrypt(), "GET", "/api/users", nil) }
 func BenchmarkEncrypt_Mach(b *testing.B) { benchHTTP(b, newMach_Encrypt(), "GET", "/api/users", nil) }
 func BenchmarkEncrypt_Gin(b *testing.B)  { benchHTTP(b, newGin_Encrypt(), "GET", "/api/users", nil) }
+func BenchmarkEncrypt_Echo(b *testing.B) { benchHTTP(b, newEcho_Encrypt(), "GET", "/api/users", nil) }
 func BenchmarkEncrypt_Fiber(b *testing.B) {
 	benchFiber(b, newFiber_Encrypt(), "GET", "/api/users", nil)
 }
@@ -1056,6 +1233,37 @@ func newFiber_Logger() *fiber.App {
 	return app
 }
 
+func newEcho_Logger() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			start := time.Now()
+			sw := newStatusCapturingWriter(c.Response().Writer)
+			c.Response().Writer = sw
+			err := next(c)
+			requestID := ""
+			if ctx, ok := aarv.FromRequest(c.Request()); ok {
+				requestID = ctx.RequestID()
+			}
+			slog.Info("request",
+				"method", c.Request().Method,
+				"path", c.Request().URL.Path,
+				"status", sw.statusCode,
+				"latency", time.Since(start).String(),
+				"client_ip", clientIPFromRequest(c.Request()),
+				"user_agent", c.Request().UserAgent(),
+				"bytes_out", sw.bytesWritten,
+				"request_id", requestID,
+			)
+			return err
+		}
+	})
+	e.POST("/api/users", func(c echo.Context) error { return c.JSON(200, sampleUser) })
+	return e
+}
+
 // --- Standard Logger Benchmarks ---
 func BenchmarkLogger_Aarv(b *testing.B) {
 	benchHTTP(b, newAarv_Logger(), "POST", "/api/users", jsonBody)
@@ -1063,7 +1271,8 @@ func BenchmarkLogger_Aarv(b *testing.B) {
 func BenchmarkLogger_Mach(b *testing.B) {
 	benchHTTP(b, newMach_Logger(), "POST", "/api/users", jsonBody)
 }
-func BenchmarkLogger_Gin(b *testing.B) { benchHTTP(b, newGin_Logger(), "POST", "/api/users", jsonBody) }
+func BenchmarkLogger_Gin(b *testing.B)  { benchHTTP(b, newGin_Logger(), "POST", "/api/users", jsonBody) }
+func BenchmarkLogger_Echo(b *testing.B) { benchHTTP(b, newEcho_Logger(), "POST", "/api/users", jsonBody) }
 func BenchmarkLogger_Fiber(b *testing.B) {
 	benchFiber(b, newFiber_Logger(), "POST", "/api/users", jsonBody)
 }
@@ -1105,6 +1314,53 @@ func BenchmarkLoggerIsolated_Aarv(b *testing.B) {
 
 func BenchmarkLoggerIsolated_Equivalent(b *testing.B) {
 	benchLoggerIsolated(b, newEquivalent_LoggerIsolated())
+}
+
+var encryptIsolatedResponse = []byte(`{"ok":true,"message":"encrypt benchmark"}`)
+
+func newEncryptTerminalHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(encryptIsolatedResponse)
+	})
+}
+
+func newAarv_EncryptIsolated() http.Handler {
+	m, _ := encrypt.New(encryptionKey)
+	return m(newEncryptTerminalHandler())
+}
+
+func newEquivalent_EncryptIsolated() http.Handler {
+	enc := newAESGCMEncryptor(encryptionKey)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if enc.isExcludedPath(r.URL.Path) {
+			newEncryptTerminalHandler().ServeHTTP(w, r)
+			return
+		}
+		ew := &encryptingResponseWriter{ResponseWriter: w, enc: enc}
+		newEncryptTerminalHandler().ServeHTTP(ew, r)
+		ew.finish()
+	})
+}
+
+func benchEncryptIsolated(b *testing.B, handler http.Handler) {
+	var w benchutil.DiscardResponseWriter
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := newLightRequest("GET", "/encrypt-only", nil)
+		w.Reset()
+		handler.ServeHTTP(&w, req)
+	}
+}
+
+func BenchmarkEncryptIsolated_Aarv(b *testing.B) {
+	benchEncryptIsolated(b, newAarv_EncryptIsolated())
+}
+
+func BenchmarkEncryptIsolated_Equivalent(b *testing.B) {
+	benchEncryptIsolated(b, newEquivalent_EncryptIsolated())
 }
 
 // --- Verbose Logger Benchmarks ---
@@ -1219,6 +1475,47 @@ func newFiber_VerboseLog() *fiber.App {
 	return app
 }
 
+func newEcho_VerboseLog() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			start := time.Now()
+			var reqBody []byte
+			if c.Request().Body != nil && c.Request().ContentLength > 0 {
+				reqBody, _ = io.ReadAll(c.Request().Body)
+				c.Request().Body = io.NopCloser(bytes.NewReader(reqBody))
+			}
+			headers := make(map[string]string)
+			for k, v := range c.Request().Header {
+				if _, sensitive := sensitiveHeaders[strings.ToLower(k)]; sensitive {
+					headers[k] = "[REDACTED]"
+				} else {
+					headers[k] = strings.Join(v, ", ")
+				}
+			}
+			bw := &bodyCapturingWriter{ResponseWriter: c.Response().Writer, body: &bytes.Buffer{}, statusCode: 200}
+			c.Response().Writer = bw
+			err := next(c)
+			reqBodyStr := redactSensitiveFields(string(reqBody))
+			respBodyStr := redactSensitiveFields(bw.body.String())
+			slog.Info("http_dump",
+				"method", c.Request().Method,
+				"path", c.Request().URL.Path,
+				"request_headers", headers,
+				"request_body", reqBodyStr,
+				"response_body", respBodyStr,
+				"status", bw.statusCode,
+				"latency", time.Since(start).String(),
+			)
+			return err
+		}
+	})
+	e.POST("/api/users", func(c echo.Context) error { return c.JSON(200, sampleUser) })
+	return e
+}
+
 func BenchmarkVerboseLog_Aarv(b *testing.B) {
 	benchHTTP(b, newAarv_VerboseLog(), "POST", "/api/users", jsonBody)
 }
@@ -1227,6 +1524,9 @@ func BenchmarkVerboseLog_Mach(b *testing.B) {
 }
 func BenchmarkVerboseLog_Gin(b *testing.B) {
 	benchHTTP(b, newGin_VerboseLog(), "POST", "/api/users", jsonBody)
+}
+func BenchmarkVerboseLog_Echo(b *testing.B) {
+	benchHTTP(b, newEcho_VerboseLog(), "POST", "/api/users", jsonBody)
 }
 func BenchmarkVerboseLog_Fiber(b *testing.B) {
 	benchFiber(b, newFiber_VerboseLog(), "POST", "/api/users", jsonBody)
@@ -1443,6 +1743,7 @@ func TestLoadTest(t *testing.T) {
 			label: "Middleware Stack (Recovery + Noop + JSON Response)",
 			tests: []testFn{
 				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newAarv_Middleware(), "GET", "/api/users", nil) }},
+				{"AarvFast", func() loadResult { return runTCPLoad("AarvFast", newAarv_MiddlewareFastMode(), "GET", "/api/users", nil) }},
 				{"Mach", func() loadResult { return runTCPLoad("Mach", newMach_Middleware(), "GET", "/api/users", nil) }},
 				{"Gin", func() loadResult { return runTCPLoad("Gin", newGin_Middleware(), "GET", "/api/users", nil) }},
 				{"Fiber", func() loadResult { return runFiberTCPLoad("Fiber", newFiber_Middleware(), "GET", "/api/users", nil) }},
@@ -1552,11 +1853,11 @@ func TestLoadTest(t *testing.T) {
 		totalRequests/1_000, concurrency, reqsPerWorker)
 	fmt.Println("  - Real TCP (localhost) — includes connection reuse, kernel overhead")
 	fmt.Println("  - B/op & allocs/op = server-side only (MemStats delta / total requests)")
-	fmt.Println("  - CPU% = process CPU time / (wall time x cores) — higher = more CPU-efficient")
+	fmt.Println("  - CPU% = process CPU time / (wall time x cores) — process utilization across all cores")
 	fmt.Println("  - Fiber: fasthttp server (not net/http) — different transport layer")
 	fmt.Println("  - Aarv Bind includes auto-validation (required, min, email)")
 	fmt.Println("  - Gin Bind uses go-playground/validator")
-	fmt.Println("  - Mach Bind is manual DecodeJSON only (no validation)")
+	fmt.Println("  - Mach Bind uses DecodeJSON + go-playground/validator")
 	fmt.Println()
 }
 
@@ -1584,12 +1885,13 @@ func captureMemStats() memSnapshot {
 }
 
 func getProcessCPUTime() time.Duration {
-	// Use runtime stats for cross-platform CPU time approximation
-	// This isn't exact CPU time but gives a reasonable measure of work done
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	// Use GC CPU time as a proxy (not perfect but cross-platform)
-	return time.Duration(m.GCCPUFraction * float64(time.Since(time.Time{})))
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		return 0
+	}
+	user := time.Duration(ru.Utime.Sec)*time.Second + time.Duration(ru.Utime.Usec)*time.Microsecond
+	sys := time.Duration(ru.Stime.Sec)*time.Second + time.Duration(ru.Stime.Usec)*time.Microsecond
+	return user + sys
 }
 
 // ========== Real TCP load test runners ==========
@@ -1608,6 +1910,25 @@ func runTCPLoad(name string, handler http.Handler, method, path string, body []b
 	}
 	client := &http.Client{Transport: tr}
 	defer tr.CloseIdleConnections()
+
+	// Warm up the server and connection pool so all frameworks start the
+	// timed section under similar conditions.
+	for i := 0; i < 20; i++ {
+		var req *http.Request
+		if body != nil {
+			req, _ = http.NewRequest(method, url, bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req, _ = http.NewRequest(method, url, nil)
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	workerLats := make([][]time.Duration, concurrency)
 	for i := range workerLats {

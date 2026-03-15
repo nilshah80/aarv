@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"unsafe"
 )
 
 // RouteInfo describes a registered route for introspection.
@@ -223,26 +224,47 @@ func (g *RouteGroup) Group(prefix string, fn func(g *RouteGroup)) *RouteGroup {
 // ctxKey is the context key for storing the aarv Context in request context.
 type ctxKey struct{}
 
-var requestContextRegistry = struct {
+// requestContextRegistry is a sharded map to avoid global mutex contention.
+// 64 shards reduces contention by ~64x under high concurrency.
+// The padding reduces false sharing across adjacent shards.
+const registryShards = 64
+
+type registryShard struct {
 	mu sync.RWMutex
 	m  map[*http.Request]*Context
-}{
-	m: make(map[*http.Request]*Context),
+	_  [24]byte
+}
+
+var requestContextRegistry [registryShards]registryShard
+
+func init() {
+	for i := range requestContextRegistry {
+		requestContextRegistry[i].m = make(map[*http.Request]*Context)
+	}
+}
+
+// shardFor returns the shard index for a given request pointer.
+// Uses the pointer address shifted right by 4 to discard tag bits.
+func shardFor(r *http.Request) *registryShard {
+	h := uintptr(unsafe.Pointer(r)) >> 4
+	return &requestContextRegistry[h&(registryShards-1)]
 }
 
 func storeRequestContext(r *http.Request, c *Context) {
 	if r != nil && c != nil {
-		requestContextRegistry.mu.Lock()
-		requestContextRegistry.m[r] = c
-		requestContextRegistry.mu.Unlock()
+		s := shardFor(r)
+		s.mu.Lock()
+		s.m[r] = c
+		s.mu.Unlock()
 	}
 }
 
 func deleteRequestContext(r *http.Request) {
 	if r != nil {
-		requestContextRegistry.mu.Lock()
-		delete(requestContextRegistry.m, r)
-		requestContextRegistry.mu.Unlock()
+		s := shardFor(r)
+		s.mu.Lock()
+		delete(s.m, r)
+		s.mu.Unlock()
 	}
 }
 
@@ -250,13 +272,14 @@ func contextFromRequest(r *http.Request) (*Context, bool) {
 	if r == nil {
 		return nil, false
 	}
-	requestContextRegistry.mu.RLock()
-	c, ok := requestContextRegistry.m[r]
-	requestContextRegistry.mu.RUnlock()
-	if ok {
+	if c, ok := r.Context().Value(ctxKey{}).(*Context); ok {
 		return c, true
 	}
-	if c, ok := r.Context().Value(ctxKey{}).(*Context); ok {
+	s := shardFor(r)
+	s.mu.RLock()
+	c, ok := s.m[r]
+	s.mu.RUnlock()
+	if ok {
 		return c, true
 	}
 	return nil, false
@@ -292,9 +315,11 @@ func stripPrefixPreserveContext(prefix string, h http.Handler) http.Handler {
 		urlCopy.Path = trimmedPath
 		req.URL = urlCopy
 		req.RequestURI = trimmedPath
-		if c, ok := contextFromRequest(r); ok {
-			storeRequestContext(req, c)
-			defer deleteRequestContext(req)
+		if _, ok := req.Context().Value(ctxKey{}).(*Context); !ok {
+			if c, ok := contextFromRequest(r); ok {
+				storeRequestContext(req, c)
+				defer deleteRequestContext(req)
+			}
 		}
 		h.ServeHTTP(w, req)
 	})
@@ -303,5 +328,8 @@ func stripPrefixPreserveContext(prefix string, h http.Handler) http.Handler {
 // FromRequest extracts the aarv Context from an http.Request.
 // This is exported so sub-packages (plugins) can access the aarv Context.
 func FromRequest(r *http.Request) (*Context, bool) {
+	if r == nil {
+		return nil, false
+	}
 	return contextFromRequest(r)
 }

@@ -3,9 +3,9 @@ package benchmark
 // Vanilla vs Bare Minimum Benchmark Tests
 //
 // This file compares:
-// 1. Vanilla frameworks (no middleware at all)
-// 2. Bare minimum middleware (minimal possible overhead)
-// 3. Standard middleware (typical production setup)
+// 1. Vanilla frameworks (baseline framework overhead, not feature-parity)
+// 2. Bare minimum middleware (minimal possible overhead, still not feature-parity)
+// 3. Standard and fair middleware setups
 //
 // Metrics reported: ns/op, B/op, allocs/op
 
@@ -28,10 +28,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gofiber/fiber/v2"
+	"github.com/labstack/echo/v4"
 	"github.com/mrshabel/mach"
 	"github.com/nilshah80/aarv"
 	"github.com/nilshah80/aarv/plugins/encrypt"
 	"github.com/nilshah80/aarv/plugins/logger"
+	"github.com/nilshah80/aarv/plugins/requestid"
 	"github.com/nilshah80/aarv/plugins/verboselog"
 )
 
@@ -84,6 +86,17 @@ func newVanilla_Fiber() *fiber.App {
 		return c.JSON(sampleUser)
 	})
 	return app
+}
+
+// --- Vanilla: Echo without any middleware ---
+func newVanilla_Echo() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.GET("/api/users", func(c echo.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return e
 }
 
 // =============================================================================
@@ -185,6 +198,15 @@ func newBareMin_Aarv_Logger() http.Handler {
 	return app
 }
 
+func newBareMin_Aarv_LoggerFastMode() http.Handler {
+	app := aarv.New(aarv.WithBanner(false), aarv.WithRequestContextBridge(false))
+	app.Use(bareMinimumLogger)
+	app.Get("/api/users", func(c *aarv.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return app
+}
+
 // --- Mach with bare minimum logger ---
 func newBareMin_Mach_Logger() http.Handler {
 	app := mach.New()
@@ -220,10 +242,39 @@ func newBareMin_Fiber_Logger() *fiber.App {
 	return app
 }
 
+// --- Echo with bare minimum logger ---
+func newBareMin_Echo_Logger() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			start := time.Now()
+			err := next(c)
+			slog.Info("req", "m", c.Request().Method, "p", c.Request().URL.Path, "s", c.Response().Status, "l", time.Since(start))
+			return err
+		}
+	})
+	e.GET("/api/users", func(c echo.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return e
+}
+
 // --- Aarv with bare minimum encryption ---
 func newBareMin_Aarv_Encrypt() http.Handler {
 	enc := newBareEncryptor(encryptionKey)
 	app := aarv.New(aarv.WithBanner(false))
+	app.Use(bareEncryptionMiddleware(enc))
+	app.Get("/api/users", func(c *aarv.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return app
+}
+
+func newBareMin_Aarv_EncryptFastMode() http.Handler {
+	enc := newBareEncryptor(encryptionKey)
+	app := aarv.New(aarv.WithBanner(false), aarv.WithRequestContextBridge(false))
 	app.Use(bareEncryptionMiddleware(enc))
 	app.Get("/api/users", func(c *aarv.Context) error {
 		return c.JSON(200, sampleUser)
@@ -284,6 +335,36 @@ func newBareMin_Fiber_Encrypt() *fiber.App {
 		return c.JSON(sampleUser)
 	})
 	return app
+}
+
+// --- Echo with bare minimum encryption ---
+func newBareMin_Echo_Encrypt() http.Handler {
+	enc := newBareEncryptor(encryptionKey)
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			ew := &bareEncryptWriter{ResponseWriter: c.Response().Writer, enc: enc}
+			c.Response().Writer = &echoBareEncWriter{bareEncryptWriter: ew, ResponseWriter: c.Response().Writer}
+			err := next(c)
+			ew.finish()
+			return err
+		}
+	})
+	e.GET("/api/users", func(c echo.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return e
+}
+
+type echoBareEncWriter struct {
+	*bareEncryptWriter
+	http.ResponseWriter
+}
+
+func (w *echoBareEncWriter) Write(b []byte) (int, error) {
+	return w.bareEncryptWriter.Write(b)
 }
 
 // =============================================================================
@@ -351,10 +432,14 @@ func BenchmarkVanilla_Gin(b *testing.B)  { benchHTTP(b, newVanilla_Gin(), "GET",
 func BenchmarkVanilla_Fiber(b *testing.B) {
 	benchFiber(b, newVanilla_Fiber(), "GET", "/api/users", nil)
 }
+func BenchmarkVanilla_Echo(b *testing.B) { benchHTTP(b, newVanilla_Echo(), "GET", "/api/users", nil) }
 
 // --- Bare Minimum Logger Benchmarks ---
 func BenchmarkBareMinLogger_Aarv(b *testing.B) {
 	benchHTTP(b, newBareMin_Aarv_Logger(), "GET", "/api/users", nil)
+}
+func BenchmarkBareMinLogger_AarvFastMode(b *testing.B) {
+	benchHTTP(b, newBareMin_Aarv_LoggerFastMode(), "GET", "/api/users", nil)
 }
 func BenchmarkBareMinLogger_Mach(b *testing.B) {
 	benchHTTP(b, newBareMin_Mach_Logger(), "GET", "/api/users", nil)
@@ -365,10 +450,16 @@ func BenchmarkBareMinLogger_Gin(b *testing.B) {
 func BenchmarkBareMinLogger_Fiber(b *testing.B) {
 	benchFiber(b, newBareMin_Fiber_Logger(), "GET", "/api/users", nil)
 }
+func BenchmarkBareMinLogger_Echo(b *testing.B) {
+	benchHTTP(b, newBareMin_Echo_Logger(), "GET", "/api/users", nil)
+}
 
 // --- Bare Minimum Encryption Benchmarks ---
 func BenchmarkBareMinEncrypt_Aarv(b *testing.B) {
 	benchHTTP(b, newBareMin_Aarv_Encrypt(), "GET", "/api/users", nil)
+}
+func BenchmarkBareMinEncrypt_AarvFastMode(b *testing.B) {
+	benchHTTP(b, newBareMin_Aarv_EncryptFastMode(), "GET", "/api/users", nil)
 }
 func BenchmarkBareMinEncrypt_Mach(b *testing.B) {
 	benchHTTP(b, newBareMin_Mach_Encrypt(), "GET", "/api/users", nil)
@@ -378,6 +469,9 @@ func BenchmarkBareMinEncrypt_Gin(b *testing.B) {
 }
 func BenchmarkBareMinEncrypt_Fiber(b *testing.B) {
 	benchFiber(b, newBareMin_Fiber_Encrypt(), "GET", "/api/users", nil)
+}
+func BenchmarkBareMinEncrypt_Echo(b *testing.B) {
+	benchHTTP(b, newBareMin_Echo_Encrypt(), "GET", "/api/users", nil)
 }
 
 // --- Aarv Standard Plugin vs Bare Minimum ---
@@ -916,6 +1010,19 @@ func getRequestIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+func logRequestLikeAarv(ctx context.Context, method, path string, status int, latency time.Duration, clientIP, userAgent string, bytesOut int64, requestID string) {
+	slog.Default().LogAttrs(ctx, slog.LevelInfo, "request",
+		slog.String("method", method),
+		slog.String("path", path),
+		slog.Int("status", status),
+		slog.Duration("latency", latency),
+		slog.String("client_ip", clientIP),
+		slog.String("user_agent", userAgent),
+		slog.Int64("bytes_out", bytesOut),
+		slog.String("request_id", requestID),
+	)
+}
+
 // --- Full-featured logger middleware for each framework ---
 
 // Mach with full request ID tracking (same as Aarv)
@@ -941,17 +1048,7 @@ func newFairLogger_Mach() http.Handler {
 
 			// Get request ID from context (same as Aarv's FromRequest + RequestID)
 			requestID := getRequestIDFromContext(r.Context())
-
-			slog.Info("request",
-				"method", r.Method,
-				"path", r.URL.Path,
-				"status", sw.statusCode,
-				"latency", time.Since(start).String(),
-				"client_ip", extractClientIP(r),
-				"user_agent", r.UserAgent(),
-				"bytes_out", sw.bytesWritten,
-				"request_id", requestID,
-			)
+			logRequestLikeAarv(r.Context(), r.Method, r.URL.Path, sw.statusCode, time.Since(start), extractClientIP(r), r.UserAgent(), sw.bytesWritten, requestID)
 		})
 	})
 
@@ -980,17 +1077,7 @@ func newFairLogger_Gin() http.Handler {
 		c.Next()
 
 		requestID := getRequestIDFromContext(c.Request.Context())
-
-		slog.Info("request",
-			"method", c.Request.Method,
-			"path", c.Request.URL.Path,
-			"status", c.Writer.Status(),
-			"latency", time.Since(start).String(),
-			"client_ip", extractClientIP(c.Request),
-			"user_agent", c.Request.UserAgent(),
-			"bytes_out", c.Writer.Size(),
-			"request_id", requestID,
-		)
+		logRequestLikeAarv(c.Request.Context(), c.Request.Method, c.Request.URL.Path, c.Writer.Status(), time.Since(start), extractClientIP(c.Request), c.Request.UserAgent(), int64(c.Writer.Size()), requestID)
 	})
 
 	r.GET("/api/users", func(c *gin.Context) {
@@ -999,9 +1086,45 @@ func newFairLogger_Gin() http.Handler {
 	return r
 }
 
-// Aarv with standard logger (already has request ID built-in)
+// Echo with full request ID tracking (same as Aarv)
+func newFairLogger_Echo() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			id := generateRequestID()
+			ctx := context.WithValue(c.Request().Context(), reqIDKey{}, id)
+			c.SetRequest(c.Request().WithContext(ctx))
+			c.Response().Header().Set("X-Request-ID", id)
+			return next(c)
+		}
+	})
+
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			start := time.Now()
+			err := next(c)
+			requestID := getRequestIDFromContext(c.Request().Context())
+			logRequestLikeAarv(c.Request().Context(), c.Request().Method, c.Request().URL.Path, c.Response().Status, time.Since(start), extractClientIP(c.Request()), c.Request().UserAgent(), c.Response().Size, requestID)
+			return err
+		}
+	})
+
+	e.GET("/api/users", func(c echo.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return e
+}
+
+// Aarv with request ID + standard logger (same work as fair Mach/Gin setups)
 func newFairLogger_Aarv() http.Handler {
 	app := aarv.New(aarv.WithBanner(false))
+	app.Use(requestid.New(requestid.Config{
+		Header:    "X-Request-ID",
+		Generator: generateRequestID,
+	}))
 	app.Use(logger.New())
 	app.Get("/api/users", func(c *aarv.Context) error {
 		return c.JSON(200, sampleUser)
@@ -1047,6 +1170,9 @@ func BenchmarkFairLogger_Mach(b *testing.B) {
 }
 func BenchmarkFairLogger_Gin(b *testing.B) {
 	benchHTTP(b, newFairLogger_Gin(), "GET", "/api/users", nil)
+}
+func BenchmarkFairLogger_Echo(b *testing.B) {
+	benchHTTP(b, newFairLogger_Echo(), "GET", "/api/users", nil)
 }
 
 // --- Fair Encryption with request ID tracking ---
@@ -1115,8 +1241,56 @@ func newFairEncrypt_Gin() http.Handler {
 	return r
 }
 
+func newFairEncrypt_Echo() http.Handler {
+	enc := newAESGCMEncryptor(encryptionKey)
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			id := generateRequestID()
+			ctx := context.WithValue(c.Request().Context(), reqIDKey{}, id)
+			c.SetRequest(c.Request().WithContext(ctx))
+			c.Response().Header().Set("X-Request-ID", id)
+			return next(c)
+		}
+	})
+
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			if enc.isExcludedPath(c.Request().URL.Path) {
+				return next(c)
+			}
+			ew := &encryptingResponseWriter{ResponseWriter: c.Response().Writer, enc: enc}
+			c.Response().Writer = &echoEncryptWriter{encryptingResponseWriter: ew, ResponseWriter: c.Response().Writer}
+			err := next(c)
+			ew.finish()
+			return err
+		}
+	})
+
+	e.GET("/api/users", func(c echo.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return e
+}
+
+type echoEncryptWriter struct {
+	*encryptingResponseWriter
+	http.ResponseWriter
+}
+
+func (w *echoEncryptWriter) Write(b []byte) (int, error) {
+	return w.encryptingResponseWriter.Write(b)
+}
+
 func newFairEncrypt_Aarv() http.Handler {
 	app := aarv.New(aarv.WithBanner(false))
+	app.Use(requestid.New(requestid.Config{
+		Header:    "X-Request-ID",
+		Generator: generateRequestID,
+	}))
 	m, _ := encrypt.New(encryptionKey)
 	app.Use(m)
 	app.Get("/api/users", func(c *aarv.Context) error {
@@ -1134,6 +1308,9 @@ func BenchmarkFairEncrypt_Mach(b *testing.B) {
 }
 func BenchmarkFairEncrypt_Gin(b *testing.B) {
 	benchHTTP(b, newFairEncrypt_Gin(), "GET", "/api/users", nil)
+}
+func BenchmarkFairEncrypt_Echo(b *testing.B) {
+	benchHTTP(b, newFairEncrypt_Echo(), "GET", "/api/users", nil)
 }
 
 // =============================================================================
@@ -1166,16 +1343,7 @@ func loggerWithoutFromRequest() aarv.Middleware {
 			next.ServeHTTP(sw, r)
 
 			// NO aarv.FromRequest() call - skip context lookup entirely
-			slog.Info("request",
-				"method", r.Method,
-				"path", r.URL.Path,
-				"status", sw.statusCode,
-				"latency", time.Since(start).String(),
-				"client_ip", extractClientIP(r),
-				"user_agent", r.UserAgent(),
-				"bytes_out", sw.bytesWritten,
-				"request_id", "", // Always empty - no lookup
-			)
+			logRequestLikeAarv(r.Context(), r.Method, r.URL.Path, sw.statusCode, time.Since(start), extractClientIP(r), r.UserAgent(), sw.bytesWritten, "")
 		})
 	}
 }
@@ -1198,17 +1366,7 @@ func newMach_LoggerNoFromRequest() http.Handler {
 			start := time.Now()
 			sw := newStatusCapturingWriterFair(w)
 			next.ServeHTTP(sw, r)
-
-			slog.Info("request",
-				"method", r.Method,
-				"path", r.URL.Path,
-				"status", sw.statusCode,
-				"latency", time.Since(start).String(),
-				"client_ip", extractClientIP(r),
-				"user_agent", r.UserAgent(),
-				"bytes_out", sw.bytesWritten,
-				"request_id", "",
-			)
+			logRequestLikeAarv(r.Context(), r.Method, r.URL.Path, sw.statusCode, time.Since(start), extractClientIP(r), r.UserAgent(), sw.bytesWritten, "")
 		})
 	})
 	app.GET("/api/users", func(c *mach.Context) {
@@ -1223,22 +1381,31 @@ func newGin_LoggerNoFromRequest() http.Handler {
 	r.Use(func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-
-		slog.Info("request",
-			"method", c.Request.Method,
-			"path", c.Request.URL.Path,
-			"status", c.Writer.Status(),
-			"latency", time.Since(start).String(),
-			"client_ip", extractClientIP(c.Request),
-			"user_agent", c.Request.UserAgent(),
-			"bytes_out", c.Writer.Size(),
-			"request_id", "",
-		)
+		logRequestLikeAarv(c.Request.Context(), c.Request.Method, c.Request.URL.Path, c.Writer.Status(), time.Since(start), extractClientIP(c.Request), c.Request.UserAgent(), int64(c.Writer.Size()), "")
 	})
 	r.GET("/api/users", func(c *gin.Context) {
 		c.JSON(200, sampleUser)
 	})
 	return r
+}
+
+// Echo with identical logger (no context lookup)
+func newEcho_LoggerNoFromRequest() http.Handler {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			start := time.Now()
+			err := next(c)
+			logRequestLikeAarv(c.Request().Context(), c.Request().Method, c.Request().URL.Path, c.Response().Status, time.Since(start), extractClientIP(c.Request()), c.Request().UserAgent(), c.Response().Size, "")
+			return err
+		}
+	})
+	e.GET("/api/users", func(c echo.Context) error {
+		return c.JSON(200, sampleUser)
+	})
+	return e
 }
 
 // --- Benchmarks WITHOUT FromRequest ---
@@ -1250,6 +1417,9 @@ func BenchmarkNoFromRequest_Mach(b *testing.B) {
 }
 func BenchmarkNoFromRequest_Gin(b *testing.B) {
 	benchHTTP(b, newGin_LoggerNoFromRequest(), "GET", "/api/users", nil)
+}
+func BenchmarkNoFromRequest_Echo(b *testing.B) {
+	benchHTTP(b, newEcho_LoggerNoFromRequest(), "GET", "/api/users", nil)
 }
 
 // Compare: Aarv standard logger (WITH FromRequest) vs custom (WITHOUT)
@@ -1298,6 +1468,7 @@ func TestFairLoadTest(t *testing.T) {
 				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newVanilla_Aarv(), "GET", "/api/users", nil) }},
 				{"Mach", func() loadResult { return runTCPLoad("Mach", newVanilla_Mach(), "GET", "/api/users", nil) }},
 				{"Gin", func() loadResult { return runTCPLoad("Gin", newVanilla_Gin(), "GET", "/api/users", nil) }},
+				{"Echo", func() loadResult { return runTCPLoad("Echo", newVanilla_Echo(), "GET", "/api/users", nil) }},
 				{"Fiber", func() loadResult { return runFiberTCPLoad("Fiber", newVanilla_Fiber(), "GET", "/api/users", nil) }},
 			},
 		},
@@ -1307,6 +1478,7 @@ func TestFairLoadTest(t *testing.T) {
 				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newFairLogger_Aarv(), "GET", "/api/users", nil) }},
 				{"Mach", func() loadResult { return runTCPLoad("Mach", newFairLogger_Mach(), "GET", "/api/users", nil) }},
 				{"Gin", func() loadResult { return runTCPLoad("Gin", newFairLogger_Gin(), "GET", "/api/users", nil) }},
+				{"Echo", func() loadResult { return runTCPLoad("Echo", newFairLogger_Echo(), "GET", "/api/users", nil) }},
 			},
 		},
 		{
@@ -1315,6 +1487,7 @@ func TestFairLoadTest(t *testing.T) {
 				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newFairEncrypt_Aarv(), "GET", "/api/users", nil) }},
 				{"Mach", func() loadResult { return runTCPLoad("Mach", newFairEncrypt_Mach(), "GET", "/api/users", nil) }},
 				{"Gin", func() loadResult { return runTCPLoad("Gin", newFairEncrypt_Gin(), "GET", "/api/users", nil) }},
+				{"Echo", func() loadResult { return runTCPLoad("Echo", newFairEncrypt_Echo(), "GET", "/api/users", nil) }},
 			},
 		},
 		{
@@ -1323,6 +1496,7 @@ func TestFairLoadTest(t *testing.T) {
 				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newAarv_LoggerNoFromRequest(), "GET", "/api/users", nil) }},
 				{"Mach", func() loadResult { return runTCPLoad("Mach", newMach_LoggerNoFromRequest(), "GET", "/api/users", nil) }},
 				{"Gin", func() loadResult { return runTCPLoad("Gin", newGin_LoggerNoFromRequest(), "GET", "/api/users", nil) }},
+				{"Echo", func() loadResult { return runTCPLoad("Echo", newEcho_LoggerNoFromRequest(), "GET", "/api/users", nil) }},
 			},
 		},
 		{
@@ -1331,6 +1505,7 @@ func TestFairLoadTest(t *testing.T) {
 				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newBareMin_Aarv_Logger(), "GET", "/api/users", nil) }},
 				{"Mach", func() loadResult { return runTCPLoad("Mach", newBareMin_Mach_Logger(), "GET", "/api/users", nil) }},
 				{"Gin", func() loadResult { return runTCPLoad("Gin", newBareMin_Gin_Logger(), "GET", "/api/users", nil) }},
+				{"Echo", func() loadResult { return runTCPLoad("Echo", newBareMin_Echo_Logger(), "GET", "/api/users", nil) }},
 				{"Fiber", func() loadResult {
 					return runFiberTCPLoad("Fiber", newBareMin_Fiber_Logger(), "GET", "/api/users", nil)
 				}},
@@ -1342,6 +1517,7 @@ func TestFairLoadTest(t *testing.T) {
 				{"Aarv", func() loadResult { return runTCPLoad("Aarv", newBareMin_Aarv_Encrypt(), "GET", "/api/users", nil) }},
 				{"Mach", func() loadResult { return runTCPLoad("Mach", newBareMin_Mach_Encrypt(), "GET", "/api/users", nil) }},
 				{"Gin", func() loadResult { return runTCPLoad("Gin", newBareMin_Gin_Encrypt(), "GET", "/api/users", nil) }},
+				{"Echo", func() loadResult { return runTCPLoad("Echo", newBareMin_Echo_Encrypt(), "GET", "/api/users", nil) }},
 				{"Fiber", func() loadResult {
 					return runFiberTCPLoad("Fiber", newBareMin_Fiber_Encrypt(), "GET", "/api/users", nil)
 				}},
@@ -1394,20 +1570,19 @@ func TestFairLoadTest(t *testing.T) {
 	fmt.Println("  SUMMARY & INTERPRETATION:")
 	fmt.Println("  ═══════════════════════════════════════════════════════════════════════════════════════════════════")
 	fmt.Println()
-	fmt.Println("  1. VANILLA (no middleware): Aarv has ~5 extra allocs/op due to built-in context management.")
-	fmt.Println("     This is the PRICE you pay for automatic request ID generation & context propagation.")
+	fmt.Println("  1. VANILLA (no middleware): This is a baseline framework-overhead comparison.")
+	fmt.Println("     It is useful, but it is not a feature-parity benchmark.")
 	fmt.Println()
-	fmt.Println("  2. FAIR LOGGER (identical features): When Mach/Gin implement the SAME request ID pattern,")
-	fmt.Println("     Aarv is FASTEST or tied. The 'overhead' in vanilla is actually useful work.")
+	fmt.Println("  2. FAIR LOGGER (identical features): This is the correct apples-to-apples logger comparison.")
+	fmt.Println("     Use this result instead of vanilla/bare-min when judging logger fairness.")
 	fmt.Println()
-	fmt.Println("  3. FAIR ENCRYPTION (identical features): Same conclusion - Aarv is fastest when compared")
-	fmt.Println("     with frameworks implementing identical functionality.")
+	fmt.Println("  3. FAIR ENCRYPTION (identical features): This is the correct apples-to-apples encrypt comparison.")
+	fmt.Println("     Vanilla/bare-min encrypt results measure baseline framework cost, not identical work.")
 	fmt.Println()
-	fmt.Println("  4. NO FromRequest: Proves FromRequest() lookup is ~0 cost. The overhead comes from")
-	fmt.Println("     Aarv's context.WithValue + r.WithContext in ServeHTTP, NOT from FromRequest lookup.")
+	fmt.Println("  4. NO FromRequest: This isolates request-ID/context lookup from the rest of the logger path.")
 	fmt.Println()
-	fmt.Println("  5. BARE MINIMUM: When middleware is ultra-simple (no request ID), all frameworks")
-	fmt.Println("     are similar. Aarv's overhead becomes visible because the middleware does less work.")
+	fmt.Println("  5. BARE MINIMUM: These scenarios intentionally do less work than Aarv's full request-context story.")
+	fmt.Println("     They are baseline overhead comparisons, not feature-fair plugin comparisons.")
 	fmt.Println()
 	fmt.Printf("  Total: %dK requests/framework | %d concurrent connections | Real TCP\n", totalRequests/1_000, concurrency)
 	fmt.Println()
