@@ -196,6 +196,9 @@ func TestContextHelpers(t *testing.T) {
 		if c.RequestID() != "test-123" {
 			t.Errorf("RequestID missing or mismatch")
 		}
+		if v, ok := c.Get("requestId"); !ok || v != "test-123" {
+			t.Errorf("expected requestId in fast path store, got %#v %v", v, ok)
+		}
 
 		c.Logger().Info("test logging")
 		if err := c.ErrorWithDetail(400, "bad", "req"); err == nil {
@@ -523,12 +526,24 @@ func TestContextAdditionalCoverage(t *testing.T) {
 		if ctx.RequestID() != "req-1" {
 			t.Fatal("expected request ID")
 		}
-		logger := ctx.Logger()
-		if logger != ctx.Logger() {
-			t.Fatal("expected cached logger instance")
+		if v, ok := GetTyped[string](ctx, "requestId"); !ok || v != "req-1" {
+			t.Fatalf("unexpected request ID typed getter result: %q %v", v, ok)
 		}
 		if v, ok := GetTyped[int](ctx, "value"); !ok || v != 3 {
 			t.Fatalf("unexpected typed getter result: %d %v", v, ok)
+		}
+		loggerCtx := ctx
+		ctx = &Context{store: map[string]any{"value": 3}, app: app}
+		if ctx.RequestID() != "" {
+			t.Fatal("expected missing request ID to return empty string")
+		}
+		ctx = &Context{requestID: "req-fast", requestIDSet: true, app: app}
+		if v, ok := GetTyped[string](ctx, "requestId"); !ok || v != "req-fast" {
+			t.Fatalf("unexpected fast-path request ID typed getter result: %q %v", v, ok)
+		}
+		logger := loggerCtx.Logger()
+		if logger != loggerCtx.Logger() {
+			t.Fatal("expected cached logger instance")
 		}
 		if _, ok := GetTyped[string](ctx, "missing"); ok {
 			t.Fatal("expected missing typed getter to fail")
@@ -584,8 +599,34 @@ func TestContextInternalHelpers(t *testing.T) {
 		if ctx.bodyCache != nil {
 			t.Fatalf("expected oversized cache to be released, got cap=%d", cap(ctx.bodyCache))
 		}
-		if ctx.store != nil {
+		if len(ctx.store) != 0 {
 			t.Fatalf("expected request store to be cleared, got %#v", ctx.store)
+		}
+	})
+
+	t.Run("reset reuses small caches and drops oversized store", func(t *testing.T) {
+		app := New(WithBanner(false))
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		ctx, rec := newAppContext(app, req)
+		defer app.ReleaseContext(ctx)
+
+		ctx.bodyCache = make([]byte, 3, maxReusableBodyCache)
+		ctx.store = make(map[string]any, maxReusableStoreKeys+8)
+		for i := 0; i < maxReusableStoreKeys+1; i++ {
+			ctx.store[fmt.Sprintf("k%d", i)] = i
+		}
+		ctx.requestID = "rid"
+		ctx.requestIDSet = true
+		ctx.reset(rec, req)
+
+		if ctx.bodyCache == nil || len(ctx.bodyCache) != 0 {
+			t.Fatalf("expected small body cache to be reused, got len=%d nil=%v", len(ctx.bodyCache), ctx.bodyCache == nil)
+		}
+		if ctx.store != nil {
+			t.Fatalf("expected oversized store map to be released, got %#v", ctx.store)
+		}
+		if ctx.requestID != "" || ctx.requestIDSet {
+			t.Fatal("expected request ID fast path to be reset")
 		}
 	})
 

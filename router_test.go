@@ -115,6 +115,9 @@ func TestRoutesList(t *testing.T) {
 	if ok || c != nil {
 		t.Errorf("FromRequest should return false empty context")
 	}
+	if c, ok := FromRequest(nil); ok || c != nil {
+		t.Errorf("FromRequest should return false for nil request")
+	}
 }
 
 func TestCustom404And405(t *testing.T) {
@@ -234,6 +237,19 @@ func TestRequestContextHelpersAdditionalCoverage(t *testing.T) {
 		if got, ok := contextFromRequest(otherReq); !ok || got != ctx {
 			t.Fatalf("expected context fallback lookup, got %#v %v", got, ok)
 		}
+
+		if got, ok := FromRequest(otherReq); !ok || got != ctx {
+			t.Fatalf("expected FromRequest to read request context, got %#v %v", got, ok)
+		}
+
+		registryReq := httptest.NewRequest(http.MethodGet, "/ctx", nil)
+		storeRequestContext(registryReq, ctx)
+		t.Cleanup(func() {
+			deleteRequestContext(registryReq)
+		})
+		if got, ok := FromRequest(registryReq); !ok || got != ctx {
+			t.Fatalf("expected FromRequest registry fallback, got %#v %v", got, ok)
+		}
 	})
 
 	t.Run("withFrameworkContext preserves aarv context", func(t *testing.T) {
@@ -343,6 +359,48 @@ func TestStandardMiddlewareWithContextCompatibility(t *testing.T) {
 		resp := NewTestClient(app).Get("/api/protected")
 		resp.AssertStatus(t, http.StatusOK)
 		if !strings.Contains(resp.Text(), `"user":"admin"`) {
+			t.Fatalf("unexpected response body %q", resp.Text())
+		}
+	})
+
+	t.Run("disabled request context bridge keeps same-request compatibility", func(t *testing.T) {
+		app := New(WithBanner(false), WithRequestContextBridge(false))
+		app.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if _, ok := FromRequest(r); !ok {
+					t.Fatal("expected same-request middleware lookup to work")
+				}
+				next.ServeHTTP(w, r)
+			})
+		})
+		app.Get("/api/protected", func(c *Context) error {
+			if _, ok := FromRequest(c.Request()); !ok {
+				return c.Text(http.StatusInternalServerError, "missing-context")
+			}
+			return c.Text(http.StatusOK, "ok")
+		})
+
+		resp := NewTestClient(app).Get("/api/protected")
+		resp.AssertStatus(t, http.StatusOK)
+		if resp.Text() != "ok" {
+			t.Fatalf("unexpected response body %q", resp.Text())
+		}
+	})
+
+	t.Run("disabled request context bridge breaks cloned-request compatibility", func(t *testing.T) {
+		app := New(WithBanner(false), WithRequestContextBridge(false))
+		app.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), testCtxKeyUsername{}, "admin")))
+			})
+		})
+		app.Get("/api/protected", func(c *Context) error {
+			return c.Text(http.StatusOK, "unexpected-success")
+		})
+
+		resp := NewTestClient(app).Get("/api/protected")
+		resp.AssertStatus(t, http.StatusInternalServerError)
+		if resp.Text() != "" {
 			t.Fatalf("unexpected response body %q", resp.Text())
 		}
 	})

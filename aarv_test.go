@@ -204,6 +204,22 @@ func TestAppAdditionalCoverage(t *testing.T) {
 			t.Fatal("unexpected redirect helper result for missing route")
 		}
 	})
+
+	t.Run("build route chain fast early returns", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.buildRouteChainFast()
+		if len(app.routeChainFast) != 0 {
+			t.Fatalf("expected no fast route chains without middleware/routes, got %#v", app.routeChainFast)
+		}
+
+		app = New(WithBanner(false))
+		app.Use(func(next http.Handler) http.Handler { return next })
+		app.routeHandlerFast[http.MethodGet] = map[string]routeRuntimeHandler{}
+		app.buildRouteChainFast()
+		if routes, ok := app.routeChainFast[http.MethodGet]; ok && len(routes) != 0 {
+			t.Fatalf("expected empty fast route chain map for empty route set, got %#v", routes)
+		}
+	})
 }
 
 func TestServerLifecycleAdditionalCoverage(t *testing.T) {
@@ -537,6 +553,36 @@ func TestAddRouteMiddlewarePathAdditionalCoverage(t *testing.T) {
 			t.Fatalf("unexpected body %q", resp.Text())
 		}
 	})
+
+	t.Run("exact route with global middleware uses prebuilt chain fast path", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-MW", "true")
+				next.ServeHTTP(w, r)
+			})
+		})
+		var onResponseCalled bool
+		app.AddHook(OnResponse, func(c *Context) error {
+			onResponseCalled = true
+			return nil
+		})
+		app.Get("/fast", func(c *Context) error {
+			return c.Text(http.StatusOK, "fast")
+		})
+
+		resp := NewTestClient(app).Get("/fast")
+		resp.AssertStatus(t, http.StatusOK)
+		if resp.Headers.Get("X-MW") != "true" {
+			t.Fatalf("expected middleware header, got %q", resp.Headers.Get("X-MW"))
+		}
+		if resp.Text() != "fast" {
+			t.Fatalf("unexpected body %q", resp.Text())
+		}
+		if !onResponseCalled {
+			t.Fatal("expected OnResponse hook to run")
+		}
+	})
 }
 
 func TestAppInternalBranchCoverage(t *testing.T) {
@@ -637,6 +683,66 @@ func TestAppInternalBranchCoverage(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "custom not found") {
 			t.Fatalf("expected custom 404 fallback with context, got code=%d body=%q", rec.Code, rec.Body.String())
+		}
+
+		fastHandler := routeRuntimeHandler(func(c *Context, w http.ResponseWriter, r *http.Request) {
+			_ = c.Text(http.StatusOK, "fast")
+		})
+		mux = &routingMux{
+			mux:         http.NewServeMux(),
+			app:         app,
+			routesByKey: map[string]struct{}{},
+			routeHandlers: map[string]routeRuntimeHandler{
+				"GET /fast": fastHandler,
+			},
+			routeHandlerFast: map[string]map[string]routeRuntimeHandler{
+				"GET": {"/fast": fastHandler},
+			},
+			directDynamicRoutes: map[string][]directDynamicRoute{
+				http.MethodGet: {{
+					handler: func(c *Context, w http.ResponseWriter, r *http.Request) {
+						_ = c.JSON(http.StatusOK, map[string]string{"id": c.Param("id")})
+					},
+					pattern: compileDirectPattern("/users/{id}"),
+				}},
+			},
+		}
+
+		req = httptest.NewRequest(http.MethodGet, "/fast", nil)
+		ctx, rec = newAppContext(app, req)
+		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, ctx))
+		ctx.req = req
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Body.String() != "fast" {
+			t.Fatalf("expected direct static route fast path, got code=%d body=%q", rec.Code, rec.Body.String())
+		}
+
+		req = httptest.NewRequest(http.MethodGet, "/users/42", nil)
+		ctx, rec = newAppContext(app, req)
+		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, ctx))
+		ctx.req = req
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"42"`) {
+			t.Fatalf("expected direct dynamic route fast path, got code=%d body=%q", rec.Code, rec.Body.String())
+		}
+
+		genericMux := http.NewServeMux()
+		genericMux.Handle("GET /items/{id}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("generic-dynamic"))
+		}))
+		mux = &routingMux{
+			mux:           genericMux,
+			app:           app,
+			routesByKey:   map[string]struct{}{"GET /items/{id}": {}},
+			routeHandlers: map[string]routeRuntimeHandler{},
+		}
+		req = httptest.NewRequest(http.MethodGet, "/items/7", nil)
+		ctx, rec = newAppContext(app, req)
+		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, ctx))
+		ctx.req = req
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Body.String() != "generic-dynamic" {
+			t.Fatalf("expected generic dynamic route path, got code=%d body=%q", rec.Code, rec.Body.String())
 		}
 	})
 }

@@ -58,6 +58,8 @@ type App struct {
 	routes              []RouteInfo
 	routesByKey         map[string]struct{} // "METHOD /path" for 405 detection
 	routeHandlers       map[string]routeRuntimeHandler
+	routeHandlerFast    map[string]map[string]routeRuntimeHandler // [method][path] two-level lookup (zero-alloc)
+	routeChainFast      map[string]map[string]http.Handler        // [method][path] prebuilt exact-route middleware chain
 	directDynamicRoutes map[string][]directDynamicRoute
 
 	// Shutdown
@@ -66,7 +68,7 @@ type App struct {
 
 // New creates a new App with the given options.
 func New(opts ...Option) *App {
-	defaultCodec := StdJSONCodec{}
+	defaultCodec := NewStdJSONCodec()
 	a := &App{
 		mux:                 http.NewServeMux(),
 		config:              defaultConfig(),
@@ -75,15 +77,15 @@ func New(opts ...Option) *App {
 		decorators:          make(map[string]any),
 		routesByKey:         make(map[string]struct{}),
 		routeHandlers:       make(map[string]routeRuntimeHandler),
+		routeHandlerFast:    make(map[string]map[string]routeRuntimeHandler),
+		routeChainFast:      make(map[string]map[string]http.Handler),
 		directDynamicRoutes: make(map[string][]directDynamicRoute),
 	}
 	a.setCodec(defaultCodec)
 
 	a.ctxPool = sync.Pool{
 		New: func() any {
-			return &Context{
-				store: make(map[string]any, 4),
-			}
+			return &Context{}
 		},
 	}
 
@@ -246,6 +248,11 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 				handler: internalHandler,
 				pattern: compileDirectPattern(pattern),
 			})
+		} else {
+			if a.routeHandlerFast[method] == nil {
+				a.routeHandlerFast[method] = make(map[string]routeRuntimeHandler)
+			}
+			a.routeHandlerFast[method][pattern] = internalHandler
 		}
 	}
 
@@ -426,34 +433,74 @@ func WithPrefix(prefix string) PluginOption {
 func (a *App) buildHandler() http.Handler {
 	// Wrap mux to intercept 404/405 responses
 	wrappedMux := &routingMux{
-		mux:           a.mux,
-		app:           a,
-		routesByKey:   a.routesByKey,
-		routeHandlers: a.routeHandlers,
+		mux:                 a.mux,
+		app:                 a,
+		routesByKey:         a.routesByKey,
+		routeHandlers:       a.routeHandlers,
+		routeHandlerFast:    a.routeHandlerFast,
+		directDynamicRoutes: a.directDynamicRoutes,
 	}
 	return buildChain(wrappedMux, a.globalMiddleware)
+}
+
+func (a *App) buildRouteChainFast() {
+	if len(a.globalMiddleware) == 0 || len(a.routeHandlerFast) == 0 {
+		return
+	}
+	for method, routes := range a.routeHandlerFast {
+		if len(routes) == 0 {
+			continue
+		}
+		if a.routeChainFast[method] == nil {
+			a.routeChainFast[method] = make(map[string]http.Handler, len(routes))
+		}
+		for path, rh := range routes {
+			path := path
+			rh := rh
+			routeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ctx, ok := contextFromRequest(r)
+				if !ok {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				rh(ctx, w, r)
+			})
+			a.routeChainFast[method][path] = buildChain(routeHandler, a.globalMiddleware)
+		}
+	}
 }
 
 type routeRuntimeHandler func(*Context, http.ResponseWriter, *http.Request)
 
 // routingMux wraps http.ServeMux to intercept 404/405 and call custom handlers.
 type routingMux struct {
-	mux           *http.ServeMux
-	app           *App
-	routesByKey   map[string]struct{}
-	routeHandlers map[string]routeRuntimeHandler
+	mux                 *http.ServeMux
+	app                 *App
+	routesByKey         map[string]struct{}
+	routeHandlers       map[string]routeRuntimeHandler
+	routeHandlerFast    map[string]map[string]routeRuntimeHandler
+	directDynamicRoutes map[string][]directDynamicRoute
 }
 
 func (m *routingMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if c, ok := contextFromRequest(r); ok {
+		if methods := m.routeHandlerFast[r.Method]; methods != nil {
+			if rh, ok := methods[r.URL.Path]; ok {
+				rh(c, w, r)
+				return
+			}
+		}
+		for _, route := range m.directDynamicRoutes[r.Method] {
+			if route.pattern.match(r.URL.Path, c) {
+				route.handler(c, w, r)
+				return
+			}
+		}
+	}
+
 	if h, pattern := m.mux.Handler(r); pattern != "" {
 		if _, ok := m.routesByKey[pattern]; ok {
 			if !strings.Contains(pattern, "{") {
-				if c, ok := contextFromRequest(r); ok {
-					if rh, ok := m.routeHandlers[pattern]; ok {
-						rh(c, w, r)
-						return
-					}
-				}
 				h.ServeHTTP(w, r)
 				return
 			}
@@ -528,6 +575,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	a.handlerOnce.Do(func() {
 		a.hooks.finalize()
 		a.handler = a.buildHandler()
+		a.buildRouteChainFast()
 		a.hasOnRequest = len(a.hooks.hooks[OnRequest]) > 0
 		a.hasOnResponse = len(a.hooks.hooks[OnResponse]) > 0
 		a.hasOnSend = len(a.hooks.hooks[OnSend]) > 0
@@ -580,18 +628,20 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c = a.ctxPool.Get().(*Context)
 	c.reset(w, r)
 	c.app = a
-	r = withFrameworkContext(r, c)
-	c.req = r
-	c.rootReq = r
-	storeRequestContext(r, c)
-
-	defer func() {
-		deleteRequestContext(c.rootReq)
-		if c.req != c.rootReq {
+	if a.config.RequestContextBridge {
+		// Inline context embedding: skip nil/existing checks since we know
+		// the request is fresh and has no aarv context yet.
+		r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, c))
+		c.req = r
+		defer a.ctxPool.Put(c)
+	} else {
+		storeRequestContext(r, c)
+		c.req = r
+		defer func() {
 			deleteRequestContext(c.req)
-		}
-		a.ctxPool.Put(c)
-	}()
+			a.ctxPool.Put(c)
+		}()
+	}
 
 	// Run OnRequest hooks (skip if none registered)
 	if a.hasOnRequest {
@@ -603,6 +653,15 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Execute pre-built handler chain (middleware + routing mux)
 	// The routingMux wrapper handles 404/405 detection after middleware runs
+	if methods := a.routeChainFast[r.Method]; methods != nil {
+		if h, ok := methods[r.URL.Path]; ok {
+			h.ServeHTTP(w, r)
+			if a.hasOnResponse {
+				_ = a.hooks.run(OnResponse, c)
+			}
+			return
+		}
+	}
 	a.handler.ServeHTTP(w, r)
 
 	// Run OnResponse hooks after handler completes
@@ -612,9 +671,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) serveDirect(c *Context, w http.ResponseWriter, r *http.Request) bool {
-	if rt, ok := a.routeHandlers[r.Method+" "+r.URL.Path]; ok {
-		rt(c, w, r)
-		return true
+	if methods := a.routeHandlerFast[r.Method]; methods != nil {
+		if rt, ok := methods[r.URL.Path]; ok {
+			rt(c, w, r)
+			return true
+		}
 	}
 	for _, route := range a.directDynamicRoutes[r.Method] {
 		if route.pattern.match(r.URL.Path, c) {

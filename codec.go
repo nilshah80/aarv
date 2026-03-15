@@ -21,7 +21,14 @@ type Codec interface {
 	ContentType() string
 }
 
-// StdJSONCodec implements Codec using encoding/json from the standard library.
+var stdJSONCodecBufferPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 1024))
+	},
+}
+
+// StdJSONCodec implements the canonical stdlib-backed JSON codec.
+// It uses encoding/json and a pooled buffer for MarshalBytes.
 type StdJSONCodec struct{}
 
 // Decode reads JSON from r into v using encoding/json.
@@ -39,9 +46,18 @@ func (StdJSONCodec) UnmarshalBytes(data []byte, v any) error {
 	return json.Unmarshal(data, v)
 }
 
-// MarshalBytes encodes v to JSON bytes using encoding/json.
+// MarshalBytes encodes v to JSON bytes using a pooled buffer.
 func (StdJSONCodec) MarshalBytes(v any) ([]byte, error) {
-	return json.Marshal(v)
+	buf := stdJSONCodecBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer stdJSONCodecBufferPool.Put(buf)
+
+	if err := json.NewEncoder(buf).Encode(v); err != nil {
+		return nil, err
+	}
+	result := make([]byte, buf.Len())
+	copy(result, buf.Bytes())
+	return result, nil
 }
 
 // ContentType returns the MIME type produced by StdJSONCodec.
@@ -49,56 +65,17 @@ func (StdJSONCodec) ContentType() string {
 	return "application/json"
 }
 
-// OptimizedJSONCodec implements Codec with sync.Pool buffering for better performance.
-// It reuses byte buffers to reduce allocations during encoding.
-type OptimizedJSONCodec struct {
-	pool sync.Pool
+// NewStdJSONCodec returns the canonical stdlib-backed JSON codec.
+func NewStdJSONCodec() *StdJSONCodec {
+	return &StdJSONCodec{}
 }
 
-// NewOptimizedJSONCodec creates a new OptimizedJSONCodec with pooled buffers.
+// OptimizedJSONCodec is kept as a deprecated alias for backward compatibility.
+// Deprecated: use StdJSONCodec or NewStdJSONCodec.
+type OptimizedJSONCodec = StdJSONCodec
+
+// NewOptimizedJSONCodec is kept as a deprecated constructor alias.
+// Deprecated: use NewStdJSONCodec.
 func NewOptimizedJSONCodec() *OptimizedJSONCodec {
-	return &OptimizedJSONCodec{
-		pool: sync.Pool{
-			New: func() any {
-				return bytes.NewBuffer(make([]byte, 0, 1024))
-			},
-		},
-	}
-}
-
-// Decode reads JSON from r into v using encoding/json.
-func (c *OptimizedJSONCodec) Decode(r io.Reader, v any) error {
-	return json.NewDecoder(r).Decode(v)
-}
-
-// Encode writes v to w as JSON.
-// For stdlib encoding/json, streaming directly to w is cheaper than encoding
-// into an intermediate pooled buffer and then copying to the destination.
-func (c *OptimizedJSONCodec) Encode(w io.Writer, v any) error {
-	return json.NewEncoder(w).Encode(v)
-}
-
-// UnmarshalBytes decodes JSON bytes into v using encoding/json.
-func (c *OptimizedJSONCodec) UnmarshalBytes(data []byte, v any) error {
-	return json.Unmarshal(data, v)
-}
-
-// MarshalBytes encodes v to JSON bytes using a pooled buffer.
-func (c *OptimizedJSONCodec) MarshalBytes(v any) ([]byte, error) {
-	buf := c.pool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer c.pool.Put(buf)
-
-	if err := json.NewEncoder(buf).Encode(v); err != nil {
-		return nil, err
-	}
-	// Return a copy since we're returning the buffer to the pool
-	result := make([]byte, buf.Len())
-	copy(result, buf.Bytes())
-	return result, nil
-}
-
-// ContentType returns the MIME type produced by OptimizedJSONCodec.
-func (c *OptimizedJSONCodec) ContentType() string {
-	return "application/json"
+	return NewStdJSONCodec()
 }

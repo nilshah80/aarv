@@ -30,6 +30,7 @@ func TestOptions(t *testing.T) {
 		WithBanner(false),
 		WithDebug(true),
 		WithRedirectTrailingSlash(true),
+		WithRequestContextBridge(false),
 	}
 
 	app := New(opts...)
@@ -76,5 +77,8 @@ func TestOptions(t *testing.T) {
 	}
 	if !cfg.RedirectTrailingSlash {
 		t.Errorf("expected redirect trailing slash to be true")
+	}
+	if cfg.RequestContextBridge {
+		t.Errorf("expected request context bridge to be false")
 	}
 }
