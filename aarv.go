@@ -598,23 +598,24 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if len(a.globalMiddleware) == 0 && !a.hasOnRequest && !a.hasOnResponse && !a.hasOnSend {
-		c := a.ctxPool.Get().(*Context)
-		c.reset(w, r)
-		c.app = a
-		defer a.ctxPool.Put(c)
+	// Acquire context once and reuse across fast and middleware paths.
+	c := a.ctxPool.Get().(*Context)
+	c.reset(w, r)
+	c.app = a
 
+	// Fast path: no middleware, no hooks — dispatch directly without
+	// context bridging or defer overhead.
+	if len(a.globalMiddleware) == 0 && !a.hasOnRequest && !a.hasOnResponse && !a.hasOnSend {
 		if a.serveDirect(c, w, r) {
+			a.ctxPool.Put(c)
 			return
 		}
+		// serveDirect missed — fall through to middleware path, reuse c.
 	}
 
-	var c *Context
-
 	// Use buffered response writer if OnSend hooks are registered
-	var bw *bufferedResponseWriter
 	if a.hasOnSend {
-		bw = acquireBufferedWriter(w)
+		bw := acquireBufferedWriter(w)
 		defer func() {
 			// Run OnSend hooks before flushing
 			_ = a.hooks.run(OnSend, c)
@@ -622,15 +623,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			releaseBufferedWriter(bw)
 		}()
 		w = bw
+		c.res = w
 	}
 
-	// Acquire context from pool
-	c = a.ctxPool.Get().(*Context)
-	c.reset(w, r)
-	c.app = a
+	// Set up context bridge for middleware/plugin access via FromRequest
 	if a.config.RequestContextBridge {
-		// Inline context embedding: skip nil/existing checks since we know
-		// the request is fresh and has no aarv context yet.
 		r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, c))
 		c.req = r
 		defer a.ctxPool.Put(c)
@@ -652,7 +649,6 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Execute pre-built handler chain (middleware + routing mux)
-	// The routingMux wrapper handles 404/405 detection after middleware runs
 	if methods := a.routeChainFast[r.Method]; methods != nil {
 		if h, ok := methods[r.URL.Path]; ok {
 			h.ServeHTTP(w, r)
