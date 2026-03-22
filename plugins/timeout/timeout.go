@@ -111,7 +111,6 @@ func New(d time.Duration) aarv.Middleware {
 			}
 
 			tw := acquireTimeoutWriter(w)
-			defer releaseTimeoutWriter(tw)
 
 			done := make(chan struct{})
 			panicCh := make(chan any, 1)
@@ -120,6 +119,7 @@ func New(d time.Duration) aarv.Middleware {
 					if p := recover(); p != nil {
 						panicCh <- p
 					}
+					releaseTimeoutWriter(tw)
 					close(done)
 				}()
 				next.ServeHTTP(tw, r)
@@ -139,9 +139,10 @@ func New(d time.Duration) aarv.Middleware {
 				// Timeout exceeded
 				tw.mu.Lock()
 				tw.timedOut = true
+				written := tw.written
 				tw.mu.Unlock()
 
-				if !tw.written {
+				if !written {
 					w.Header().Set("Content-Type", "application/json; charset=utf-8")
 					w.WriteHeader(http.StatusGatewayTimeout)
 					_ = json.NewEncoder(w).Encode(map[string]string{
