@@ -7,8 +7,6 @@ import (
 	"net/url"
 	"reflect"
 	"testing"
-
-	"github.com/nilshah80/aarv/internal/benchutil"
 )
 
 type validatorBenchmarkPayload struct {
@@ -22,6 +20,33 @@ type validatorBenchmarkPayload struct {
 	Zip     string `json:"zip" validate:"required,numeric,len=5"`
 	Country string `json:"country" validate:"required,len=2"`
 	Role    string `json:"role" validate:"required,oneof=admin user editor"`
+}
+
+type benchmarkDiscardResponseWriter struct {
+	header http.Header
+	Status int
+}
+
+func (w *benchmarkDiscardResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *benchmarkDiscardResponseWriter) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (w *benchmarkDiscardResponseWriter) WriteHeader(status int) {
+	w.Status = status
+}
+
+func (w *benchmarkDiscardResponseWriter) Reset() {
+	for k := range w.header {
+		delete(w.header, k)
+	}
+	w.Status = 0
 }
 
 var (
@@ -73,7 +98,7 @@ func BenchmarkBindValidate10FieldsAarv(b *testing.B) {
 		b.Fatal("expected binder and validator")
 	}
 
-	var rw benchutil.DiscardResponseWriter
+	var rw benchmarkDiscardResponseWriter
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
