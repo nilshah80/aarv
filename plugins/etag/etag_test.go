@@ -15,10 +15,8 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestCaptureWriterAndHelpers(t *testing.T) {
 	rec := httptest.NewRecorder()
-	cw := &captureWriter{
-		ResponseWriter: rec,
-		statusCode:     http.StatusOK,
-	}
+	cw := acquireCaptureWriter(rec)
+	defer releaseCaptureWriter(cw)
 
 	cw.WriteHeader(http.StatusCreated)
 	_, err := cw.Write([]byte("hello"))
@@ -31,6 +29,7 @@ func TestCaptureWriterAndHelpers(t *testing.T) {
 	if cw.Unwrap() != rec {
 		t.Fatal("unwrap should return original writer")
 	}
+	releaseCaptureWriter(nil)
 
 	if !matchETag("*", `"abc"`) {
 		t.Fatal("wildcard should match")

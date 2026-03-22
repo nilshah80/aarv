@@ -44,3 +44,5 @@ examples/*/[a-z]*
 .DS_Store
 Thumbs.db
 .claude/settings.local.json
+mach_style_bench/
+tests/benchmark/

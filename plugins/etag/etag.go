@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"net/http"
+	"sync"
 
 	"github.com/nilshah80/aarv"
 )
@@ -36,6 +37,34 @@ type captureWriter struct {
 	body       bytes.Buffer
 	statusCode int
 	headerSent bool
+}
+
+var captureWriterPool = sync.Pool{
+	New: func() any { return &captureWriter{} },
+}
+
+func acquireCaptureWriter(w http.ResponseWriter) *captureWriter {
+	cw := captureWriterPool.Get().(*captureWriter)
+	cw.ResponseWriter = w
+	cw.body.Reset()
+	cw.statusCode = http.StatusOK
+	cw.headerSent = false
+	return cw
+}
+
+func releaseCaptureWriter(cw *captureWriter) {
+	if cw == nil {
+		return
+	}
+	cw.ResponseWriter = nil
+	if cw.body.Cap() > 64<<10 {
+		cw.body = bytes.Buffer{}
+	} else {
+		cw.body.Reset()
+	}
+	cw.statusCode = http.StatusOK
+	cw.headerSent = false
+	captureWriterPool.Put(cw)
 }
 
 func (cw *captureWriter) WriteHeader(code int) {
@@ -69,10 +98,8 @@ func New(config ...Config) aarv.Middleware {
 				return
 			}
 
-			cw := &captureWriter{
-				ResponseWriter: w,
-				statusCode:     http.StatusOK,
-			}
+			cw := acquireCaptureWriter(w)
+			defer releaseCaptureWriter(cw)
 
 			next.ServeHTTP(cw, r)
 

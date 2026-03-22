@@ -177,3 +177,89 @@ func TestNewLogsRequestAndSkipsConfiguredPaths(t *testing.T) {
 		t.Fatalf("skip path should not be logged, got %s", logBuf.String())
 	}
 }
+
+func TestNewAdditionalBranches(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
+	t.Cleanup(func() {
+		slog.SetDefault(old)
+	})
+
+	t.Run("stdlib path logs without aarv context", func(t *testing.T) {
+		logBuf.Reset()
+		handler := New()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		req := httptest.NewRequest(http.MethodGet, "/plain", nil)
+		req.RemoteAddr = "9.9.9.9:4321"
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+
+		out := logBuf.String()
+		for _, want := range []string{`"path":"/plain"`, `"status":204`, `"request_id":""`} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("expected stdlib logger output to contain %q, got %s", want, out)
+			}
+		}
+	})
+
+	t.Run("stdlib path honors skip list", func(t *testing.T) {
+		logBuf.Reset()
+		called := false
+		handler := New(Config{SkipPaths: []string{"/skip"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/skip", nil))
+		if !called {
+			t.Fatal("expected skipped handler to still execute")
+		}
+		if strings.Contains(logBuf.String(), "/skip") {
+			t.Fatalf("expected skip path to avoid logging, got %s", logBuf.String())
+		}
+	})
+
+	t.Run("default config logs when skip list is empty", func(t *testing.T) {
+		logBuf.Reset()
+		app := aarv.New(aarv.WithBanner(false))
+		app.Use(New())
+		app.Get("/native", func(c *aarv.Context) error {
+			return c.NoContent(http.StatusAccepted)
+		})
+
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/native", nil))
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected status 202, got %d", rec.Code)
+		}
+		if !strings.Contains(logBuf.String(), `"path":"/native"`) {
+			t.Fatalf("expected native logger output, got %s", logBuf.String())
+		}
+	})
+
+	t.Run("stdlib path reads request id from aarv context when present", func(t *testing.T) {
+		logBuf.Reset()
+		app := aarv.New(aarv.WithBanner(false))
+		app.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			})
+		})
+		app.Use(New())
+		app.Get("/ctx", func(c *aarv.Context) error {
+			c.Set("requestId", "req-ctx")
+			return c.NoContent(http.StatusNoContent)
+		})
+
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ctx", nil))
+
+		if !strings.Contains(logBuf.String(), `"request_id":"req-ctx"`) {
+			t.Fatalf("expected context request id in log, got %s", logBuf.String())
+		}
+	})
+}

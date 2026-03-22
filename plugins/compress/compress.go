@@ -37,6 +37,14 @@ var (
 	}
 )
 
+var gzipResponseWriterPool = sync.Pool{
+	New: func() any { return &gzipResponseWriter{} },
+}
+
+var deflateResponseWriterPool = sync.Pool{
+	New: func() any { return &deflateResponseWriter{} },
+}
+
 // Config holds configuration for the compression middleware.
 type Config struct {
 	// Level is the compression level for both gzip and deflate.
@@ -146,17 +154,18 @@ func (grw *gzipResponseWriter) finish() {
 		// Flush and close the gzip writer
 		_ = grw.gzWriter.Close()
 		grw.pool.Put(grw.gzWriter)
-		return
 	}
-
-	// Response was smaller than minSize — send uncompressed
-	if !grw.headerSent {
-		grw.headerSent = true
-		grw.ResponseWriter.WriteHeader(grw.statusCode)
+	if !grw.compressed {
+		// Response was smaller than minSize — send uncompressed
+		if !grw.headerSent {
+			grw.headerSent = true
+			grw.ResponseWriter.WriteHeader(grw.statusCode)
+		}
+		if len(grw.buf) > 0 {
+			_, _ = grw.ResponseWriter.Write(grw.buf)
+		}
 	}
-	if len(grw.buf) > 0 {
-		_, _ = grw.ResponseWriter.Write(grw.buf)
-	}
+	releaseGzipResponseWriter(grw)
 }
 
 // Unwrap returns the underlying http.ResponseWriter.
@@ -224,20 +233,89 @@ func (drw *deflateResponseWriter) finish() {
 	if drw.compressed {
 		_ = drw.deflateWriter.Close()
 		drw.pool.Put(drw.deflateWriter)
-		return
 	}
-
-	if !drw.headerSent {
-		drw.headerSent = true
-		drw.ResponseWriter.WriteHeader(drw.statusCode)
+	if !drw.compressed {
+		if !drw.headerSent {
+			drw.headerSent = true
+			drw.ResponseWriter.WriteHeader(drw.statusCode)
+		}
+		if len(drw.buf) > 0 {
+			_, _ = drw.ResponseWriter.Write(drw.buf)
+		}
 	}
-	if len(drw.buf) > 0 {
-		_, _ = drw.ResponseWriter.Write(drw.buf)
-	}
+	releaseDeflateResponseWriter(drw)
 }
 
 func (drw *deflateResponseWriter) Unwrap() http.ResponseWriter {
 	return drw.ResponseWriter
+}
+
+func acquireGzipResponseWriter(w http.ResponseWriter, gz gzipCompressor, pool *sync.Pool, minSize int, isExcludedFunc func(string) bool) *gzipResponseWriter {
+	grw := gzipResponseWriterPool.Get().(*gzipResponseWriter)
+	grw.ResponseWriter = w
+	grw.gzWriter = gz
+	grw.pool = pool
+	grw.buf = grw.buf[:0]
+	grw.minSize = minSize
+	grw.statusCode = http.StatusOK
+	grw.headerSent = false
+	grw.compressed = false
+	grw.isExcludedFunc = isExcludedFunc
+	return grw
+}
+
+func releaseGzipResponseWriter(grw *gzipResponseWriter) {
+	if grw == nil {
+		return
+	}
+	grw.ResponseWriter = nil
+	grw.gzWriter = nil
+	grw.pool = nil
+	if cap(grw.buf) > 64<<10 {
+		grw.buf = nil
+	} else {
+		grw.buf = grw.buf[:0]
+	}
+	grw.minSize = 0
+	grw.statusCode = http.StatusOK
+	grw.headerSent = false
+	grw.compressed = false
+	grw.isExcludedFunc = nil
+	gzipResponseWriterPool.Put(grw)
+}
+
+func acquireDeflateResponseWriter(w http.ResponseWriter, fw deflateCompressor, pool *sync.Pool, minSize int, isExcludedFunc func(string) bool) *deflateResponseWriter {
+	drw := deflateResponseWriterPool.Get().(*deflateResponseWriter)
+	drw.ResponseWriter = w
+	drw.deflateWriter = fw
+	drw.pool = pool
+	drw.buf = drw.buf[:0]
+	drw.minSize = minSize
+	drw.statusCode = http.StatusOK
+	drw.headerSent = false
+	drw.compressed = false
+	drw.isExcludedFunc = isExcludedFunc
+	return drw
+}
+
+func releaseDeflateResponseWriter(drw *deflateResponseWriter) {
+	if drw == nil {
+		return
+	}
+	drw.ResponseWriter = nil
+	drw.deflateWriter = nil
+	drw.pool = nil
+	if cap(drw.buf) > 64<<10 {
+		drw.buf = nil
+	} else {
+		drw.buf = drw.buf[:0]
+	}
+	drw.minSize = 0
+	drw.statusCode = http.StatusOK
+	drw.headerSent = false
+	drw.compressed = false
+	drw.isExcludedFunc = nil
+	deflateResponseWriterPool.Put(drw)
 }
 
 // New creates a compression middleware with optional configuration.
@@ -324,14 +402,7 @@ func New(config ...Config) aarv.Middleware {
 				gz := gzipPool.Get().(gzipCompressor)
 				gz.Reset(w)
 
-				grw := &gzipResponseWriter{
-					ResponseWriter:   w,
-					gzWriter:         gz,
-					pool:             gzipPool,
-					minSize:          cfg.MinSize,
-					statusCode:       http.StatusOK,
-					isExcludedFunc:   isExcluded,
-				}
+				grw := acquireGzipResponseWriter(w, gz, gzipPool, cfg.MinSize, isExcluded)
 
 				defer grw.finish()
 				next.ServeHTTP(grw, r)
@@ -339,14 +410,7 @@ func New(config ...Config) aarv.Middleware {
 				fw := deflatePool.Get().(deflateCompressor)
 				fw.Reset(w)
 
-				drw := &deflateResponseWriter{
-					ResponseWriter:   w,
-					deflateWriter:    fw,
-					pool:             deflatePool,
-					minSize:          cfg.MinSize,
-					statusCode:       http.StatusOK,
-					isExcludedFunc:   isExcluded,
-				}
+				drw := acquireDeflateResponseWriter(w, fw, deflatePool, cfg.MinSize, isExcluded)
 
 				defer drw.finish()
 				next.ServeHTTP(drw, r)

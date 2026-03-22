@@ -39,9 +39,7 @@ type PluginContext struct {
 }
 
 func newPluginContext(app *App, pluginName, prefix string) *PluginContext {
-	// Group prefix is empty — PluginContext methods prepend prefix themselves
 	g := &RouteGroup{
-		mux:    app.mux,
 		prefix: "",
 		app:    app,
 	}
@@ -57,16 +55,7 @@ func newPluginContext(app *App, pluginName, prefix string) *PluginContext {
 
 // routeOpts merges plugin-level middleware into per-route options.
 func (pc *PluginContext) routeOpts(opts []RouteOption) []RouteOption {
-	if len(pc.group.middleware) == 0 {
-		return opts
-	}
-	// Prepend plugin middleware so it wraps around any route-level middleware.
-	combined := make([]RouteOption, 0, len(opts)+1)
-	mw := make([]Middleware, len(pc.group.middleware))
-	copy(mw, pc.group.middleware)
-	combined = append(combined, WithRouteMiddleware(mw...))
-	combined = append(combined, opts...)
-	return combined
+	return opts
 }
 
 // Get registers a GET route scoped to this plugin.
@@ -109,6 +98,7 @@ func (pc *PluginContext) Group(prefix string, fn func(g *RouteGroup)) *PluginCon
 func (pc *PluginContext) AddHook(phase HookPhase, fn HookFunc) {
 	if fn != nil {
 		pc.app.hooks.add(phase, fn)
+		pc.app.setHookFlag(phase)
 	}
 }
 

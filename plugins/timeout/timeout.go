@@ -38,6 +38,30 @@ type timeoutWriter struct {
 	statusCode int
 }
 
+var timeoutWriterPool = sync.Pool{
+	New: func() any { return &timeoutWriter{} },
+}
+
+func acquireTimeoutWriter(w http.ResponseWriter) *timeoutWriter {
+	tw := timeoutWriterPool.Get().(*timeoutWriter)
+	tw.ResponseWriter = w
+	tw.timedOut = false
+	tw.written = false
+	tw.statusCode = http.StatusOK
+	return tw
+}
+
+func releaseTimeoutWriter(tw *timeoutWriter) {
+	if tw == nil {
+		return
+	}
+	tw.ResponseWriter = nil
+	tw.timedOut = false
+	tw.written = false
+	tw.statusCode = 0
+	timeoutWriterPool.Put(tw)
+}
+
 func (tw *timeoutWriter) WriteHeader(code int) {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
@@ -86,10 +110,8 @@ func New(d time.Duration) aarv.Middleware {
 				r = r.WithContext(ctx)
 			}
 
-			tw := &timeoutWriter{
-				ResponseWriter: w,
-				statusCode:     http.StatusOK,
-			}
+			tw := acquireTimeoutWriter(w)
+			defer releaseTimeoutWriter(tw)
 
 			done := make(chan struct{})
 			panicCh := make(chan any, 1)

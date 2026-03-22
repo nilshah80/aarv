@@ -1,6 +1,7 @@
 package aarv
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -97,6 +98,61 @@ func TestGroupMiddlewareIsolation(t *testing.T) {
 	}
 }
 
+func TestGlobalGroupRouteMiddlewareOrdering(t *testing.T) {
+	app := New(WithBanner(false))
+	order := []string{}
+
+	app.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			order = append(order, "global-in")
+			next.ServeHTTP(w, r)
+			order = append(order, "global-out")
+		})
+	})
+
+	app.Group("/g", func(g *RouteGroup) {
+		g.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				order = append(order, "group-in")
+				next.ServeHTTP(w, r)
+				order = append(order, "group-out")
+			})
+		})
+
+		g.Get("/test", func(c *Context) error {
+			order = append(order, "handler")
+			return c.Text(http.StatusOK, "ok")
+		}, WithRouteMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				order = append(order, "route-in")
+				next.ServeHTTP(w, r)
+				order = append(order, "route-out")
+			})
+		}))
+	})
+
+	resp := NewTestClient(app).Get("/g/test")
+	resp.AssertStatus(t, http.StatusOK)
+
+	expected := []string{
+		"global-in",
+		"group-in",
+		"route-in",
+		"handler",
+		"route-out",
+		"group-out",
+		"global-out",
+	}
+	if len(order) != len(expected) {
+		t.Fatalf("middleware order mismatch: got %v want %v", order, expected)
+	}
+	for i, want := range expected {
+		if order[i] != want {
+			t.Fatalf("middleware order[%d] = %q, want %q (full=%v)", i, order[i], want, order)
+		}
+	}
+}
+
 func TestErrorHandling(t *testing.T) {
 	app := New(WithBanner(false))
 	app.Get("/err", func(c *Context) error {
@@ -156,6 +212,31 @@ func TestWrapMiddleware(t *testing.T) {
 	res := tc.Get("/wrap")
 	if res.Headers.Get("X-Wrapped") != "true" {
 		t.Errorf("Expected X-Wrapped header")
+	}
+}
+
+func TestWrapMiddlewareErrorPath(t *testing.T) {
+	app := New(WithBanner(false))
+	app.errorHandler = func(c *Context, err error) {
+		http.Error(c.Response(), "wrapped:"+err.Error(), http.StatusTeapot)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/wrap-err", nil)
+	rec := httptest.NewRecorder()
+	ctx := app.AcquireContext(rec, req)
+	defer app.ReleaseContext(ctx)
+	ctx.SetContext(req.Context())
+
+	mw := WrapMiddleware(func(next HandlerFunc) HandlerFunc {
+		return func(c *Context) error {
+			return errors.New("middleware fail")
+		}
+	})
+	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not run")
+	})).ServeHTTP(rec, ctx.Request())
+
+	if rec.Code != http.StatusTeapot || rec.Body.String() != "wrapped:middleware fail\n" {
+		t.Fatalf("unexpected wrapped error response code=%d body=%q", rec.Code, rec.Body.String())
 	}
 }
 
@@ -255,5 +336,86 @@ func TestMiddlewareNilAndPanicRecoveryPaths(t *testing.T) {
 
 		resp := NewTestClient(app).Get("/panic")
 		resp.AssertStatus(t, http.StatusInternalServerError)
+	})
+}
+
+func TestMiddlewareAdditionalCoverage(t *testing.T) {
+	t.Run("register native middleware stores mapping", func(t *testing.T) {
+		m := RegisterNativeMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			})
+		}, func(next HandlerFunc) HandlerFunc {
+			return func(c *Context) error { return next(c) }
+		})
+
+		if _, ok := nativeMiddlewareFunc(m); !ok {
+			t.Fatal("expected native middleware mapping to be registered")
+		}
+	})
+
+	t.Run("wrapped middleware falls back to next when aarv context is absent", func(t *testing.T) {
+		called := false
+		wrapped := WrapMiddleware(func(next HandlerFunc) HandlerFunc {
+			return func(c *Context) error {
+				t.Fatal("middleware should not receive aarv context on plain request")
+				return nil
+			}
+		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusAccepted)
+		}))
+
+		rec := httptest.NewRecorder()
+		wrapped.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plain", nil))
+		if !called || rec.Code != http.StatusAccepted {
+			t.Fatalf("expected wrapped middleware to pass through, called=%v code=%d", called, rec.Code)
+		}
+	})
+
+	t.Run("logger middleware works without aarv context", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		Logger()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plain", nil))
+
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("expected logger passthrough status, got %d", rec.Code)
+		}
+	})
+
+	t.Run("wrapped middleware and logger use aarv context when present", func(t *testing.T) {
+		app := New(WithBanner(false))
+		req := httptest.NewRequest(http.MethodGet, "/ctx", nil)
+		rec := httptest.NewRecorder()
+		ctx := app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+
+		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, ctx))
+		ctx.req = req
+
+		wrapped := WrapMiddleware(func(next HandlerFunc) HandlerFunc {
+			return func(c *Context) error {
+				c.Set("wrapped", "yes")
+				return next(c)
+			}
+		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got, _ := ctx.Get("wrapped"); got != "yes" {
+				t.Fatalf("expected wrapped marker, got %#v", got)
+			}
+			w.WriteHeader(http.StatusCreated)
+		}))
+		wrapped.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected wrapped status 201, got %d", rec.Code)
+		}
+
+		rec = httptest.NewRecorder()
+		Logger()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+		})).ServeHTTP(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected logger status 202, got %d", rec.Code)
+		}
 	})
 }

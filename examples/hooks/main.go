@@ -14,6 +14,10 @@ import (
 
 var requestCount atomic.Int64
 
+type lifecycleReq struct {
+	Name string `json:"name" validate:"required,min=2"`
+}
+
 func main() {
 	app := aarv.New(
 		aarv.WithBanner(true),
@@ -55,7 +59,32 @@ func main() {
 		c.Logger().Warn("OnError hook triggered",
 			"path", c.Request().URL.Path,
 			"request_id", c.RequestID(),
+			"error", c.HookError(),
 		)
+		return nil
+	})
+
+	// --- PreRouting hook: runs after OnRequest and before route dispatch ---
+	app.AddHook(aarv.PreRouting, func(c *aarv.Context) error {
+		c.Set("phase_prerouting", true)
+		return nil
+	})
+
+	// --- PreParsing hook: runs before body decoding for bind handlers ---
+	app.AddHook(aarv.PreParsing, func(c *aarv.Context) error {
+		c.Set("phase_preparsing", true)
+		return nil
+	})
+
+	// --- PreValidation hook: runs after binding/defaults, before validation ---
+	app.AddHook(aarv.PreValidation, func(c *aarv.Context) error {
+		c.Set("phase_prevalidation", true)
+		return nil
+	})
+
+	// --- PreHandler hook: runs immediately before the user handler ---
+	app.AddHook(aarv.PreHandler, func(c *aarv.Context) error {
+		c.Set("phase_prehandler", true)
 		return nil
 	})
 
@@ -99,6 +128,19 @@ func main() {
 		})
 	})
 
+	app.Post("/lifecycle", aarv.Bind(func(c *aarv.Context, req lifecycleReq) (map[string]any, error) {
+		return map[string]any{
+			"name":             req.Name,
+			"pre_routing":      c.MustGet("phase_prerouting"),
+			"pre_parsing":      c.MustGet("phase_preparsing"),
+			"pre_validation":   c.MustGet("phase_prevalidation"),
+			"pre_handler":      c.MustGet("phase_prehandler"),
+			"request_number":   c.MustGet("request_number"),
+			"request_id":       c.RequestID(),
+			"handler_executed": true,
+		}, nil
+	}))
+
 	app.Get("/error", func(c *aarv.Context) error {
 		return aarv.ErrBadRequest("intentional error to trigger OnError hook")
 	})
@@ -110,6 +152,7 @@ func main() {
 	fmt.Println("Hooks Demo on :8080")
 	fmt.Println("  GET /       — shows hook data (request number, overhead)")
 	fmt.Println("  GET /stats  — total request count (tracked via OnRequest)")
+	fmt.Println("  POST /lifecycle — exercises PreRouting, PreParsing, PreValidation, PreHandler")
 	fmt.Println("  GET /error  — triggers OnError hook")
 	fmt.Println("  GET /panic  — triggers recovery + OnError hook")
 	fmt.Println()

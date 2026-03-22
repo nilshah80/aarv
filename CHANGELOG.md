@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-22
+
+### Added
+- Native middleware fast path for Aarv-owned middleware and plugins
+- Expanded examples for binding, route groups, error handling, custom middleware, and middleware bridge behavior
+- Direct lifecycle coverage for `PreRouting`, `PreParsing`, `PreValidation`, `PreHandler`, and `OnError`
+
+### Changed
+- Split the old monolithic `aarv.go` responsibilities into smaller core files while keeping `aarv.go` as the main entrypoint file
+- Tightened request lifecycle cleanup so `OnSend` always runs before pooled context release
+- Improved bind, query, trusted-proxy, hook, redirect, and 405-path hot-path behavior
+- Added native plugin paths for logger, request ID, and encrypt middleware
+- Removed the public benchmark modules from git history; benchmark numbers in the README now refer to internal/local benchmark harnesses rather than shipped repo modules
+
+### Fixed
+- `PreRouting` now fires correctly on the direct fast path
+- `OnError` hook routing is centralized through `handleError(...)`
+- Grouped exact and grouped dynamic route fast paths now avoid unnecessary fallback behavior
+- Plugin wrapper pools for ETag, compression, timeout, and encrypt flows are reset more safely
+
 ## [0.3.0] - 2026-03-08
 
 ### Added
@@ -42,5 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 4. Push: `git push origin vX.Y.Z`
 5. Create GitHub Release with notes from this file
 
-[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/nilshah80/aarv/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/nilshah80/aarv/compare/v0.1.0...v0.3.0

@@ -36,14 +36,14 @@ type hookEntry struct {
 	fn       HookFunc
 }
 
+const hookPhaseCount = int(OnShutdown) + 1
+
 type hookRegistry struct {
-	hooks map[HookPhase][]hookEntry
+	hooks [hookPhaseCount][]hookEntry
 }
 
 func newHookRegistry() *hookRegistry {
-	return &hookRegistry{
-		hooks: make(map[HookPhase][]hookEntry),
-	}
+	return &hookRegistry{}
 }
 
 func (hr *hookRegistry) add(phase HookPhase, fn HookFunc) {
@@ -56,7 +56,8 @@ func (hr *hookRegistry) addWithPriority(phase HookPhase, priority int, fn HookFu
 
 // finalize sorts all hooks by priority. Call once before serving requests.
 func (hr *hookRegistry) finalize() {
-	for phase, entries := range hr.hooks {
+	for phase := range hr.hooks {
+		entries := hr.hooks[phase]
 		sort.SliceStable(entries, func(i, j int) bool {
 			return entries[i].priority < entries[j].priority
 		})

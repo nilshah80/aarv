@@ -537,7 +537,7 @@ func TestBindingAndHandlerAdditionalCoverage(t *testing.T) {
 
 		h := adaptHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusCreated)
-		}))
+		})).fn
 		ctx, rec := newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
 		defer app.ReleaseContext(ctx)
 		if err := h(ctx); err != nil || rec.Code != http.StatusCreated {
@@ -546,26 +546,26 @@ func TestBindingAndHandlerAdditionalCoverage(t *testing.T) {
 
 		h = adaptHandler(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusAccepted)
-		})
+		}).fn
 		ctx, rec = newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
 		if err := h(ctx); err != nil || rec.Code != http.StatusAccepted {
 			t.Fatalf("unexpected std func handler result: code=%d err=%v", rec.Code, err)
 		}
 
-		h = adaptHandler(func(c *Context) error { return c.NoContent(http.StatusPartialContent) })
+		h = adaptHandler(func(c *Context) error { return c.NoContent(http.StatusPartialContent) }).fn
 		ctx, rec = newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
 		if err := h(ctx); err != nil || rec.Code != http.StatusPartialContent {
 			t.Fatalf("unexpected context func handler result: code=%d err=%v", rec.Code, err)
 		}
 
 		rawHandler := HandlerFunc(func(c *Context) error { return c.NoContent(http.StatusResetContent) })
-		h = adaptHandler(rawHandler)
+		h = adaptHandler(rawHandler).fn
 		ctx, rec = newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
 		if err := h(ctx); err != nil || rec.Code != http.StatusResetContent {
 			t.Fatalf("unexpected raw handler result: code=%d err=%v", rec.Code, err)
 		}
 
-		h = adaptHandler(serveOnlyHandler{})
+		h = adaptHandler(serveOnlyHandler{}).fn
 		ctx, rec = newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
 		if err := h(ctx); err != nil || rec.Code != http.StatusIMUsed {
 			t.Fatalf("unexpected http.Handler adapter result: code=%d err=%v", rec.Code, err)
@@ -651,7 +651,7 @@ func TestBinderBranchCoverage(t *testing.T) {
 	}
 	app.ReleaseContext(ctx)
 
-	valueHandler := adaptHandler(func(c *Context) error { return c.NoContent(http.StatusOK) })
+	valueHandler := adaptHandler(func(c *Context) error { return c.NoContent(http.StatusOK) }).fn
 	handlerCtx, rec := newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
 	if err := valueHandler(handlerCtx); err != nil || rec.Code != http.StatusOK {
 		t.Fatalf("unexpected framework handler result: code=%d err=%v", rec.Code, err)
@@ -660,7 +660,7 @@ func TestBinderBranchCoverage(t *testing.T) {
 
 	stdHandler := adaptHandler(http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
-	})))
+	}))).fn
 	handlerCtx, rec = newAppContext(app, httptest.NewRequest(http.MethodGet, "/", nil))
 	if err := stdHandler(handlerCtx); err != nil || rec.Code != http.StatusAccepted {
 		t.Fatalf("unexpected std handler result: code=%d err=%v", rec.Code, err)
@@ -800,4 +800,193 @@ func TestBindAdditionalErrorBranches(t *testing.T) {
 	tc.Get("/bind-error?page=bad").AssertStatus(t, http.StatusBadRequest)
 	tc.Get("/bind-handler-error").AssertStatus(t, http.StatusInternalServerError)
 	tc.Get("/bindreq-error?page=bad").AssertStatus(t, http.StatusBadRequest)
+}
+
+func TestBindHookAwareCoverage(t *testing.T) {
+	t.Run("bind general path preparsing error", func(t *testing.T) {
+		type req struct {
+			ID   string `param:"id"`
+			Name string `json:"name"`
+		}
+
+		app := New(WithBanner(false))
+		app.AddHook(PreParsing, func(c *Context) error {
+			return ErrForbidden("blocked in parsing")
+		})
+		app.Post("/users/{id}", Bind(func(c *Context, payload req) (map[string]string, error) {
+			t.Fatalf("handler should not run, got %+v", payload)
+			return nil, nil
+		}))
+
+		resp := NewTestClient(app).Post("/users/42", map[string]string{"name": "alice"})
+		resp.AssertStatus(t, http.StatusForbidden)
+	})
+
+	t.Run("bind general path prevalidation error", func(t *testing.T) {
+		type req struct {
+			ID   string `param:"id"`
+			Name string `json:"name"`
+			Role string `default:"user"`
+		}
+
+		app := New(WithBanner(false))
+		app.AddHook(PreValidation, func(c *Context) error {
+			return ErrForbidden("blocked in validation")
+		})
+		app.Post("/users/{id}", Bind(func(c *Context, payload req) (map[string]string, error) {
+			t.Fatalf("handler should not run, got %+v", payload)
+			return nil, nil
+		}))
+
+		resp := NewTestClient(app).Post("/users/42", map[string]string{"name": "alice"})
+		resp.AssertStatus(t, http.StatusForbidden)
+	})
+
+	t.Run("bind general path prehandler error", func(t *testing.T) {
+		type req struct {
+			ID   string `param:"id"`
+			Name string `json:"name"`
+			Role string `default:"user"`
+		}
+
+		app := New(WithBanner(false))
+		app.AddHook(PreHandler, func(c *Context) error {
+			return ErrForbidden("blocked in prehandler")
+		})
+		app.Post("/users/{id}", Bind(func(c *Context, payload req) (map[string]string, error) {
+			t.Fatalf("handler should not run, got %+v", payload)
+			return nil, nil
+		}))
+
+		resp := NewTestClient(app).Post("/users/42", map[string]string{"name": "alice"})
+		resp.AssertStatus(t, http.StatusForbidden)
+	})
+
+	t.Run("bindreq fast path prehandler error", func(t *testing.T) {
+		type req struct {
+			Name string `json:"name"`
+		}
+
+		app := New(WithBanner(false))
+		app.AddHook(PreHandler, func(c *Context) error {
+			return ErrForbidden("blocked in prehandler")
+		})
+		app.Post("/fastreq", BindReq(func(c *Context, payload req) error {
+			t.Fatalf("handler should not run, got %+v", payload)
+			return nil
+		}))
+
+		resp := NewTestClient(app).Post("/fastreq", map[string]string{"name": "alice"})
+		resp.AssertStatus(t, http.StatusForbidden)
+	})
+
+	t.Run("bindreq fast path preparsing error", func(t *testing.T) {
+		type req struct {
+			Name string `json:"name"`
+		}
+
+		app := New(WithBanner(false))
+		app.AddHook(PreParsing, func(c *Context) error {
+			return ErrForbidden("blocked in parsing")
+		})
+		app.Post("/fastreq-parse", BindReq(func(c *Context, payload req) error {
+			t.Fatalf("handler should not run, got %+v", payload)
+			return nil
+		}))
+
+		resp := NewTestClient(app).Post("/fastreq-parse", map[string]string{"name": "alice"})
+		resp.AssertStatus(t, http.StatusForbidden)
+	})
+
+	t.Run("bindreq fast path prevalidation error", func(t *testing.T) {
+		type req struct {
+			Name string `json:"name"`
+		}
+
+		app := New(WithBanner(false))
+		app.AddHook(PreValidation, func(c *Context) error {
+			return ErrForbidden("blocked in validation")
+		})
+		app.Post("/fastreq-validate", BindReq(func(c *Context, payload req) error {
+			t.Fatalf("handler should not run, got %+v", payload)
+			return nil
+		}))
+
+		resp := NewTestClient(app).Post("/fastreq-validate", map[string]string{"name": "alice"})
+		resp.AssertStatus(t, http.StatusForbidden)
+	})
+
+	t.Run("bindreq general path prehandler error", func(t *testing.T) {
+		type req struct {
+			ID   string `param:"id"`
+			Name string `json:"name"`
+			Role string `default:"user"`
+		}
+
+		app := New(WithBanner(false))
+		app.AddHook(PreHandler, func(c *Context) error {
+			return ErrForbidden("blocked in prehandler")
+		})
+		app.Post("/users/{id}", BindReq(func(c *Context, payload req) error {
+			t.Fatalf("handler should not run, got %+v", payload)
+			return nil
+		}))
+
+		resp := NewTestClient(app).Post("/users/42", map[string]string{"name": "alice"})
+		resp.AssertStatus(t, http.StatusForbidden)
+	})
+
+	t.Run("bindreq general path preparsing error", func(t *testing.T) {
+		type req struct {
+			ID   string `param:"id"`
+			Name string `json:"name"`
+			Role string `default:"user"`
+		}
+
+		app := New(WithBanner(false))
+		app.AddHook(PreParsing, func(c *Context) error {
+			return ErrForbidden("blocked in parsing")
+		})
+		app.Post("/users/{id}", BindReq(func(c *Context, payload req) error {
+			t.Fatalf("handler should not run, got %+v", payload)
+			return nil
+		}))
+
+		resp := NewTestClient(app).Post("/users/42", map[string]string{"name": "alice"})
+		resp.AssertStatus(t, http.StatusForbidden)
+	})
+
+	t.Run("bindreq general path prevalidation error", func(t *testing.T) {
+		type req struct {
+			ID   string `param:"id"`
+			Name string `json:"name"`
+			Role string `default:"user"`
+		}
+
+		app := New(WithBanner(false))
+		app.AddHook(PreValidation, func(c *Context) error {
+			return ErrForbidden("blocked in validation")
+		})
+		app.Post("/users/{id}", BindReq(func(c *Context, payload req) error {
+			t.Fatalf("handler should not run, got %+v", payload)
+			return nil
+		}))
+
+		resp := NewTestClient(app).Post("/users/42", map[string]string{"name": "alice"})
+		resp.AssertStatus(t, http.StatusForbidden)
+	})
+
+	t.Run("bindres prehandler error", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.AddHook(PreHandler, func(c *Context) error {
+			return ErrForbidden("blocked in prehandler")
+		})
+		app.Get("/bindres-pre", BindRes(func(c *Context) (map[string]string, error) {
+			t.Fatal("handler should not run")
+			return nil, nil
+		}))
+
+		resp := NewTestClient(app).Get("/bindres-pre")
+		resp.AssertStatus(t, http.StatusForbidden)
+	})
 }
