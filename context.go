@@ -26,6 +26,7 @@ type Context struct {
 	store             map[string]any
 	requestID         string
 	requestIDSet      bool
+	hookErr           error
 	query             url.Values // cached parsed query params
 	bodyCache         []byte
 	bodyRead          bool
@@ -36,6 +37,51 @@ type Context struct {
 	pathParamValues   [16]string
 	pathParamCount    int
 	pathParamsApplied bool
+}
+
+type aarvRequestContext struct {
+	context.Context
+	c *Context
+}
+
+func (ctx *aarvRequestContext) Value(key any) any {
+	if _, ok := key.(ctxKey); ok {
+		return ctx.c
+	}
+	return ctx.Context.Value(key)
+}
+
+type aarvRequestValueContext struct {
+	context.Context
+	c     *Context
+	key   any
+	value any
+}
+
+func (ctx *aarvRequestValueContext) Value(key any) any {
+	if _, ok := key.(ctxKey); ok {
+		return ctx.c
+	}
+	if key == ctx.key {
+		return ctx.value
+	}
+	return ctx.Context.Value(key)
+}
+
+func withAarvContext(ctx context.Context, c *Context) context.Context {
+	if existing, ok := ctx.Value(ctxKey{}).(*Context); ok && existing == c {
+		return ctx
+	}
+	return &aarvRequestContext{Context: ctx, c: c}
+}
+
+func withAarvContextValue(ctx context.Context, c *Context, key, value any) context.Context {
+	return &aarvRequestValueContext{
+		Context: ctx,
+		c:       c,
+		key:     key,
+		value:   value,
+	}
 }
 
 func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +106,7 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	}
 	c.requestID = ""
 	c.requestIDSet = false
+	c.hookErr = nil
 	c.pathParamCount = 0
 	c.pathParamsApplied = false
 }
@@ -73,19 +120,36 @@ func (c *Context) Request() *http.Request {
 // Response returns the underlying http.ResponseWriter.
 func (c *Context) Response() http.ResponseWriter { return c.res }
 
+// SetResponse replaces the underlying response writer.
+func (c *Context) SetResponse(w http.ResponseWriter) { c.res = w }
+
 // Context returns the request's context.Context.
 func (c *Context) Context() context.Context { return c.req.Context() }
+
+// HookError returns the currently propagated lifecycle error for OnError hooks.
+// It is only set while the framework is invoking OnError.
+func (c *Context) HookError() error { return c.hookErr }
 
 // SetContext replaces the request's context.
 func (c *Context) SetContext(ctx context.Context) {
 	prevReq := c.req
-	if existing, ok := ctx.Value(ctxKey{}).(*Context); !ok || existing != c {
-		ctx = context.WithValue(ctx, ctxKey{}, c)
-	}
+	ctx = withAarvContext(ctx, c)
 	req := c.req.WithContext(ctx)
 	c.req = req
 	c.pathParamsApplied = false
-	if prevReq != nil && prevReq != req {
+	if prevReq != nil && prevReq != req && c.app != nil && !c.app.config.RequestContextBridge {
+		deleteRequestContext(prevReq)
+	}
+}
+
+// SetContextValue stores a value in the request context while preserving Aarv's
+// own context marker in a single wrapped context object.
+func (c *Context) SetContextValue(key, value any) {
+	prevReq := c.req
+	req := c.req.WithContext(withAarvContextValue(c.req.Context(), c, key, value))
+	c.req = req
+	c.pathParamsApplied = false
+	if prevReq != nil && prevReq != req && c.app != nil && !c.app.config.RequestContextBridge {
 		deleteRequestContext(prevReq)
 	}
 }
@@ -152,15 +216,10 @@ func (c *Context) isTrustedProxy(ip string) bool {
 	if parsedIP == nil {
 		return false
 	}
-	for _, cidr := range c.app.config.TrustedProxies {
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			// Not a CIDR, try as plain IP
-			if cidr == ip {
-				return true
-			}
-			continue
-		}
+	if _, ok := c.app.trustedProxyIPs[ip]; ok {
+		return true
+	}
+	for _, network := range c.app.trustedProxyCIDRs {
 		if network.Contains(parsedIP) {
 			return true
 		}
@@ -303,7 +362,7 @@ func (c *Context) QuerySlice(name string) []string {
 
 // QueryParams returns all query parameters.
 func (c *Context) QueryParams() url.Values {
-	return c.req.URL.Query()
+	return c.queryValues()
 }
 
 // --- Headers ---

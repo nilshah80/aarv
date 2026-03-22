@@ -645,6 +645,22 @@ func TestContextInternalHelpers(t *testing.T) {
 			t.Fatalf("expected streaming read error, got %v", err)
 		}
 	})
+
+	t.Run("set context value preserves aarv context and value", func(t *testing.T) {
+		type extraKey string
+		app := New(WithBanner(false))
+		ctx, _ := newAppContext(app, httptest.NewRequest(http.MethodGet, "/ctx", nil))
+		defer app.ReleaseContext(ctx)
+
+		ctx.SetContextValue(extraKey("k"), "v")
+
+		if got := ctx.Context().Value(extraKey("k")); got != "v" {
+			t.Fatalf("expected context value v, got %#v", got)
+		}
+		if got, ok := ctx.Context().Value(ctxKey{}).(*Context); !ok || got != ctx {
+			t.Fatalf("expected aarv context marker to be preserved")
+		}
+	})
 }
 
 func TestContextDirectPathParamOverflow(t *testing.T) {
@@ -686,4 +702,68 @@ func TestContextXMLAdditionalCoverage(t *testing.T) {
 	if !strings.Contains(resp.Text(), "<message>hello</message>") {
 		t.Fatalf("unexpected xml body %q", resp.Text())
 	}
+}
+
+func TestContextInternalWrappersAndSetters(t *testing.T) {
+	t.Run("aarv context wrappers expose aarv key and preserve fallback values", func(t *testing.T) {
+		type extraKey string
+		app := New(WithBanner(false))
+		ctx, rec := newAppContext(app, httptest.NewRequest(http.MethodGet, "/ctx", nil))
+		defer app.ReleaseContext(ctx)
+
+		wrapped := withAarvContext(context.WithValue(context.Background(), extraKey("base"), "keep"), ctx)
+		if got, ok := wrapped.Value(ctxKey{}).(*Context); !ok || got != ctx {
+			t.Fatalf("expected wrapped context to expose aarv context")
+		}
+		if got := wrapped.Value(extraKey("base")); got != "keep" {
+			t.Fatalf("expected wrapped context to preserve base value, got %#v", got)
+		}
+		if same := withAarvContext(wrapped, ctx); same != wrapped {
+			t.Fatal("expected withAarvContext to reuse identical wrapped context")
+		}
+
+		valueWrapped := withAarvContextValue(wrapped, ctx, extraKey("extra"), "v")
+		if got := valueWrapped.Value(extraKey("extra")); got != "v" {
+			t.Fatalf("expected extra value v, got %#v", got)
+		}
+		if got := valueWrapped.Value(extraKey("base")); got != "keep" {
+			t.Fatalf("expected fallback base value, got %#v", got)
+		}
+		if got, ok := valueWrapped.Value(ctxKey{}).(*Context); !ok || got != ctx {
+			t.Fatalf("expected aarv context marker in value wrapper")
+		}
+
+		newRec := httptest.NewRecorder()
+		ctx.SetResponse(newRec)
+		if ctx.Response() != newRec {
+			t.Fatal("expected response writer to be replaced")
+		}
+		if rec == newRec {
+			t.Fatal("expected distinct recorders in test setup")
+		}
+	})
+
+	t.Run("set context helpers clear old registry entries when bridge disabled", func(t *testing.T) {
+		type ctxK string
+		app := New(WithBanner(false), WithRequestContextBridge(false))
+		req := httptest.NewRequest(http.MethodGet, "/ctx", nil)
+		ctx, _ := newAppContext(app, req)
+		defer app.ReleaseContext(ctx)
+
+		storeRequestContext(req, ctx)
+		ctx.SetContext(context.WithValue(context.Background(), ctxK("a"), "one"))
+		if _, ok := FromRequest(req); ok {
+			t.Fatal("expected old request context entry to be removed after SetContext")
+		}
+		if got := ctx.Context().Value(ctxK("a")); got != "one" {
+			t.Fatalf("expected replacement context value, got %#v", got)
+		}
+
+		updatedReq := ctx.Request()
+		storeRequestContext(updatedReq, ctx)
+		ctx.SetContextValue(ctxK("b"), "two")
+		if got := ctx.Context().Value(ctxK("b")); got != "two" {
+			t.Fatalf("expected added context value, got %#v", got)
+		}
+	})
 }

@@ -754,7 +754,7 @@ Registration: app.OnShutdown(hook ShutdownHook)
 ```
 framework/
 ├── go.mod                       ← ZERO external dependencies
-├── app.go                       // App struct, builder, server lifecycle
+├── aarv.go                      // App struct, builder, server lifecycle
 ├── context.go                   // Context struct, pooling
 ├── router.go                    // Router, RouteGroup, ServeMux wrapping
 ├── handler.go                   // Handler adapter (signature conversion)

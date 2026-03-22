@@ -689,6 +689,246 @@ func TestMustNew_Panics(t *testing.T) {
 	MustNew([]byte("short"))
 }
 
+func TestNewAdditionalBranches(t *testing.T) {
+	t.Run("stdlib path skips excluded paths", func(t *testing.T) {
+		key, _ := GenerateKey()
+		mw, err := New(key, Config{
+			EncryptResponse: true,
+			ExcludedPaths:   []string{"/skip"},
+		})
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+
+		rec := httptest.NewRecorder()
+		mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("plain"))
+		})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skip", nil))
+
+		if got := rec.Body.String(); got != "plain" {
+			t.Fatalf("expected excluded path passthrough body, got %q", got)
+		}
+	})
+
+	t.Run("native path with decrypt disabled and encrypt disabled passes through", func(t *testing.T) {
+		key, _ := GenerateKey()
+		app := aarv.New(aarv.WithBanner(false))
+		mw, err := New(key, Config{
+			EncryptResponse: false,
+			DecryptRequest:  false,
+		})
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		app.Use(mw)
+		app.Get("/plain", func(c *aarv.Context) error {
+			return c.Text(http.StatusOK, "plain")
+		})
+
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plain", nil))
+		if got := rec.Body.String(); got != "plain" {
+			t.Fatalf("expected passthrough body, got %q", got)
+		}
+	})
+
+	t.Run("stdlib path decrypts request and restores default json content type", func(t *testing.T) {
+		key, _ := GenerateKey()
+		enc, _ := NewEncryptor(key)
+		mw, err := New(key, Config{
+			EncryptResponse: false,
+			DecryptRequest:  true,
+		})
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+
+		payload := []byte(`{"name":"alice"}`)
+		encrypted, _ := enc.Encrypt(payload)
+		req := httptest.NewRequest(http.MethodPost, "/direct", bytes.NewReader(encrypted))
+		req.Header.Set("Content-Type", EncryptedContentType)
+		req.ContentLength = int64(len(encrypted))
+		rec := httptest.NewRecorder()
+
+		var gotCT, gotBody string
+		mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotCT = r.Header.Get("Content-Type")
+			body, _ := io.ReadAll(r.Body)
+			gotBody = string(body)
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(rec, req)
+
+		if gotCT != "application/json" {
+			t.Fatalf("expected default restored json content type, got %q", gotCT)
+		}
+		if gotBody != string(payload) {
+			t.Fatalf("expected decrypted payload, got %q", gotBody)
+		}
+	})
+
+	t.Run("native path decrypt callback handles read and decrypt errors", func(t *testing.T) {
+		key, _ := GenerateKey()
+		callbacks := 0
+		app := aarv.New(aarv.WithBanner(false))
+		mw, err := New(key, Config{
+			EncryptResponse: false,
+			DecryptRequest:  true,
+			OnDecryptError: func(w http.ResponseWriter, r *http.Request, err error) {
+				callbacks++
+				http.Error(w, "bad decrypt", http.StatusBadRequest)
+			},
+		})
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		app.Use(mw)
+		app.Post("/native", func(c *aarv.Context) error {
+			t.Fatal("handler should not run on decrypt failure")
+			return nil
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/native", nil)
+		req.Body = failingBody{}
+		req.ContentLength = 10
+		req.Header.Set("Content-Type", EncryptedContentType)
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || callbacks != 1 {
+			t.Fatalf("expected native read callback once with 400, callbacks=%d code=%d", callbacks, rec.Code)
+		}
+
+		req = httptest.NewRequest(http.MethodPost, "/native", bytes.NewReader([]byte("not-valid-encrypted")))
+		req.ContentLength = int64(len("not-valid-encrypted"))
+		req.Header.Set("Content-Type", EncryptedContentType)
+		rec = httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || callbacks != 2 {
+			t.Fatalf("expected native decrypt callback twice total with 400, callbacks=%d code=%d", callbacks, rec.Code)
+		}
+	})
+
+	t.Run("native path restores original content type header", func(t *testing.T) {
+		key, _ := GenerateKey()
+		enc, _ := NewEncryptor(key)
+		app := aarv.New(aarv.WithBanner(false))
+		mw, err := New(key, Config{
+			EncryptResponse: false,
+			DecryptRequest:  true,
+		})
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		app.Use(mw)
+
+		var gotCT, gotBody string
+		app.Post("/native-ct", func(c *aarv.Context) error {
+			gotCT = c.Request().Header.Get("Content-Type")
+			body, _ := io.ReadAll(c.Request().Body)
+			gotBody = string(body)
+			return c.NoContent(http.StatusNoContent)
+		})
+
+		payload := []byte(`hello`)
+		encrypted, _ := enc.Encrypt(payload)
+		req := httptest.NewRequest(http.MethodPost, "/native-ct", bytes.NewReader(encrypted))
+		req.Header.Set("Content-Type", EncryptedContentType)
+		req.Header.Set("X-Original-Content-Type", "text/plain")
+		req.ContentLength = int64(len(encrypted))
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+
+		if gotCT != "text/plain" {
+			t.Fatalf("expected native restored content-type text/plain, got %q", gotCT)
+		}
+		if gotBody != "hello" {
+			t.Fatalf("expected native decrypted body hello, got %q", gotBody)
+		}
+	})
+
+	t.Run("stdlib path logs close failures with aarv context and honors disabled response encryption", func(t *testing.T) {
+		key, _ := GenerateKey()
+		var logBuf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+		app := aarv.New(aarv.WithBanner(false), aarv.WithLogger(logger))
+		app.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			})
+		})
+		mw, err := New(key, Config{
+			EncryptResponse: false,
+			DecryptRequest:  true,
+		})
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		app.Use(mw)
+		app.Post("/ctx", func(c *aarv.Context) error {
+			return c.Text(http.StatusNoContent, "")
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/ctx", nil)
+		req.Body = failingCloseReadCloser{Reader: bytes.NewReader([]byte("not-valid-encrypted"))}
+		req.Header.Set("Content-Type", EncryptedContentType)
+		req.ContentLength = int64(len("not-valid-encrypted"))
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNoContent && rec.Code != http.StatusOK {
+			t.Fatalf("unexpected disabled-encrypt status %d", rec.Code)
+		}
+		if !strings.Contains(logBuf.String(), "encrypt request body close failed") {
+			t.Fatalf("expected aarv-context close warning log, got %s", logBuf.String())
+		}
+	})
+
+	t.Run("stdlib path decrypt callback handles decrypt failure and encrypts response", func(t *testing.T) {
+		key, _ := GenerateKey()
+		enc, _ := NewEncryptor(key)
+		callbacks := 0
+		mw, err := New(key, Config{
+			EncryptResponse: true,
+			DecryptRequest:  true,
+			OnDecryptError: func(w http.ResponseWriter, r *http.Request, err error) {
+				callbacks++
+				http.Error(w, "bad decrypt", http.StatusBadRequest)
+			},
+		})
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/stdlib-decrypt-error", bytes.NewReader([]byte("not-valid-encrypted")))
+		req.Header.Set("Content-Type", EncryptedContentType)
+		req.ContentLength = int64(len("not-valid-encrypted"))
+		rec := httptest.NewRecorder()
+		mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Fatal("handler should not run on stdlib decrypt failure")
+		})).ServeHTTP(rec, req)
+		if callbacks != 1 || rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected stdlib decrypt callback once with 400, callbacks=%d code=%d", callbacks, rec.Code)
+		}
+
+		req = httptest.NewRequest(http.MethodGet, "/stdlib-encrypt", nil)
+		rec = httptest.NewRecorder()
+		mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		})).ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Content-Type"); got != EncryptedContentType {
+			t.Fatalf("expected stdlib encrypted content type, got %q", got)
+		}
+		decrypted, err := enc.Decrypt(rec.Body.Bytes())
+		if err != nil {
+			t.Fatalf("expected stdlib encrypted response to decrypt, got %v", err)
+		}
+		if string(decrypted) != `{"ok":true}` {
+			t.Fatalf("unexpected stdlib decrypted response %q", string(decrypted))
+		}
+	})
+}
+
 func BenchmarkEncryptor_Encrypt_Small(b *testing.B) {
 	key, _ := GenerateKey()
 	enc, _ := NewEncryptor(key)

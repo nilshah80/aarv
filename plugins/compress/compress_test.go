@@ -92,30 +92,21 @@ func TestNewGzipCompressionAndWriterHelpers(t *testing.T) {
 
 	base := httptest.NewRecorder()
 	gz, _ := gzip.NewWriterLevel(io.Discard, gzip.DefaultCompression)
-	grw := &gzipResponseWriter{ResponseWriter: base, gzWriter: gz}
+	grw := acquireGzipResponseWriter(base, gz, &sync.Pool{}, 0, nil)
 	if grw.Unwrap() != base {
 		t.Fatal("gzip unwrap should return base writer")
 	}
 
-	grw = &gzipResponseWriter{
-		ResponseWriter: base,
-		gzWriter:       gz,
-		pool:           &sync.Pool{},
-		statusCode:     http.StatusAccepted,
-	}
+	grw = acquireGzipResponseWriter(base, gz, &sync.Pool{}, 0, nil)
+	grw.statusCode = http.StatusAccepted
 	grw.finish()
 	if base.Code != http.StatusAccepted {
 		t.Fatalf("expected finish to send status 202, got %d", base.Code)
 	}
 
 	base = httptest.NewRecorder()
-	grw = &gzipResponseWriter{
-		ResponseWriter: base,
-		gzWriter:       &fakeCompressor{},
-		pool:           &sync.Pool{},
-		statusCode:     http.StatusOK,
-		buf:            []byte("plain"),
-	}
+	grw = acquireGzipResponseWriter(base, &fakeCompressor{}, &sync.Pool{}, 0, nil)
+	grw.buf = []byte("plain")
 	grw.finish()
 	if base.Body.String() != "plain" {
 		t.Fatalf("expected buffered plain body, got %q", base.Body.String())
@@ -154,17 +145,13 @@ func TestNewDeflateCompression(t *testing.T) {
 
 	base := httptest.NewRecorder()
 	fw, _ := flate.NewWriter(io.Discard, flate.DefaultCompression)
-	drw := &deflateResponseWriter{ResponseWriter: base, deflateWriter: fw}
+	drw := acquireDeflateResponseWriter(base, fw, &sync.Pool{}, 0, nil)
 	if drw.Unwrap() != base {
 		t.Fatal("deflate unwrap should return base writer")
 	}
 
-	drw = &deflateResponseWriter{
-		ResponseWriter: base,
-		deflateWriter:  fw,
-		pool:           &sync.Pool{},
-		statusCode:     http.StatusAccepted,
-	}
+	drw = acquireDeflateResponseWriter(base, fw, &sync.Pool{}, 0, nil)
+	drw.statusCode = http.StatusAccepted
 	drw.WriteHeader(http.StatusCreated)
 	if drw.statusCode != http.StatusCreated {
 		t.Fatalf("expected status code 201, got %d", drw.statusCode)
@@ -172,28 +159,19 @@ func TestNewDeflateCompression(t *testing.T) {
 	drw.finish()
 
 	base = httptest.NewRecorder()
-	drw = &deflateResponseWriter{
-		ResponseWriter: base,
-		deflateWriter:  &fakeCompressor{},
-		pool:           &sync.Pool{},
-		statusCode:     http.StatusOK,
-		buf:            []byte("plain"),
-	}
+	drw = acquireDeflateResponseWriter(base, &fakeCompressor{}, &sync.Pool{}, 0, nil)
+	drw.buf = []byte("plain")
 	drw.finish()
 	if base.Body.String() != "plain" {
 		t.Fatalf("expected deflate buffered plain body, got %q", base.Body.String())
 	}
 
-	drw = &deflateResponseWriter{
-		ResponseWriter: httptest.NewRecorder(),
-		deflateWriter:  &fakeCompressor{},
-		pool:           &sync.Pool{},
-		minSize:        10,
-		statusCode:     http.StatusOK,
-	}
+	drw = acquireDeflateResponseWriter(httptest.NewRecorder(), &fakeCompressor{}, &sync.Pool{}, 10, nil)
 	if n, err := drw.Write([]byte("abc")); err != nil || n != 3 {
 		t.Fatalf("expected buffered deflate write, got n=%d err=%v", n, err)
 	}
+	releaseGzipResponseWriter(nil)
+	releaseDeflateResponseWriter(nil)
 }
 
 func TestNewSkipsCompressionWhenNotEligible(t *testing.T) {

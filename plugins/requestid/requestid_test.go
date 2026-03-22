@@ -83,3 +83,77 @@ func TestNewUsesIncomingHeaderWithoutAarvContext(t *testing.T) {
 		t.Fatalf("unexpected body %q", body)
 	}
 }
+
+func TestNewAdditionalBranches(t *testing.T) {
+	t.Run("defaults header and generator when config fields are empty", func(t *testing.T) {
+		app := aarv.New(aarv.WithBanner(false))
+		app.Use(New(Config{
+			Header:    "",
+			Generator: nil,
+		}))
+		app.Get("/id", func(c *aarv.Context) error {
+			if got := FromContext(c.Context()); got == "" {
+				t.Fatal("expected request id in aarv context")
+			}
+			return c.NoContent(http.StatusNoContent)
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/id", nil)
+		req.Header.Set("X-Request-ID", "provided-id")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("X-Request-ID"); got != "provided-id" {
+			t.Fatalf("expected default header propagation, got %q", got)
+		}
+	})
+
+	t.Run("stdlib path generates id when header missing", func(t *testing.T) {
+		handler := New(Config{
+			Header: "X-Test-ID",
+			Generator: func() string {
+				return "generated-direct"
+			},
+		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(FromContext(r.Context())))
+		}))
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		if got := rec.Header().Get("X-Test-ID"); got != "generated-direct" {
+			t.Fatalf("expected generated header, got %q", got)
+		}
+		if body := rec.Body.String(); body != "generated-direct" {
+			t.Fatalf("unexpected generated body %q", body)
+		}
+	})
+
+	t.Run("stdlib path updates aarv context when present", func(t *testing.T) {
+		app := aarv.New(aarv.WithBanner(false))
+		app.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			})
+		})
+		app.Use(New(Config{
+			Header: "X-Test-ID",
+			Generator: func() string {
+				return "generated-aarv"
+			},
+		}))
+		app.Get("/id", func(c *aarv.Context) error {
+			return c.Text(http.StatusOK, c.RequestID()+"|"+FromContext(c.Context()))
+		})
+
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/id", nil))
+
+		if got := rec.Header().Get("X-Test-ID"); got != "generated-aarv" {
+			t.Fatalf("expected generated aarv header, got %q", got)
+		}
+		if body := rec.Body.String(); body != "generated-aarv|generated-aarv" {
+			t.Fatalf("unexpected aarv body %q", body)
+		}
+	})
+}

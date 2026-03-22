@@ -1,6 +1,10 @@
 package aarv
 
-import "net/http"
+import (
+	"net/http"
+	"reflect"
+	"sync"
+)
 
 // Middleware is the standard Go middleware signature.
 type Middleware func(http.Handler) http.Handler
@@ -8,12 +12,37 @@ type Middleware func(http.Handler) http.Handler
 // MiddlewareFunc is a framework-specific middleware with access to Context.
 type MiddlewareFunc func(next HandlerFunc) HandlerFunc
 
+var nativeMiddlewareRegistry sync.Map
+
+func registerNativeMiddleware(m Middleware, fn MiddlewareFunc) Middleware {
+	if fn != nil {
+		nativeMiddlewareRegistry.Store(reflect.ValueOf(m).Pointer(), fn)
+	}
+	return m
+}
+
+// RegisterNativeMiddleware associates an Aarv-native middleware implementation
+// with a standard net/http middleware. It enables the runtime to use a faster
+// native exact-route path when every middleware in the chain provides one.
+func RegisterNativeMiddleware(m Middleware, fn MiddlewareFunc) Middleware {
+	return registerNativeMiddleware(m, fn)
+}
+
+func nativeMiddlewareFunc(m Middleware) (MiddlewareFunc, bool) {
+	fn, ok := nativeMiddlewareRegistry.Load(reflect.ValueOf(m).Pointer())
+	if !ok {
+		return nil, false
+	}
+	mf, ok := fn.(MiddlewareFunc)
+	return mf, ok
+}
+
 // WrapMiddleware converts a framework MiddlewareFunc to a stdlib Middleware.
 func WrapMiddleware(fn MiddlewareFunc) Middleware {
 	if fn == nil {
 		return func(next http.Handler) http.Handler { return next }
 	}
-	return func(next http.Handler) http.Handler {
+	m := Middleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx, ok := contextFromRequest(r)
 			if !ok {
@@ -28,7 +57,8 @@ func WrapMiddleware(fn MiddlewareFunc) Middleware {
 				ctx.app.handleError(ctx, err)
 			}
 		})
-	}
+	})
+	return registerNativeMiddleware(m, fn)
 }
 
 // buildChain builds the middleware chain by wrapping the handler.
@@ -40,9 +70,36 @@ func buildChain(handler http.Handler, middlewares []Middleware) http.Handler {
 	return handler
 }
 
+func buildNativeChain(handler HandlerFunc, middlewares []Middleware) (HandlerFunc, bool) {
+	chain := handler
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		mw, ok := nativeMiddlewareFunc(middlewares[i])
+		if !ok {
+			return nil, false
+		}
+		chain = mw(chain)
+	}
+	return chain, true
+}
+
 // Recovery returns a middleware that recovers from panics.
 func Recovery() Middleware {
-	return func(next http.Handler) http.Handler {
+	native := MiddlewareFunc(func(next HandlerFunc) HandlerFunc {
+		return func(c *Context) error {
+			defer func() {
+				if rec := recover(); rec != nil {
+					c.app.logger.Error("panic recovered",
+						"error", rec,
+						"method", c.req.Method,
+						"path", c.req.URL.Path,
+					)
+					c.app.handleError(c, ErrInternal(nil).WithDetail("panic recovered"))
+				}
+			}()
+			return next(c)
+		}
+	})
+	m := Middleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
@@ -64,12 +121,23 @@ func Recovery() Middleware {
 			}()
 			next.ServeHTTP(w, r)
 		})
-	}
+	})
+	return registerNativeMiddleware(m, native)
 }
 
 // Logger returns a middleware that logs requests using slog.
 func Logger() Middleware {
-	return func(next http.Handler) http.Handler {
+	native := MiddlewareFunc(func(next HandlerFunc) HandlerFunc {
+		return func(c *Context) error {
+			c.app.logger.Info("request",
+				"method", c.req.Method,
+				"path", c.req.URL.Path,
+				"remote", c.req.RemoteAddr,
+			)
+			return next(c)
+		}
+	})
+	m := Middleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx, ok := contextFromRequest(r)
 			if ok {
@@ -81,5 +149,6 @@ func Logger() Middleware {
 			}
 			next.ServeHTTP(w, r)
 		})
-	}
+	})
+	return registerNativeMiddleware(m, native)
 }

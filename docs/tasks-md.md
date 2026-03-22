@@ -17,7 +17,7 @@
 | **CI/CD** | ✅ Files created | Push & verify workflows run | **HIGH** |
 | **Error handling** | Audited and hardened | All edge cases handled gracefully | **MEDIUM** |
 | **Security review** | Completed locally | Audit for OWASP top 10 | **MEDIUM** |
-| **API stability** | Pre-1.0, one prior tag (`v0.1.0`) | Semantic versioning, `v0.3.0` release | **HIGH** |
+| **API stability** | Pre-1.0, latest published tag `v0.3.0` | Semantic versioning, `v0.4.0` release | **HIGH** |
 
 ### PR0: CI/CD & Infrastructure ✅ (Files created)
 - [x] Create `.github/workflows/test.yml` - runs `go test -race` on Go 1.22/1.23
@@ -75,6 +75,13 @@ Note: `govulncheck` reports 4 Go standard library vulnerabilities in `go1.26.0`,
 - [x] Create GitHub Release
 
 Note: excluding `examples/...`, combined package coverage is 98.7%. Latest `main` workflow runs for Tests and Lint completed successfully on March 8, 2026, and `v0.3.0` is published on GitHub.
+
+### PR7: Release Prep (v0.4.0)
+- [x] Finalize changelog entries for middleware, hooks, examples, and routing improvements
+- [x] Re-run full verification suite on the final release candidate tree
+- [x] Re-run key example applications locally
+- [x] Confirm docs do not reference private/local-only benchmark modules as shipped repo content
+- [x] Tag and publish `v0.4.0`
 
 ---
 
@@ -317,13 +324,13 @@ Notes from latest benchmark pass:
 - Fair logger and fair encrypt are near-parity when the emitted log fields and encryptor behavior are matched exactly
 - `requestid` remains opt-in; the default framework cost here is request-context bridging, not built-in request ID generation
 
-### 4.1 Middleware Chain ✅
+### 4.1 Middleware Chain
 - [x] Implement middleware chain builder: `[]Middleware` → single `http.Handler`
 - [x] Pre-build chain at startup (not per request)
 - [x] Support `func(http.Handler) http.Handler` (stdlib compatible)
 - [x] Support `func(next HandlerFunc) HandlerFunc` (framework specific)
 - [x] Adapter: convert between the two middleware types
-- [x] Named middleware interface for debug/route listing
+- [ ] Named middleware interface for debug/route listing
 - [x] Unit tests: chain order (onion model), early return, error propagation
 
 ### 4.2 Hook System
@@ -333,15 +340,15 @@ Notes from latest benchmark pass:
 - [x] Implement hook execution: run all hooks for a phase in priority order
 - [x] Hook error handling: OnRequest errors trigger error handler; OnResponse/OnSend errors ignored
 - [x] Wire hooks into request lifecycle: OnRequest, OnResponse, OnSend, OnError, OnStartup, OnShutdown
-- [ ] Hook error handling: full error propagation to OnError phase for all hooks
-- [ ] Wire PreRouting, PreParsing, PreValidation, PreHandler phases (defined but not invoked)
-- [ ] Unit tests: hook ordering, error short-circuit, all phases fire correctly
+- [x] Hook error handling: full error propagation to OnError phase for all hooks
+- [x] Wire PreRouting, PreParsing, PreValidation, PreHandler phases (defined but not invoked)
+- [x] Unit tests: hook ordering, error short-circuit, all phases fire correctly
 
 ### 4.3 Route Group Middleware
 - [x] Wire group-level `Use()` to apply middleware only to group routes
 - [x] Verify isolation: group middleware doesn't leak to sibling groups
 - [x] Route-level middleware via `WithRouteMiddleware` option
-- [ ] Integration test: global + group + route middleware ordering
+- [x] Integration test: global + group + route middleware ordering
 
 ---
 

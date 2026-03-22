@@ -81,11 +81,9 @@ func WithSummary(s string) RouteOption {
 
 // RouteGroup represents a group of routes with a common prefix and middleware.
 type RouteGroup struct {
-	mux        *http.ServeMux
 	prefix     string
 	app        *App
 	middleware []Middleware
-	routes     []RouteInfo
 }
 
 func (g *RouteGroup) addRoute(method, pattern string, handler any, opts ...RouteOption) {
@@ -94,7 +92,32 @@ func (g *RouteGroup) addRoute(method, pattern string, handler any, opts ...Route
 		opt(rc)
 	}
 
-	h := adaptHandler(handler)
+	adapted := adaptHandler(handler)
+	h := adapted.fn
+	fullPattern := g.prefix + pattern
+	routeBodyLimit := rc.maxBodySize
+	if routeBodyLimit == 0 {
+		routeBodyLimit = g.app.config.MaxBodySize
+	}
+
+	combinedMiddleware := make([]Middleware, 0, len(g.middleware)+len(rc.middleware))
+	if len(g.middleware) > 0 {
+		combinedMiddleware = append(combinedMiddleware, g.middleware...)
+	}
+	if len(rc.middleware) > 0 {
+		combinedMiddleware = append(combinedMiddleware, rc.middleware...)
+	}
+	baseNative := func(ctx *Context) error {
+		if ctx.app.hasPreHandler && !adapted.preHandled {
+			if err := ctx.app.hooks.run(PreHandler, ctx); err != nil {
+				return err
+			}
+		}
+		if routeBodyLimit > 0 && ctx.req.Body != nil && (ctx.req.ContentLength < 0 || ctx.req.ContentLength > routeBodyLimit) {
+			ctx.req.Body = http.MaxBytesReader(ctx.res, ctx.req.Body, routeBodyLimit)
+		}
+		return h(ctx)
+	}
 
 	// Build the route handler: wrap with route-level middleware
 	var httpHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -107,27 +130,47 @@ func (g *RouteGroup) addRoute(method, pattern string, handler any, opts ...Route
 		// and response writes go through middleware wrappers (logger, etag, etc.).
 		ctx.req = r
 		ctx.res = w
+		if ctx.app.hasPreHandler && !adapted.preHandled {
+			if err := ctx.app.hooks.run(PreHandler, ctx); err != nil {
+				ctx.app.handleError(ctx, err)
+				return
+			}
+		}
+		if routeBodyLimit > 0 && r.Body != nil && (r.ContentLength < 0 || r.ContentLength > routeBodyLimit) {
+			r.Body = http.MaxBytesReader(w, r.Body, routeBodyLimit)
+		}
 		if err := h(ctx); err != nil {
 			ctx.app.handleError(ctx, err)
 		}
 	})
-
-	if len(rc.middleware) > 0 {
-		httpHandler = buildChain(httpHandler, rc.middleware)
+	var nativeHandler routeRuntimeHandler
+	if len(combinedMiddleware) == 0 {
+		nativeHandler = func(ctx *Context, w http.ResponseWriter, r *http.Request) {
+			if err := baseNative(ctx); err != nil {
+				ctx.app.handleError(ctx, err)
+			}
+		}
+	} else if nativeChain, ok := buildNativeChain(baseNative, combinedMiddleware); ok {
+		nativeHandler = func(ctx *Context, w http.ResponseWriter, r *http.Request) {
+			if err := nativeChain(ctx); err != nil {
+				ctx.app.handleError(ctx, err)
+			}
+		}
 	}
 
-	muxPattern := method + " " + pattern
-	g.mux.Handle(muxPattern, httpHandler)
+	if len(combinedMiddleware) > 0 {
+		httpHandler = buildChain(httpHandler, combinedMiddleware)
+	}
 
-	fullPattern := g.prefix + pattern
-	g.routes = append(g.routes, RouteInfo{
-		Method:      method,
-		Pattern:     fullPattern,
-		Name:        rc.name,
-		Tags:        rc.tags,
-		Description: rc.description,
-		Deprecated:  rc.deprecated,
-	})
+	muxPattern := method + " " + fullPattern
+	directPattern := directPattern{}
+	isDynamic := strings.Contains(fullPattern, "{")
+	if isDynamic {
+		directPattern = compileDirectPattern(fullPattern)
+	}
+	g.app.trackRedirectSlashPattern(fullPattern, isDynamic, directPattern)
+	g.app.mux.Handle(muxPattern, httpHandler)
+	g.app.routesByKey[muxPattern] = struct{}{}
 	g.app.routes = append(g.app.routes, RouteInfo{
 		Method:      method,
 		Pattern:     fullPattern,
@@ -136,6 +179,31 @@ func (g *RouteGroup) addRoute(method, pattern string, handler any, opts ...Route
 		Description: rc.description,
 		Deprecated:  rc.deprecated,
 	})
+	g.app.trackMethodPattern(method, fullPattern, isDynamic, directPattern)
+
+	if !isDynamic {
+		if g.app.groupRouteHandlers[method] == nil {
+			g.app.groupRouteHandlers[method] = make(map[string]http.Handler)
+		}
+		g.app.groupRouteHandlers[method][fullPattern] = httpHandler
+		if nativeHandler != nil {
+			if g.app.groupRouteNative[method] == nil {
+				g.app.groupRouteNative[method] = make(map[string]routeRuntimeHandler)
+			}
+			g.app.groupRouteNative[method][fullPattern] = nativeHandler
+		}
+	} else {
+		g.app.groupDynamicHandlers[method] = append(g.app.groupDynamicHandlers[method], directDynamicHTTPRoute{
+			handler: httpHandler,
+			pattern: directPattern,
+		})
+		if nativeHandler != nil {
+			g.app.groupDynamicNative[method] = append(g.app.groupDynamicNative[method], directDynamicRoute{
+				handler: nativeHandler,
+				pattern: directPattern,
+			})
+		}
+	}
 }
 
 // Get registers a GET route within the group.
@@ -197,27 +265,13 @@ func (g *RouteGroup) Use(middlewares ...Middleware) *RouteGroup {
 // Group creates a nested route group under the current group's prefix.
 func (g *RouteGroup) Group(prefix string, fn func(g *RouteGroup)) *RouteGroup {
 	sub := &RouteGroup{
-		mux:    http.NewServeMux(),
 		prefix: g.prefix + prefix,
 		app:    g.app,
 	}
+	if len(g.middleware) > 0 {
+		sub.middleware = append([]Middleware(nil), g.middleware...)
+	}
 	fn(sub)
-
-	var handler http.Handler = sub.mux
-	if len(sub.middleware) > 0 {
-		handler = buildChain(handler, sub.middleware)
-	}
-
-	// Wrap to inject context
-	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.ServeHTTP(w, r)
-	})
-
-	p := prefix
-	if !strings.HasSuffix(p, "/") {
-		p += "/"
-	}
-	g.mux.Handle(p, stripPrefixPreserveContext(prefix, wrapped))
 	return g
 }
 

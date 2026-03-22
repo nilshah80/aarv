@@ -88,7 +88,7 @@ func TestErrorHandlingAdditionalCoverage(t *testing.T) {
 		ctx, rec := newAppContext(app, req)
 		defer app.ReleaseContext(ctx)
 
-		app.defaultErrorHandler(ctx, &ValidationErrors{
+		app.handleError(ctx, &ValidationErrors{
 			Errors: []ValidationError{{Field: "name", Tag: "required"}},
 		})
 		if rec.Code != http.StatusUnprocessableEntity {
@@ -96,19 +96,19 @@ func TestErrorHandlingAdditionalCoverage(t *testing.T) {
 		}
 
 		ctx, rec = newAppContext(app, req)
-		app.defaultErrorHandler(ctx, &BindError{Err: errors.New("broken payload"), Source: "body"})
+		app.handleError(ctx, &BindError{Err: errors.New("broken payload"), Source: "body"})
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("expected bind status, got %d", rec.Code)
 		}
 
 		ctx, rec = newAppContext(app, req)
-		app.defaultErrorHandler(ctx, ErrInternal(errors.New("db down")).WithDetail("detail"))
+		app.handleError(ctx, ErrInternal(errors.New("db down")).WithDetail("detail"))
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("expected app error status, got %d", rec.Code)
 		}
 
 		ctx, rec = newAppContext(app, req)
-		app.defaultErrorHandler(ctx, errors.New("unexpected"))
+		app.handleError(ctx, errors.New("unexpected"))
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("expected generic error status, got %d", rec.Code)
 		}

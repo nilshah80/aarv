@@ -123,8 +123,40 @@ func New(config ...Config) aarv.Middleware {
 	}
 	hasSkipPaths := len(skipPaths) > 0
 	baseLogger := slog.Default()
+	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			path := c.Path()
+			if hasSkipPaths {
+				if _, ok := skipPaths[path]; ok {
+					return next(c)
+				}
+			}
 
-	return func(next http.Handler) http.Handler {
+			start := time.Now()
+			rw := newResponseWriter(c.Response())
+			defer releaseResponseWriter(rw)
+
+			orig := c.Response()
+			c.SetResponse(rw)
+			err := next(c)
+			c.SetResponse(orig)
+
+			latency := time.Since(start)
+			baseLogger.LogAttrs(c.Context(), cfg.Level, "request",
+				slog.String("method", c.Method()),
+				slog.String("path", path),
+				slog.Int("status", rw.statusCode),
+				slog.Duration("latency", latency),
+				slog.String("client_ip", c.RealIP()),
+				slog.String("user_agent", c.Header("User-Agent")),
+				slog.Int64("bytes_out", rw.bytesWritten),
+				slog.String("request_id", c.RequestID()),
+			)
+			return err
+		}
+	})
+
+	m := aarv.Middleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
 
@@ -163,5 +195,6 @@ func New(config ...Config) aarv.Middleware {
 				slog.String("request_id", requestID),
 			)
 		})
-	}
+	})
+	return aarv.RegisterNativeMiddleware(m, native)
 }

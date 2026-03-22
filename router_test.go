@@ -184,9 +184,9 @@ func TestRouteGroupAdditionalCoverage(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	apiGroup.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/patch", nil))
+	app.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/api/patch", nil))
 	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected direct group mux call without aarv context to fail, got %d", rec.Code)
+		t.Fatalf("expected direct group route call without aarv context to fail, got %d", rec.Code)
 	}
 
 	errReq := httptest.NewRequest(http.MethodGet, "/explode", nil)
@@ -194,7 +194,8 @@ func TestRouteGroupAdditionalCoverage(t *testing.T) {
 	errReq = errReq.WithContext(context.WithValue(errReq.Context(), ctxKey{}, errCtx))
 	errCtx.req = errReq
 	apiGroup.Get("/explode", func(c *Context) error { return ErrBadRequest("group failed") })
-	apiGroup.mux.ServeHTTP(errRec, errReq)
+	errReq.URL.Path = "/api/explode"
+	app.mux.ServeHTTP(errRec, errReq)
 	if errRec.Code != http.StatusBadRequest {
 		t.Fatalf("expected grouped handler error to be handled, got %d", errRec.Code)
 	}
@@ -311,6 +312,58 @@ func TestRequestContextHelpersAdditionalCoverage(t *testing.T) {
 		}
 		if rec.Header().Get("X-Has-Context") != "true" {
 			t.Fatalf("expected context propagation to stripped request")
+		}
+	})
+}
+
+func TestGroupRoutePreHandlerCoverage(t *testing.T) {
+	t.Run("plain group route prehandler error", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.AddHook(PreHandler, func(c *Context) error {
+			return ErrForbidden("group blocked")
+		})
+
+		app.Group("/api", func(g *RouteGroup) {
+			g.Get("/users", func(c *Context) error {
+				t.Fatal("handler should not run")
+				return nil
+			}, WithRouteMiddleware(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					next.ServeHTTP(w, r)
+				})
+			}))
+		})
+
+		resp := NewTestClient(app).Get("/api/users")
+		resp.AssertStatus(t, http.StatusForbidden)
+	})
+
+	t.Run("bind group route prehandler runs once", func(t *testing.T) {
+		type req struct {
+			Name string `json:"name"`
+		}
+
+		app := New(WithBanner(false))
+		calls := 0
+		app.AddHook(PreHandler, func(c *Context) error {
+			calls++
+			return nil
+		})
+
+		app.Group("/api", func(g *RouteGroup) {
+			g.Post("/users", BindReq(func(c *Context, payload req) error {
+				return c.NoContent(http.StatusCreated)
+			}), WithRouteMiddleware(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					next.ServeHTTP(w, r)
+				})
+			}))
+		})
+
+		resp := NewTestClient(app).Post("/api/users", map[string]string{"name": "alice"})
+		resp.AssertStatus(t, http.StatusCreated)
+		if calls != 1 {
+			t.Fatalf("expected PreHandler to run once for prehandled group route, got %d", calls)
 		}
 	})
 }

@@ -84,7 +84,10 @@ func WithTLSConfig(cfg *tls.Config) Option {
 
 // WithTrustedProxies sets the trusted proxy CIDRs for IP extraction.
 func WithTrustedProxies(cidrs ...string) Option {
-	return func(a *App) { a.config.TrustedProxies = cidrs }
+	return func(a *App) {
+		a.config.TrustedProxies = cidrs
+		a.rebuildTrustedProxies()
+	}
 }
 
 // WithDisableHTTP2 disables HTTP/2.

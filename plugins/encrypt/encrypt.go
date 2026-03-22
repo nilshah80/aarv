@@ -352,7 +352,62 @@ func New(key []byte, config ...Config) (aarv.Middleware, error) {
 		return ok
 	}
 
-	return func(next http.Handler) http.Handler {
+	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			req := c.Request()
+			if hasExcludedPaths && isExcludedPath(req.URL.Path) {
+				return next(c)
+			}
+
+			if cfg.DecryptRequest && req.Body != nil && req.ContentLength > 0 {
+				if req.Header.Get("Content-Type") == EncryptedContentType {
+					body, err := io.ReadAll(req.Body)
+					if closeErr := req.Body.Close(); closeErr != nil {
+						c.Logger().Warn("encrypt request body close failed", "error", closeErr)
+					}
+					if err != nil {
+						if cfg.OnDecryptError != nil {
+							cfg.OnDecryptError(c.Response(), req, err)
+						}
+						return nil
+					}
+
+					decrypted, err := encryptor.Decrypt(body)
+					if err != nil {
+						if cfg.OnDecryptError != nil {
+							cfg.OnDecryptError(c.Response(), req, err)
+						}
+						return nil
+					}
+
+					req.Body = io.NopCloser(bytes.NewReader(decrypted))
+					req.ContentLength = int64(len(decrypted))
+					if origCT := req.Header.Get("X-Original-Content-Type"); origCT != "" {
+						req.Header.Set("Content-Type", origCT)
+					} else {
+						req.Header.Set("Content-Type", "application/json")
+					}
+				}
+			}
+
+			if !cfg.EncryptResponse {
+				return next(c)
+			}
+
+			origRes := c.Response()
+			erw := acquireEncryptResponseWriter(origRes, encryptor, isExcludedType)
+			c.SetResponse(erw)
+			defer func() {
+				c.SetResponse(origRes)
+				_ = erw.finish()
+				releaseEncryptResponseWriter(erw)
+			}()
+
+			return next(c)
+		}
+	})
+
+	m := aarv.Middleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Check if path is excluded
 			if hasExcludedPaths && isExcludedPath(r.URL.Path) {
@@ -409,7 +464,8 @@ func New(key []byte, config ...Config) (aarv.Middleware, error) {
 				next.ServeHTTP(w, r)
 			}
 		})
-	}, nil
+	})
+	return aarv.RegisterNativeMiddleware(m, native), nil
 }
 
 // MustNew creates an encryption middleware and panics on error.

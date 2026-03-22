@@ -19,10 +19,8 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestTimeoutWriterHelpers(t *testing.T) {
 	rec := httptest.NewRecorder()
-	tw := &timeoutWriter{
-		ResponseWriter: rec,
-		statusCode:     http.StatusAccepted,
-	}
+	tw := acquireTimeoutWriter(rec)
+	tw.statusCode = http.StatusAccepted
 
 	tw.WriteHeader(http.StatusCreated)
 	tw.WriteHeader(http.StatusNoContent)
@@ -31,10 +29,8 @@ func TestTimeoutWriterHelpers(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	tw = &timeoutWriter{
-		ResponseWriter: rec,
-		statusCode:     http.StatusAccepted,
-	}
+	tw = acquireTimeoutWriter(rec)
+	tw.statusCode = http.StatusAccepted
 	n, err := tw.Write([]byte("ok"))
 	if err != nil {
 		t.Fatalf("write failed: %v", err)
@@ -51,6 +47,8 @@ func TestTimeoutWriterHelpers(t *testing.T) {
 	if tw.Unwrap() != rec {
 		t.Fatal("unwrap should return underlying writer")
 	}
+	releaseTimeoutWriter(tw)
+	releaseTimeoutWriter(nil)
 }
 
 func TestNewUsesDefaultTimeoutAndPassesThrough(t *testing.T) {

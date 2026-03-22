@@ -20,18 +20,35 @@ func Bind[Req any, Res any](fn func(*Context, Req) (Res, error)) HandlerFunc {
 	needDefaults := binder != nil && binder.hasDefaults
 
 	if needBody && !needBinding && !needDefaults {
-		return func(c *Context) error {
+		return registerPreHandledHandler(func(c *Context) error {
 			var req Req
 
 			if c.req.ContentLength > 0 {
+				if c.app != nil && c.app.hasPreParsing {
+					if err := c.app.hooks.run(PreParsing, c); err != nil {
+						return err
+					}
+				}
 				if err := c.BindJSON(&req); err != nil {
 					return &BindError{Err: err, Source: "body"}
+				}
+			}
+
+			if c.app != nil && c.app.hasPreValidation {
+				if err := c.app.hooks.run(PreValidation, c); err != nil {
+					return err
 				}
 			}
 
 			if validator != nil {
 				if errs := validator.validate(&req); len(errs) > 0 {
 					return &ValidationErrors{Errors: errs}
+				}
+			}
+
+			if c.app != nil && c.app.hasPreHandler {
+				if err := c.app.hooks.run(PreHandler, c); err != nil {
+					return err
 				}
 			}
 
@@ -43,10 +60,10 @@ func Bind[Req any, Res any](fn func(*Context, Req) (Res, error)) HandlerFunc {
 				return c.JSON(http.StatusOK, res)
 			}
 			return nil
-		}
+		})
 	}
 
-	return func(c *Context) error {
+	return registerPreHandledHandler(func(c *Context) error {
 		var req Req
 
 		// Step 1: Multi-source binding (param, query, header, cookie, form)
@@ -57,7 +74,12 @@ func Bind[Req any, Res any](fn func(*Context, Req) (Res, error)) HandlerFunc {
 		}
 
 		// Step 2: Body parsing (only if struct has json tags and body exists)
-		if needBody && c.Request().ContentLength > 0 {
+		if needBody && c.req.ContentLength > 0 {
+			if c.app != nil && c.app.hasPreParsing {
+				if err := c.app.hooks.run(PreParsing, c); err != nil {
+					return err
+				}
+			}
 			if err := c.BindJSON(&req); err != nil {
 				return &BindError{Err: err, Source: "body"}
 			}
@@ -68,10 +90,22 @@ func Bind[Req any, Res any](fn func(*Context, Req) (Res, error)) HandlerFunc {
 			binder.applyDefaults(&req)
 		}
 
+		if c.app != nil && c.app.hasPreValidation {
+			if err := c.app.hooks.run(PreValidation, c); err != nil {
+				return err
+			}
+		}
+
 		// Step 4: Validation
 		if validator != nil {
 			if errs := validator.validate(&req); len(errs) > 0 {
 				return &ValidationErrors{Errors: errs}
+			}
+		}
+
+		if c.app != nil && c.app.hasPreHandler {
+			if err := c.app.hooks.run(PreHandler, c); err != nil {
+				return err
 			}
 		}
 
@@ -86,7 +120,7 @@ func Bind[Req any, Res any](fn func(*Context, Req) (Res, error)) HandlerFunc {
 			return c.JSON(http.StatusOK, res)
 		}
 		return nil
-	}
+	})
 }
 
 // BindReq creates a handler with request parsing but manual response writing.
@@ -100,12 +134,23 @@ func BindReq[Req any](fn func(*Context, Req) error) HandlerFunc {
 	needDefaults := binder != nil && binder.hasDefaults
 
 	if needBody && !needBinding && !needDefaults {
-		return func(c *Context) error {
+		return registerPreHandledHandler(func(c *Context) error {
 			var req Req
 
 			if c.req.ContentLength > 0 {
+				if c.app != nil && c.app.hasPreParsing {
+					if err := c.app.hooks.run(PreParsing, c); err != nil {
+						return err
+					}
+				}
 				if err := c.BindJSON(&req); err != nil {
 					return &BindError{Err: err, Source: "body"}
+				}
+			}
+
+			if c.app != nil && c.app.hasPreValidation {
+				if err := c.app.hooks.run(PreValidation, c); err != nil {
+					return err
 				}
 			}
 
@@ -115,11 +160,17 @@ func BindReq[Req any](fn func(*Context, Req) error) HandlerFunc {
 				}
 			}
 
+			if c.app != nil && c.app.hasPreHandler {
+				if err := c.app.hooks.run(PreHandler, c); err != nil {
+					return err
+				}
+			}
+
 			return fn(c, req)
-		}
+		})
 	}
 
-	return func(c *Context) error {
+	return registerPreHandledHandler(func(c *Context) error {
 		var req Req
 
 		if needBinding {
@@ -128,7 +179,12 @@ func BindReq[Req any](fn func(*Context, Req) error) HandlerFunc {
 			}
 		}
 
-		if needBody && c.Request().ContentLength > 0 {
+		if needBody && c.req.ContentLength > 0 {
+			if c.app != nil && c.app.hasPreParsing {
+				if err := c.app.hooks.run(PreParsing, c); err != nil {
+					return err
+				}
+			}
 			if err := c.BindJSON(&req); err != nil {
 				return &BindError{Err: err, Source: "body"}
 			}
@@ -138,19 +194,37 @@ func BindReq[Req any](fn func(*Context, Req) error) HandlerFunc {
 			binder.applyDefaults(&req)
 		}
 
+		if c.app != nil && c.app.hasPreValidation {
+			if err := c.app.hooks.run(PreValidation, c); err != nil {
+				return err
+			}
+		}
+
 		if validator != nil {
 			if errs := validator.validate(&req); len(errs) > 0 {
 				return &ValidationErrors{Errors: errs}
 			}
 		}
 
+		if c.app != nil && c.app.hasPreHandler {
+			if err := c.app.hooks.run(PreHandler, c); err != nil {
+				return err
+			}
+		}
+
 		return fn(c, req)
-	}
+	})
 }
 
 // BindRes creates a handler with automatic response serialization but no request parsing.
 func BindRes[Res any](fn func(*Context) (Res, error)) HandlerFunc {
-	return func(c *Context) error {
+	return registerPreHandledHandler(func(c *Context) error {
+		if c.app != nil && c.app.hasPreHandler {
+			if err := c.app.hooks.run(PreHandler, c); err != nil {
+				return err
+			}
+		}
+
 		res, err := fn(c)
 		if err != nil {
 			return err
@@ -159,7 +233,7 @@ func BindRes[Res any](fn func(*Context) (Res, error)) HandlerFunc {
 			return c.JSON(http.StatusOK, res)
 		}
 		return nil
-	}
+	})
 }
 
 // Adapt wraps a stdlib http.HandlerFunc as a framework HandlerFunc.

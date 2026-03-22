@@ -173,6 +173,19 @@ func TestAppAdditionalCoverage(t *testing.T) {
 		if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/trim" {
 			t.Fatalf("unexpected trim redirect: code=%d loc=%q", rec.Code, rec.Header().Get("Location"))
 		}
+
+		nonBridge := New(WithBanner(false), WithRequestContextBridge(false))
+		nonBridge.AddHook(OnSend, func(c *Context) error {
+			if bw, ok := c.Response().(*bufferedResponseWriter); ok {
+				bw.SetBody([]byte("non-bridge"))
+			}
+			return nil
+		})
+		nonBridge.Get("/send", func(c *Context) error { return c.Text(http.StatusOK, "body") })
+		resp = NewTestClient(nonBridge).Get("/send")
+		if resp.Text() != "non-bridge" {
+			t.Fatalf("expected non-bridge on-send hook to mutate body, got %q", resp.Text())
+		}
 	})
 
 	t.Run("route body limit and pattern helpers", func(t *testing.T) {
@@ -188,8 +201,14 @@ func TestAppAdditionalCoverage(t *testing.T) {
 		if !matchesPattern("/users/{id}", "/users/10") {
 			t.Fatal("expected param pattern to match")
 		}
+		if !matchesPattern("/exact", "/exact") {
+			t.Fatal("expected exact pattern to match")
+		}
 		if !matchesPattern("/files/{path...}", "/files/a/b") {
 			t.Fatal("expected wildcard pattern to match")
+		}
+		if matchesPattern("/files/{path...}", "/other") {
+			t.Fatal("unexpected wildcard prefix match")
 		}
 		if matchesPattern("/users/{id}", "/users") {
 			t.Fatal("unexpected pattern match")
@@ -202,6 +221,12 @@ func TestAppAdditionalCoverage(t *testing.T) {
 		}
 		if app.shouldRedirectTrailingSlash(httptest.NewRequest(http.MethodGet, "/missing", nil)) {
 			t.Fatal("unexpected redirect helper result for missing route")
+		}
+
+		dynamicApp := New(WithBanner(false), WithRedirectTrailingSlash(true))
+		dynamicApp.Get("/users/{id}/", func(c *Context) error { return c.Text(http.StatusOK, "ok") })
+		if !dynamicApp.shouldRedirectTrailingSlash(httptest.NewRequest(http.MethodGet, "/users/42", nil)) {
+			t.Fatal("expected redirect helper to match dynamic alternative route")
 		}
 	})
 
@@ -218,6 +243,133 @@ func TestAppAdditionalCoverage(t *testing.T) {
 		app.buildRouteChainFast()
 		if routes, ok := app.routeChainFast[http.MethodGet]; ok && len(routes) != 0 {
 			t.Fatalf("expected empty fast route chain map for empty route set, got %#v", routes)
+		}
+	})
+
+	t.Run("build native route chain fast for wrapped middleware", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Use(WrapMiddleware(func(next HandlerFunc) HandlerFunc {
+			return func(c *Context) error { return next(c) }
+		}))
+		app.Get("/native", func(c *Context) error { return c.Text(http.StatusOK, "ok") })
+
+		app.buildRouteChainFast()
+		routes := app.routeChainFastNative[http.MethodGet]
+		if routes == nil {
+			t.Fatal("expected native fast route chain map")
+		}
+		if _, ok := routes["/native"]; !ok {
+			t.Fatal("expected native fast route chain for exact route")
+		}
+	})
+
+	t.Run("build grouped route chain fast for exact routes", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Group("/api", func(g *RouteGroup) {
+			g.Use(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("X-Group", "true")
+					next.ServeHTTP(w, r)
+				})
+			})
+			g.Get("/hello", func(c *Context) error { return c.Text(http.StatusOK, "ok") })
+			g.Get("/users/{id}", func(c *Context) error { return c.Text(http.StatusOK, c.Param("id")) })
+		})
+
+		app.buildRouteChainFast()
+		routes := app.groupRouteChainFast[http.MethodGet]
+		if routes == nil {
+			t.Fatal("expected grouped fast route chain map")
+		}
+		if _, ok := routes["/api/hello"]; !ok {
+			t.Fatal("expected grouped exact route chain")
+		}
+		if _, ok := routes["/api/users/{id}"]; ok {
+			t.Fatal("did not expect grouped dynamic route in exact fast map")
+		}
+
+		resp := NewTestClient(app).Get("/api/hello")
+		resp.AssertStatus(t, http.StatusOK)
+		if resp.Headers.Get("X-Group") != "true" {
+			t.Fatalf("expected grouped middleware header, got %q", resp.Headers.Get("X-Group"))
+		}
+	})
+
+	t.Run("build grouped native route chain fast for exact routes", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Group("/api", func(g *RouteGroup) {
+			g.Use(WrapMiddleware(func(next HandlerFunc) HandlerFunc {
+				return func(c *Context) error {
+					c.SetHeader("X-Native-Group", "true")
+					return next(c)
+				}
+			}))
+			g.Get("/hello", func(c *Context) error { return c.Text(http.StatusOK, "ok") })
+		})
+
+		app.buildRouteChainFast()
+		routes := app.groupRouteChainNative[http.MethodGet]
+		if routes == nil {
+			t.Fatal("expected grouped native fast route chain map")
+		}
+		if _, ok := routes["/api/hello"]; !ok {
+			t.Fatal("expected grouped native exact route chain")
+		}
+
+		resp := NewTestClient(app).Get("/api/hello")
+		resp.AssertStatus(t, http.StatusOK)
+		if resp.Headers.Get("X-Native-Group") != "true" {
+			t.Fatalf("expected grouped native middleware header, got %q", resp.Headers.Get("X-Native-Group"))
+		}
+	})
+
+	t.Run("build grouped dynamic route chains", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Group("/api", func(g *RouteGroup) {
+			g.Use(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("X-Group", "true")
+					next.ServeHTTP(w, r)
+				})
+			})
+			g.Get("/users/{id}", func(c *Context) error {
+				return c.JSON(http.StatusOK, map[string]string{"id": c.Param("id")})
+			})
+		})
+
+		app.buildRouteChainFast()
+		if len(app.groupDynamicChainFast[http.MethodGet]) == 0 {
+			t.Fatal("expected grouped dynamic fast routes")
+		}
+
+		resp := NewTestClient(app).Get("/api/users/42")
+		resp.AssertStatus(t, http.StatusOK)
+		if resp.Headers.Get("X-Group") != "true" || !strings.Contains(resp.Text(), `"id":"42"`) {
+			t.Fatalf("unexpected grouped dynamic response %q headers=%v", resp.Text(), resp.Headers)
+		}
+
+		app = New(WithBanner(false))
+		app.Group("/api", func(g *RouteGroup) {
+			g.Use(WrapMiddleware(func(next HandlerFunc) HandlerFunc {
+				return func(c *Context) error {
+					c.SetHeader("X-Native-Group", "true")
+					return next(c)
+				}
+			}))
+			g.Get("/users/{id}", func(c *Context) error {
+				return c.JSON(http.StatusOK, map[string]string{"id": c.Param("id")})
+			})
+		})
+
+		app.buildRouteChainFast()
+		if len(app.groupDynamicChainNative[http.MethodGet]) == 0 {
+			t.Fatal("expected grouped native dynamic fast routes")
+		}
+
+		resp = NewTestClient(app).Get("/api/users/42")
+		resp.AssertStatus(t, http.StatusOK)
+		if resp.Headers.Get("X-Native-Group") != "true" || !strings.Contains(resp.Text(), `"id":"42"`) {
+			t.Fatalf("unexpected grouped native dynamic response %q headers=%v", resp.Text(), resp.Headers)
 		}
 	})
 }
@@ -485,10 +637,11 @@ func TestDirectRoutingAdditionalCoverage(t *testing.T) {
 		app.mux.Handle("/mount/", http.StripPrefix("/mount", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})))
 
 		rm := &routingMux{
-			mux:           app.mux,
-			app:           app,
-			routesByKey:   app.routesByKey,
-			routeHandlers: app.routeHandlers,
+			mux:                 app.mux,
+			app:                 app,
+			routesByKey:         app.routesByKey,
+			routeMethodsExact:   app.routeMethodsExact,
+			routeMethodsDynamic: app.routeMethodsDynamic,
 		}
 
 		req := httptest.NewRequest(http.MethodGet, "/mount/child", nil)
@@ -502,11 +655,84 @@ func TestDirectRoutingAdditionalCoverage(t *testing.T) {
 			t.Fatalf("unexpected mounted fallback response code=%d body=%q", rec.Code, rec.Body.String())
 		}
 
+		app.mux = http.NewServeMux()
+		app.mux.Handle("/mount-write/", http.StripPrefix("/mount-write", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("mounted"))
+		})))
+		rm = &routingMux{
+			mux:                 app.mux,
+			app:                 app,
+			routesByKey:         app.routesByKey,
+			routeMethodsExact:   app.routeMethodsExact,
+			routeMethodsDynamic: app.routeMethodsDynamic,
+		}
+		req = httptest.NewRequest(http.MethodGet, "/mount-write/child", nil)
+		rec = httptest.NewRecorder()
+		rm.ServeHTTP(rec, req)
+		if rec.Code != http.StatusAccepted || rec.Body.String() != "mounted" {
+			t.Fatalf("unexpected mounted write response code=%d body=%q", rec.Code, rec.Body.String())
+		}
+
 		req = httptest.NewRequest(http.MethodPost, "/users/42", nil)
 		rec = httptest.NewRecorder()
 		rm.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected stdlib fallback 404 without aarv context, got %d", rec.Code)
+		}
+
+		app = New(WithBanner(false))
+		app.SetMethodNotAllowedHandler(func(c *Context) error {
+			return c.Text(http.StatusMethodNotAllowed, "dynamic-method")
+		})
+		app.Get("/users/{id}", func(c *Context) error { return c.NoContent(http.StatusOK) })
+		rm = &routingMux{
+			mux:                 app.mux,
+			app:                 app,
+			routesByKey:         app.routesByKey,
+			routeMethodsExact:   app.routeMethodsExact,
+			routeMethodsDynamic: app.routeMethodsDynamic,
+		}
+		req = httptest.NewRequest(http.MethodPost, "/users/99", nil)
+		rec = httptest.NewRecorder()
+		ctx = app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+		storeRequestContext(req, ctx)
+		defer deleteRequestContext(req)
+		rm.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "dynamic-method" {
+			t.Fatalf("unexpected dynamic 405 response code=%d body=%q", rec.Code, rec.Body.String())
+		}
+
+		req = httptest.NewRequest(http.MethodPost, "/users/100", nil)
+		rec = httptest.NewRecorder()
+		rm.ServeHTTP(rec, req)
 		if rec.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("expected stdlib 405 without aarv context, got %d", rec.Code)
+			t.Fatalf("expected dynamic 405 without aarv context, got %d", rec.Code)
+		}
+
+		probe := acquireProbeResponseWriter(httptest.NewRecorder())
+		probe.written = true
+		releaseProbeResponseWriter(probe)
+		releaseProbeResponseWriter(nil)
+		if probe.ResponseWriter != nil || probe.written {
+			t.Fatalf("expected pooled probe writer reset, got %#v", probe)
+		}
+	})
+
+	t.Run("track method pattern caches exact and dynamic methods", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.trackMethodPattern(http.MethodGet, "/exact", false, directPattern{})
+		app.trackMethodPattern(http.MethodPost, "/exact", false, directPattern{})
+		if len(app.routeMethodsExact["/exact"]) != 2 {
+			t.Fatalf("expected exact method cache, got %#v", app.routeMethodsExact["/exact"])
+		}
+
+		dp := compileDirectPattern("/users/{id}")
+		app.trackMethodPattern(http.MethodGet, "/users/{id}", true, dp)
+		app.trackMethodPattern(http.MethodPost, "/users/{id}", true, dp)
+		if len(app.routeMethodsDynamic) != 1 || len(app.routeMethodsDynamic[0].methods) != 2 {
+			t.Fatalf("expected dynamic method cache to merge methods, got %#v", app.routeMethodsDynamic)
 		}
 	})
 }
@@ -582,6 +808,96 @@ func TestAddRouteMiddlewarePathAdditionalCoverage(t *testing.T) {
 		if !onResponseCalled {
 			t.Fatal("expected OnResponse hook to run")
 		}
+	})
+
+	t.Run("route middleware wrapper runs prehandler for plain handler and skips duplicate for bind handler", func(t *testing.T) {
+		type req struct {
+			Name string `json:"name"`
+		}
+
+		app := New(WithBanner(false))
+		plainCalls := 0
+		bindCalls := 0
+		app.AddHook(PreHandler, func(c *Context) error {
+			switch c.Path() {
+			case "/plain":
+				plainCalls++
+			case "/bind":
+				bindCalls++
+			}
+			return nil
+		})
+
+		app.Get("/plain", func(c *Context) error {
+			return c.NoContent(http.StatusOK)
+		}, WithRouteMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			})
+		}))
+
+		app.Post("/bind", BindReq(func(c *Context, payload req) error {
+			return c.NoContent(http.StatusCreated)
+		}), WithRouteMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			})
+		}))
+
+		NewTestClient(app).Get("/plain").AssertStatus(t, http.StatusOK)
+		NewTestClient(app).Post("/bind", map[string]string{"name": "alice"}).AssertStatus(t, http.StatusCreated)
+
+		if plainCalls != 1 {
+			t.Fatalf("expected plain handler PreHandler count 1, got %d", plainCalls)
+		}
+		if bindCalls != 1 {
+			t.Fatalf("expected bind handler PreHandler count 1, got %d", bindCalls)
+		}
+	})
+
+	t.Run("route middleware wrapper prehandler error stops plain and bind handlers", func(t *testing.T) {
+		type req struct {
+			Name string `json:"name"`
+		}
+
+		app := New(WithBanner(false))
+		app.AddHook(PreHandler, func(c *Context) error {
+			return ErrForbidden("blocked in prehandler")
+		})
+
+		app.Get("/plain-stop", func(c *Context) error {
+			t.Fatal("plain handler should not run")
+			return nil
+		}, WithRouteMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			})
+		}))
+
+		app.Post("/bind-stop", BindReq(func(c *Context, payload req) error {
+			t.Fatalf("bind handler should not run, got %+v", payload)
+			return nil
+		}), WithRouteMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			})
+		}))
+
+		NewTestClient(app).Get("/plain-stop").AssertStatus(t, http.StatusForbidden)
+		NewTestClient(app).Post("/bind-stop", map[string]string{"name": "alice"}).AssertStatus(t, http.StatusForbidden)
+	})
+
+	t.Run("direct route internal handler prehandler error stops plain handler", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.AddHook(PreHandler, func(c *Context) error {
+			return ErrForbidden("blocked in prehandler")
+		})
+		app.Get("/direct-stop", func(c *Context) error {
+			t.Fatal("direct handler should not run")
+			return nil
+		})
+
+		NewTestClient(app).Get("/direct-stop").AssertStatus(t, http.StatusForbidden)
 	})
 }
 
@@ -692,9 +1008,6 @@ func TestAppInternalBranchCoverage(t *testing.T) {
 			mux:         http.NewServeMux(),
 			app:         app,
 			routesByKey: map[string]struct{}{},
-			routeHandlers: map[string]routeRuntimeHandler{
-				"GET /fast": fastHandler,
-			},
 			routeHandlerFast: map[string]map[string]routeRuntimeHandler{
 				"GET": {"/fast": fastHandler},
 			},
@@ -731,10 +1044,9 @@ func TestAppInternalBranchCoverage(t *testing.T) {
 			_, _ = w.Write([]byte("generic-dynamic"))
 		}))
 		mux = &routingMux{
-			mux:           genericMux,
-			app:           app,
-			routesByKey:   map[string]struct{}{"GET /items/{id}": {}},
-			routeHandlers: map[string]routeRuntimeHandler{},
+			mux:         genericMux,
+			app:         app,
+			routesByKey: map[string]struct{}{"GET /items/{id}": {}},
 		}
 		req = httptest.NewRequest(http.MethodGet, "/items/7", nil)
 		ctx, rec = newAppContext(app, req)
@@ -771,6 +1083,262 @@ func TestAppNilGuardPaths(t *testing.T) {
 	if body["ok"] != "true" {
 		t.Fatalf("unexpected response body: %#v", body)
 	}
+}
+
+func TestDispatchAdditionalCoverage(t *testing.T) {
+	t.Run("build route chain fast covers group copies and non-native skips", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.groupRouteHandlers[http.MethodGet] = map[string]http.Handler{
+			"/plain": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}),
+		}
+		app.groupRouteNative[http.MethodGet] = map[string]routeRuntimeHandler{
+			"/native": func(c *Context, w http.ResponseWriter, r *http.Request) {
+				_ = c.NoContent(http.StatusAccepted)
+			},
+		}
+		app.groupDynamicHandlers[http.MethodGet] = []directDynamicHTTPRoute{{
+			pattern: compileDirectPattern("/items/{id}"),
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusCreated)
+			}),
+		}}
+		app.groupDynamicNative[http.MethodGet] = []directDynamicRoute{{
+			pattern: compileDirectPattern("/native/{id}"),
+			handler: func(c *Context, w http.ResponseWriter, r *http.Request) {
+				_ = c.NoContent(http.StatusOK)
+			},
+		}}
+		app.buildRouteChainFast()
+
+		if app.groupRouteChainFast[http.MethodGet]["/plain"] == nil {
+			t.Fatal("expected grouped stdlib chain copy without globals")
+		}
+		if app.groupRouteChainNative[http.MethodGet]["/native"] == nil {
+			t.Fatal("expected grouped native chain copy without globals")
+		}
+		if len(app.groupDynamicChainFast[http.MethodGet]) != 1 {
+			t.Fatalf("expected grouped dynamic stdlib copy, got %d", len(app.groupDynamicChainFast[http.MethodGet]))
+		}
+		if len(app.groupDynamicChainNative[http.MethodGet]) != 1 {
+			t.Fatalf("expected grouped dynamic native copy, got %d", len(app.groupDynamicChainNative[http.MethodGet]))
+		}
+
+		app = New(WithBanner(false))
+		app.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+		})
+		app.groupRouteNative[http.MethodGet] = map[string]routeRuntimeHandler{
+			"/skip-native": func(c *Context, w http.ResponseWriter, r *http.Request) {},
+		}
+		app.groupDynamicNative[http.MethodGet] = []directDynamicRoute{{
+			pattern: compileDirectPattern("/skip/{id}"),
+			handler: func(c *Context, w http.ResponseWriter, r *http.Request) {},
+		}}
+		app.buildRouteChainFast()
+
+		if _, ok := app.groupRouteChainNative[http.MethodGet]["/skip-native"]; ok {
+			t.Fatal("expected grouped native chain to be skipped with non-native globals")
+		}
+		if len(app.groupDynamicChainNative[http.MethodGet]) != 0 {
+			t.Fatalf("expected grouped dynamic native chain to be skipped with non-native globals, got %d", len(app.groupDynamicChainNative[http.MethodGet]))
+		}
+	})
+
+	t.Run("serve http covers native and stdlib grouped fast paths with onresponse", func(t *testing.T) {
+		app := New(WithBanner(false))
+		onResponseCalls := 0
+		app.AddHook(OnResponse, func(c *Context) error {
+			onResponseCalls++
+			return nil
+		})
+		app.Use(RegisterNativeMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+		}, func(next HandlerFunc) HandlerFunc {
+			return func(c *Context) error { return next(c) }
+		}))
+		app.Group("/g", func(g *RouteGroup) {
+			g.Use(RegisterNativeMiddleware(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+			}, func(next HandlerFunc) HandlerFunc {
+				return func(c *Context) error { return next(c) }
+			}))
+			g.Get("/native", func(c *Context) error { return c.Text(http.StatusOK, "native") })
+			g.Get("/users/{id}", func(c *Context) error { return c.JSON(http.StatusOK, map[string]string{"id": c.Param("id")}) })
+		})
+
+		NewTestClient(app).Get("/g/native").AssertStatus(t, http.StatusOK)
+		NewTestClient(app).Get("/g/users/42").AssertStatus(t, http.StatusOK)
+
+		if onResponseCalls != 2 {
+			t.Fatalf("expected OnResponse hook for grouped native exact and dynamic fast paths, got %d", onResponseCalls)
+		}
+
+		app = New(WithBanner(false))
+		onResponseCalls = 0
+		app.AddHook(OnResponse, func(c *Context) error {
+			onResponseCalls++
+			return nil
+		})
+		app.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+		})
+		app.Group("/s", func(g *RouteGroup) {
+			g.Use(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+			})
+			g.Get("/plain", func(c *Context) error { return c.Text(http.StatusOK, "plain") })
+			g.Get("/users/{id}", func(c *Context) error { return c.JSON(http.StatusOK, map[string]string{"id": c.Param("id")}) })
+		})
+
+		NewTestClient(app).Get("/s/plain").AssertStatus(t, http.StatusOK)
+		NewTestClient(app).Get("/s/users/7").AssertStatus(t, http.StatusOK)
+
+		if onResponseCalls != 2 {
+			t.Fatalf("expected OnResponse hook for grouped stdlib exact and dynamic fast paths, got %d", onResponseCalls)
+		}
+	})
+
+	t.Run("serve http covers exact native onresponse and empty grouped maps", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Use(RegisterNativeMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+		}, func(next HandlerFunc) HandlerFunc {
+			return func(c *Context) error { return next(c) }
+		}))
+		app.groupRouteHandlers[http.MethodGet] = map[string]http.Handler{}
+		app.groupRouteNative[http.MethodGet] = map[string]routeRuntimeHandler{}
+		app.groupDynamicHandlers[http.MethodGet] = []directDynamicHTTPRoute{}
+		app.groupDynamicNative[http.MethodGet] = []directDynamicRoute{}
+
+		onResponseCalls := 0
+		app.AddHook(OnResponse, func(c *Context) error {
+			onResponseCalls++
+			return nil
+		})
+		app.Get("/native-exact", func(c *Context) error { return c.Text(http.StatusOK, "ok") })
+
+		NewTestClient(app).Get("/native-exact").AssertStatus(t, http.StatusOK)
+		if onResponseCalls != 1 {
+			t.Fatalf("expected OnResponse hook for exact native fast path, got %d", onResponseCalls)
+		}
+	})
+
+	t.Run("native fast path runs onsend before context release", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.Use(RegisterNativeMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+		}, func(next HandlerFunc) HandlerFunc {
+			return func(c *Context) error { return next(c) }
+		}))
+		var hookPath string
+		app.AddHook(OnSend, func(c *Context) error {
+			hookPath = c.Path()
+			if bw, ok := c.Response().(*bufferedResponseWriter); ok {
+				bw.SetBody([]byte("mutated"))
+			}
+			return nil
+		})
+		app.Get("/native-onsend", func(c *Context) error {
+			return c.Text(http.StatusOK, "body")
+		})
+
+		resp := NewTestClient(app).Get("/native-onsend")
+		resp.AssertStatus(t, http.StatusOK)
+		if hookPath != "/native-onsend" {
+			t.Fatalf("expected OnSend hook to see native fast-path context, got %q", hookPath)
+		}
+		if resp.Text() != "mutated" {
+			t.Fatalf("expected OnSend mutation to flush, got %q", resp.Text())
+		}
+	})
+
+	t.Run("grouped native fast chains propagate exact and dynamic errors", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.errorHandler = func(c *Context, err error) {
+			http.Error(c.Response(), "handled:"+err.Error(), http.StatusTeapot)
+		}
+		app.Use(RegisterNativeMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+		}, func(next HandlerFunc) HandlerFunc {
+			return func(c *Context) error { return errors.New("global boom") }
+		}))
+		app.Group("/g", func(g *RouteGroup) {
+			g.Use(RegisterNativeMiddleware(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+			}, func(next HandlerFunc) HandlerFunc {
+				return func(c *Context) error { return next(c) }
+			}))
+			g.Get("/exact", func(c *Context) error { return errors.New("exact boom") })
+			g.Get("/users/{id}", func(c *Context) error { return errors.New("dynamic boom") })
+		})
+		app.buildRouteChainFast()
+
+		exact := app.groupRouteChainNative[http.MethodGet]["/g/exact"]
+		if exact == nil {
+			t.Fatal("expected grouped exact native fast chain")
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/g/exact", nil)
+		ctx := app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+		exact(ctx, rec, req)
+		if rec.Code != http.StatusTeapot || !strings.Contains(rec.Body.String(), "global boom") {
+			t.Fatalf("unexpected exact grouped error response code=%d body=%q", rec.Code, rec.Body.String())
+		}
+
+		routes := app.groupDynamicChainNative[http.MethodGet]
+		if len(routes) == 0 {
+			t.Fatal("expected grouped dynamic native fast chains")
+		}
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodGet, "/g/users/7", nil)
+		ctx = app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+		if !routes[0].pattern.match(req.URL.Path, ctx) {
+			t.Fatal("expected grouped dynamic pattern match")
+		}
+		routes[0].handler(ctx, rec, req)
+		if rec.Code != http.StatusTeapot || !strings.Contains(rec.Body.String(), "global boom") {
+			t.Fatalf("unexpected dynamic grouped error response code=%d body=%q", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("group routes cover native and stdlib body limit and prehandler branches", func(t *testing.T) {
+		app := New(WithBanner(false))
+		app.AddHook(PreHandler, func(c *Context) error {
+			if c.Path() == "/g/pre" {
+				return ErrForbidden("blocked")
+			}
+			return nil
+		})
+		app.Group("/g", func(g *RouteGroup) {
+			g.Get("/pre", func(c *Context) error { return c.NoContent(http.StatusOK) })
+			g.Post("/limited", func(c *Context) error {
+				_, err := c.Body()
+				return err
+			}, WithRouteMaxBodySize(1))
+			g.Post("/std", func(c *Context) error {
+				_, err := c.Body()
+				return err
+			}, WithRouteMaxBodySize(1), WithRouteMiddleware(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+			}))
+			g.Get("/native-error", func(c *Context) error { return errors.New("native group fail") })
+			g.Get("/native-mw-error", func(c *Context) error { return errors.New("native group mw fail") }, WithRouteMiddleware(RegisterNativeMiddleware(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+			}, func(next HandlerFunc) HandlerFunc {
+				return func(c *Context) error { return next(c) }
+			})))
+		})
+
+		NewTestClient(app).Get("/g/pre").AssertStatus(t, http.StatusForbidden)
+		NewTestClient(app).Post("/g/limited", map[string]string{"v": "too-large"}).AssertStatus(t, http.StatusInternalServerError)
+		NewTestClient(app).Post("/g/std", map[string]string{"v": "too-large"}).AssertStatus(t, http.StatusInternalServerError)
+		NewTestClient(app).Get("/g/native-error").AssertStatus(t, http.StatusInternalServerError)
+		NewTestClient(app).Get("/g/native-mw-error").AssertStatus(t, http.StatusInternalServerError)
+	})
 }
 
 func TestEffectiveTLSConfigSecurityDefaults(t *testing.T) {

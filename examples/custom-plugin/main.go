@@ -52,30 +52,46 @@ func (p *RateLimiterPlugin) Register(pc *aarv.PluginContext) error {
 	// Decorate the rate limiter so other plugins can inspect it
 	pc.Decorate("rateLimiter.maxRequests", p.maxRequests)
 
-	// Register a middleware that enforces rate limits
-	pc.Use(aarv.WrapMiddleware(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+	allow := func(ip string) (remaining int, blocked bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		entry, ok := clients[ip]
+		now := time.Now()
+		if !ok || now.After(entry.windowAt) {
+			entry = &clientEntry{count: 0, windowAt: now.Add(p.window)}
+			clients[ip] = entry
+		}
+		entry.count++
+		if entry.count > p.maxRequests {
+			return 0, true
+		}
+		return p.maxRequests - entry.count, false
+	}
+
+	// Register middleware with both stdlib and native implementations.
+	// Aarv can use the native fast path automatically when the whole chain supports it.
+	pc.Use(aarv.RegisterNativeMiddleware(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			remaining, blocked := allow(r.RemoteAddr)
+			if blocked {
+				logger.Warn("rate limit exceeded", "ip", r.RemoteAddr)
+				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+				return
+			}
+			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", p.maxRequests))
+			w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
+			next.ServeHTTP(w, r)
+		})
+	}, func(next aarv.HandlerFunc) aarv.HandlerFunc {
 		return func(c *aarv.Context) error {
 			ip := c.Request().RemoteAddr
-
-			mu.Lock()
-			entry, ok := clients[ip]
-			now := time.Now()
-			if !ok || now.After(entry.windowAt) {
-				entry = &clientEntry{count: 0, windowAt: now.Add(p.window)}
-				clients[ip] = entry
-			}
-			entry.count++
-			count := entry.count
-			mu.Unlock()
-
-			if count > p.maxRequests {
-				logger.Warn("rate limit exceeded", "ip", ip, "count", count)
+			remaining, blocked := allow(ip)
+			if blocked {
+				logger.Warn("rate limit exceeded", "ip", ip)
 				return aarv.ErrTooManyRequests("rate limit exceeded")
 			}
-
 			c.SetHeader("X-RateLimit-Limit", fmt.Sprintf("%d", p.maxRequests))
-			c.SetHeader("X-RateLimit-Remaining", fmt.Sprintf("%d", p.maxRequests-count))
-
+			c.SetHeader("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
 			return next(c)
 		}
 	}))
@@ -111,9 +127,9 @@ func (p *RateLimiterPlugin) Register(pc *aarv.PluginContext) error {
 // MetricsPlugin depends on the rate-limiter plugin.
 type MetricsPlugin struct{}
 
-func (p *MetricsPlugin) Name() string            { return "metrics" }
-func (p *MetricsPlugin) Version() string         { return "1.0.0" }
-func (p *MetricsPlugin) Dependencies() []string  { return []string{"rate-limiter"} }
+func (p *MetricsPlugin) Name() string           { return "metrics" }
+func (p *MetricsPlugin) Version() string        { return "1.0.0" }
+func (p *MetricsPlugin) Dependencies() []string { return []string{"rate-limiter"} }
 
 func (p *MetricsPlugin) Register(pc *aarv.PluginContext) error {
 	// Resolve a value decorated by the rate-limiter plugin
@@ -191,6 +207,7 @@ func main() {
 	fmt.Println("  GET /debug/routes          — list all registered routes")
 	fmt.Println()
 	fmt.Println("  Rate limit: 10 req/min per IP")
+	fmt.Println("  The rate limiter demonstrates dual stdlib + native middleware registration.")
 
 	app.Listen(":8080")
 }

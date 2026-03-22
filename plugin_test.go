@@ -61,8 +61,8 @@ func TestPluginAndTestClientAdditionalCoverage(t *testing.T) {
 			t.Fatalf("expected no route opts, got %d", len(got))
 		}
 		pc.Use(func(next http.Handler) http.Handler { return next })
-		if got := pc.routeOpts(nil); len(got) != 1 {
-			t.Fatalf("expected merged route middleware, got %d", len(got))
+		if got := pc.routeOpts(nil); len(got) != 0 {
+			t.Fatalf("expected route opts to stay unchanged, got %d", len(got))
 		}
 		pc.Decorate("svc", 42)
 		if v, ok := pc.Resolve("svc"); !ok || v.(int) != 42 {

@@ -134,7 +134,22 @@ func New(config ...Config) aarv.Middleware {
 		cfg.Generator = GenerateULID
 	}
 
-	return func(next http.Handler) http.Handler {
+	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			id := c.Header(cfg.Header)
+			if id == "" {
+				id = cfg.Generator()
+			}
+
+			c.SetHeader(cfg.Header, id)
+			c.Set("requestId", id)
+			c.SetContextValue(contextKey{}, id)
+
+			return next(c)
+		}
+	})
+
+	m := aarv.Middleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Read existing request ID from header or generate a new one
 			id := r.Header.Get(cfg.Header)
@@ -147,16 +162,17 @@ func New(config ...Config) aarv.Middleware {
 
 			// Store the request ID in the request context and keep aarv's
 			// request-to-context mapping aligned if the request gets cloned.
-			ctx := context.WithValue(r.Context(), contextKey{}, id)
 			if c, ok := aarv.FromRequest(r); ok {
 				c.Set("requestId", id)
-				c.SetContext(ctx)
+				c.SetContextValue(contextKey{}, id)
 				r = c.Request()
 			} else {
+				ctx := context.WithValue(r.Context(), contextKey{}, id)
 				r = r.WithContext(ctx)
 			}
 
 			next.ServeHTTP(w, r)
 		})
-	}
+	})
+	return aarv.RegisterNativeMiddleware(m, native)
 }
