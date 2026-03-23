@@ -72,7 +72,7 @@ func New(config ...Config) aarv.Middleware {
 		cfg.LivePath = "/live"
 	}
 
-	return func(next http.Handler) http.Handler {
+	m := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
 
@@ -101,6 +101,29 @@ func New(config ...Config) aarv.Middleware {
 			next.ServeHTTP(w, r)
 		})
 	}
+
+	native := func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			switch c.Path() {
+			case cfg.HealthPath:
+				return c.JSON(http.StatusOK, statusResponse{Status: "ok"})
+			case cfg.ReadyPath:
+				if cfg.ReadyCheck != nil && !cfg.ReadyCheck() {
+					return c.JSON(http.StatusServiceUnavailable, statusResponse{Status: "unavailable"})
+				}
+				return c.JSON(http.StatusOK, statusResponse{Status: "ok"})
+			case cfg.LivePath:
+				if cfg.LiveCheck != nil && !cfg.LiveCheck() {
+					return c.JSON(http.StatusServiceUnavailable, statusResponse{Status: "unavailable"})
+				}
+				return c.JSON(http.StatusOK, statusResponse{Status: "ok"})
+			default:
+				return next(c)
+			}
+		}
+	}
+
+	return aarv.RegisterNativeMiddleware(m, native)
 }
 
 // writeJSON writes a JSON response with the given status code.

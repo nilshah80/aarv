@@ -49,7 +49,44 @@ func New(config ...Config) aarv.Middleware {
 		cfg.StackSize = 4096
 	}
 
-	return func(next http.Handler) http.Handler {
+	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			defer func() {
+				if rec := recover(); rec != nil {
+					stack := make([]byte, cfg.StackSize)
+					length := runtime.Stack(stack, !cfg.DisableStackAll)
+					stack = stack[:length]
+
+					err := fmt.Sprintf("%v", rec)
+					path := c.Path()
+
+					if !cfg.DisablePrintStack {
+						slog.Error("panic recovered",
+							"error", err,
+							"method", c.Method(),
+							"path", path,
+							"stack", string(stack),
+						)
+					} else {
+						slog.Error("panic recovered",
+							"error", err,
+							"method", c.Method(),
+							"path", path,
+						)
+					}
+
+					c.SetHeader("Content-Type", "application/json; charset=utf-8")
+					_ = c.JSON(http.StatusInternalServerError, map[string]string{
+						"error":   "internal_error",
+						"message": "Internal server error",
+					})
+				}
+			}()
+			return next(c)
+		}
+	})
+
+	m := aarv.Middleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
@@ -87,5 +124,6 @@ func New(config ...Config) aarv.Middleware {
 
 			next.ServeHTTP(w, r)
 		})
-	}
+	})
+	return aarv.RegisterNativeMiddleware(m, native)
 }

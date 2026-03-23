@@ -106,7 +106,41 @@ func New(config ...Config) aarv.Middleware {
 		return ok
 	}
 
-	return func(next http.Handler) http.Handler {
+	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			origin := c.Header("Origin")
+			if origin == "" {
+				return next(c)
+			}
+			if !isOriginAllowed(origin) {
+				return next(c)
+			}
+
+			if allowAll && !cfg.AllowCredentials {
+				c.SetHeader("Access-Control-Allow-Origin", "*")
+			} else {
+				c.SetHeader("Access-Control-Allow-Origin", origin)
+				c.Response().Header().Add("Vary", "Origin")
+			}
+			if cfg.AllowCredentials {
+				c.SetHeader("Access-Control-Allow-Credentials", "true")
+			}
+			if exposeHeadersStr != "" {
+				c.SetHeader("Access-Control-Expose-Headers", exposeHeadersStr)
+			}
+			if c.Method() == http.MethodOptions {
+				c.SetHeader("Access-Control-Allow-Methods", allowMethodsStr)
+				c.SetHeader("Access-Control-Allow-Headers", allowHeadersStr)
+				if maxAgeStr != "" {
+					c.SetHeader("Access-Control-Max-Age", maxAgeStr)
+				}
+				return c.NoContent(http.StatusNoContent)
+			}
+			return next(c)
+		}
+	})
+
+	m := aarv.Middleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
 
@@ -154,5 +188,6 @@ func New(config ...Config) aarv.Middleware {
 
 			next.ServeHTTP(w, r)
 		})
-	}
+	})
+	return aarv.RegisterNativeMiddleware(m, native)
 }

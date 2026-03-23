@@ -90,7 +90,7 @@ func New(config ...Config) aarv.Middleware {
 		cfg = config[0]
 	}
 
-	return func(next http.Handler) http.Handler {
+	m := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Only compute ETags for GET and HEAD requests
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -138,6 +138,53 @@ func New(config ...Config) aarv.Middleware {
 			_, _ = w.Write(body)
 		})
 	}
+
+	native := func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			if c.Method() != http.MethodGet && c.Method() != http.MethodHead {
+				return next(c)
+			}
+
+			orig := c.Response()
+			cw := acquireCaptureWriter(orig)
+			defer releaseCaptureWriter(cw)
+
+			c.SetResponse(cw)
+			defer c.SetResponse(orig)
+			if err := next(c); err != nil {
+				return err
+			}
+
+			body := cw.body.Bytes()
+			if cw.statusCode < 200 || cw.statusCode >= 300 || len(body) == 0 {
+				orig.WriteHeader(cw.statusCode)
+				if len(body) > 0 {
+					_, _ = orig.Write(body)
+				}
+				return nil
+			}
+
+			checksum := crc32.ChecksumIEEE(body)
+			var etag string
+			if cfg.Weak {
+				etag = fmt.Sprintf(`W/"%08x"`, checksum)
+			} else {
+				etag = fmt.Sprintf(`"%08x"`, checksum)
+			}
+
+			orig.Header().Set("ETag", etag)
+			if ifNoneMatch := c.Header("If-None-Match"); ifNoneMatch != "" && matchETag(ifNoneMatch, etag) {
+				orig.WriteHeader(http.StatusNotModified)
+				return nil
+			}
+
+			orig.WriteHeader(cw.statusCode)
+			_, _ = orig.Write(body)
+			return nil
+		}
+	}
+
+	return aarv.RegisterNativeMiddleware(m, native)
 }
 
 // matchETag checks if the given If-None-Match header value matches the ETag.

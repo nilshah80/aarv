@@ -59,9 +59,9 @@ Concrete examples live under [`examples/`](./examples):
 - `examples/route-groups` — nested route groups with scoped middleware
 - `examples/binding` — multi-source binding across path, query, header, and JSON body
 - `examples/error-handling` — custom error handler plus `OnError`
-- `examples/custom-middleware` — stdlib-only, native-only, and dual-registered middleware
+- `examples/custom-middleware` — stdlib-only, native-only, and dual-registered custom middleware
 - `examples/middleware-bridge` — stdlib middleware using `r.WithContext(...)` with Aarv compatibility
-- `examples/json-logger` — structured logging
+- `examples/json-logger` — standard logger plus debug, production-safe, and minimal `verboselog` presets
 - `examples/encrypt` — AES-GCM request/response encryption
 - `examples/custom-plugin` — decorators, dependencies, plugin-scoped routes, dual middleware registration
 - `examples/auth` — JWT, API key, and session auth

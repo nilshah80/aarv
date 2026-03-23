@@ -720,6 +720,58 @@ func TestDirectRoutingAdditionalCoverage(t *testing.T) {
 		}
 	})
 
+	t.Run("method not allowed error path exact and dynamic", func(t *testing.T) {
+		// Exact route 405 error path
+		app := New(WithBanner(false))
+		app.SetMethodNotAllowedHandler(func(c *Context) error {
+			return errors.New("exact 405 fail")
+		})
+		app.Get("/exact", func(c *Context) error { return c.NoContent(http.StatusOK) })
+
+		rm := &routingMux{
+			mux:               app.mux,
+			app:               app,
+			routesByKey:        app.routesByKey,
+			routeMethodsExact:  app.routeMethodsExact,
+			routeMethodsDynamic: app.routeMethodsDynamic,
+		}
+		req := httptest.NewRequest(http.MethodPost, "/exact", nil)
+		rec := httptest.NewRecorder()
+		ctx := app.AcquireContext(rec, req)
+		defer app.ReleaseContext(ctx)
+		storeRequestContext(req, ctx)
+		defer deleteRequestContext(req)
+		rm.ServeHTTP(rec, req)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 from exact 405 error, got %d", rec.Code)
+		}
+
+		// Dynamic route 405 error path
+		app2 := New(WithBanner(false))
+		app2.SetMethodNotAllowedHandler(func(c *Context) error {
+			return errors.New("dynamic 405 fail")
+		})
+		app2.Get("/items/{id}", func(c *Context) error { return c.NoContent(http.StatusOK) })
+
+		rm2 := &routingMux{
+			mux:               app2.mux,
+			app:               app2,
+			routesByKey:        app2.routesByKey,
+			routeMethodsExact:  app2.routeMethodsExact,
+			routeMethodsDynamic: app2.routeMethodsDynamic,
+		}
+		req2 := httptest.NewRequest(http.MethodPost, "/items/42", nil)
+		rec2 := httptest.NewRecorder()
+		ctx2 := app2.AcquireContext(rec2, req2)
+		defer app2.ReleaseContext(ctx2)
+		storeRequestContext(req2, ctx2)
+		defer deleteRequestContext(req2)
+		rm2.ServeHTTP(rec2, req2)
+		if rec2.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 from dynamic 405 error, got %d", rec2.Code)
+		}
+	})
+
 	t.Run("track method pattern caches exact and dynamic methods", func(t *testing.T) {
 		app := New(WithBanner(false))
 		app.trackMethodPattern(http.MethodGet, "/exact", false, directPattern{})

@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/nilshah80/aarv"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -41,11 +43,8 @@ func TestNewUsesDefaultLimit(t *testing.T) {
 
 func TestNewWithResponseAndWriterHelpers(t *testing.T) {
 	base := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/", nil)
 	lw := &limitResponseWriter{
 		ResponseWriter: base,
-		request:        req,
-		maxBytes:       16,
 	}
 
 	lw.WriteHeader(http.StatusCreated)
@@ -93,5 +92,45 @@ func TestSendPayloadTooLarge(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Request body too large") {
 		t.Fatalf("unexpected body %q", rec.Body.String())
+	}
+}
+
+func TestNewNativeMiddlewarePath(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(16))
+	app.Post("/upload", func(c *aarv.Context) error {
+		_, err := io.ReadAll(c.Request().Body)
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return c.JSON(http.StatusRequestEntityTooLarge, map[string]string{"error": "too large"})
+		}
+		return c.NoContent(http.StatusNoContent)
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("POST", "/upload", bytes.NewReader([]byte("ok"))))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("POST", "/upload", bytes.NewReader(bytes.Repeat([]byte("x"), 32))))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", rec.Code)
+	}
+}
+
+func TestNewWithResponseNativeMiddlewarePath(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(NewWithResponse(16))
+	app.Post("/upload", func(c *aarv.Context) error {
+		_, _ = io.ReadAll(c.Request().Body)
+		return c.Text(http.StatusOK, "done")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("POST", "/upload", bytes.NewReader([]byte("ok"))))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 }

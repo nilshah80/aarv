@@ -421,6 +421,420 @@ func TestDumpLogger_AllowsVisibleSensitiveDataWhenRedactionDisabled(t *testing.T
 	}
 }
 
+func TestDumpLogger_RedactBodyOnly(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(old)
+	})
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		LogRequestHeaders:  true,
+		LogResponseHeaders: true,
+		LogQueryParams:     true,
+		LogRequestBody:     true,
+		LogResponseBody:    true,
+		RedactSensitive:    true,
+		SensitiveHeaders:   []string{"Authorization", "Set-Cookie"},
+		SensitiveFields:    []string{"token"},
+		RedactSurfaces: []RedactionSurface{
+			RedactRequestBody,
+			RedactResponseBody,
+		},
+		MaxBodySize: 128,
+	}))
+
+	app.Post("/test", func(c *aarv.Context) error {
+		c.Response().Header().Set("Set-Cookie", "session=value")
+		return c.JSON(200, map[string]string{"token": "server-secret"})
+	})
+
+	req := httptest.NewRequest("POST", "/test?token=query-visible", bytes.NewReader([]byte(`{"token":"body-secret"}`)))
+	req.Header.Set("Authorization", "Bearer visible")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, "body-secret") || strings.Contains(logOutput, "server-secret") {
+		t.Fatalf("expected body surfaces to be redacted, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "Bearer visible") {
+		t.Fatalf("expected request header to remain visible, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "session=value") {
+		t.Fatalf("expected response header to remain visible, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "query-visible") {
+		t.Fatalf("expected query param to remain visible, got: %s", logOutput)
+	}
+}
+
+func TestDumpLogger_NativeSkipPaths(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{SkipPaths: []string{"/health"}}))
+	app.Get("/health", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+	if strings.Contains(logBuf.String(), "http_dump") {
+		t.Fatal("expected skipped path to not be logged")
+	}
+}
+
+func TestDumpLogger_NativeDisabledFields(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		LogUserAgent:       false,
+		LogClientIP:        false,
+		LogRequestHeaders:  false,
+		LogResponseHeaders: false,
+		LogQueryParams:     false,
+		LogContentInfo:     false,
+		LogRequestBody:     false,
+		LogResponseBody:    false,
+		LogLatencyMS:       false,
+		RedactSensitive:    false,
+		MaxBodySize:        64,
+	}))
+	app.Get("/test", func(c *aarv.Context) error {
+		return c.Text(200, "minimal")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/test", nil))
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "http_dump") {
+		t.Fatal("expected log output")
+	}
+	if strings.Contains(logOutput, "user_agent") {
+		t.Fatal("did not expect user_agent when disabled")
+	}
+}
+
+func TestDumpLogger_NativeFullRedaction(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		LogRequestHeaders:  true,
+		LogResponseHeaders: true,
+		LogRequestBody:     true,
+		LogResponseBody:    true,
+		LogQueryParams:     true,
+		RedactSensitive:    true,
+		SensitiveHeaders:   []string{"Authorization", "Set-Cookie"},
+		SensitiveFields:    []string{"token"},
+		MaxBodySize:        128,
+	}))
+	app.Post("/test", func(c *aarv.Context) error {
+		c.Response().Header().Set("Set-Cookie", "session=secret")
+		return c.JSON(200, map[string]string{"token": "server-secret"})
+	})
+
+	body := []byte(`{"token":"body-secret"}`)
+	req := httptest.NewRequest("POST", "/test?token=query-secret", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer sensitive")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, "sensitive") || strings.Contains(logOutput, "body-secret") || strings.Contains(logOutput, "query-secret") {
+		t.Fatalf("expected full redaction, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "[REDACTED]") {
+		t.Fatal("expected redaction marker")
+	}
+}
+
+func TestDumpLogger_NativeTruncation(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		LogRequestBody:  true,
+		LogResponseBody: true,
+		RedactSensitive: false,
+		MaxBodySize:     5,
+	}))
+	app.Post("/test", func(c *aarv.Context) error {
+		return c.Text(200, "long-response-body")
+	})
+
+	body := []byte("long-request-body")
+	req := httptest.NewRequest("POST", "/test", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "[truncated]") {
+		t.Fatalf("expected truncated marker, got %s", logOutput)
+	}
+}
+
+func TestDumpLogger_StdlibSkipPathsAndRedaction(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	// Stdlib skip path
+	middleware := New(Config{
+		SkipPaths:          []string{"/health"},
+		LogRequestHeaders:  true,
+		LogResponseHeaders: true,
+		LogQueryParams:     true,
+		LogRequestBody:     true,
+		LogResponseBody:    true,
+		RedactSensitive:    true,
+		SensitiveHeaders:   []string{"Authorization", "Set-Cookie"},
+		SensitiveFields:    []string{"token"},
+		MaxBodySize:        5,
+	})
+
+	// Test skip path through stdlib handler
+	rec := httptest.NewRecorder()
+	middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+	if strings.Contains(logBuf.String(), "http_dump") {
+		t.Fatal("expected skip path to suppress logging")
+	}
+
+	// Test request header redaction, query param redaction, body truncation through stdlib handler
+	logBuf.Reset()
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Set-Cookie", "session=secret")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("long-response-body"))
+	}))
+
+	body := []byte(`{"token":"body-secret-value"}`)
+	req := httptest.NewRequest("POST", "/test?token=query-secret&visible=yes", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer sensitive")
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "http_dump") {
+		t.Fatal("expected log output")
+	}
+	// Request header redaction
+	if strings.Contains(logOutput, "Bearer sensitive") {
+		t.Fatal("expected Authorization header to be redacted")
+	}
+	// Response header redaction
+	if strings.Contains(logOutput, "session=secret") {
+		t.Fatal("expected Set-Cookie header to be redacted")
+	}
+	// Query param redaction
+	if strings.Contains(logOutput, "query-secret") {
+		t.Fatal("expected query param to be redacted")
+	}
+	if !strings.Contains(logOutput, "yes") {
+		t.Fatal("expected visible query param")
+	}
+	// Body truncation
+	if !strings.Contains(logOutput, "[truncated]") {
+		t.Fatal("expected body truncation marker")
+	}
+}
+
+func TestDumpLogger_StdlibResponseBodyAndQueryLogging(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	middleware := New(Config{
+		LogRequestBody:     true,
+		LogResponseBody:    true,
+		LogQueryParams:     true,
+		LogRequestHeaders:  true,
+		LogResponseHeaders: true,
+		RedactSensitive:    false,
+		MaxBodySize:        1024,
+	})
+
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("response-body-content"))
+	}))
+
+	req := httptest.NewRequest("GET", "/test?foo=bar", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "response-body-content") {
+		t.Fatal("expected response body in log")
+	}
+	if !strings.Contains(logOutput, "foo") {
+		t.Fatal("expected query param in log")
+	}
+}
+
+func TestDumpLogger_StdlibBodyCloseFailureWithAarvContext(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+	old := slog.Default()
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	// Force stdlib path by wrapping with a non-native middleware, but
+	// ensure aarv context is available on the request.
+	stdlibWrapper := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	app := aarv.New(aarv.WithBanner(false), aarv.WithLogger(logger))
+	app.Use(stdlibWrapper)
+	app.Use(New())
+	app.Post("/test", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	body := []byte(`{"name":"alice"}`)
+	req := httptest.NewRequest("POST", "/test", nil)
+	req.Body = failingCloseReadCloser{Reader: bytes.NewReader(body)}
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(body))
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "verboselog request body close failed") {
+		t.Fatalf("expected close warning via aarv context logger, got: %s", logOutput)
+	}
+}
+
+func TestDumpLogger_StdlibRequestIDFromContext(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	// Use aarv app to get aarv context, but use stdlib handler chain
+	// The body close failure path with aarv context is already tested
+	// Here we test the aarv context requestID in stdlib handler
+	app := aarv.New(aarv.WithBanner(false))
+	// Use stdlib path by wrapping with a non-native middleware
+	stdlibWrapper := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r)
+		})
+	}
+	app.Use(stdlibWrapper)
+	app.Use(New())
+	app.Get("/test", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/test", nil))
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "request_id") {
+		t.Fatal("expected request_id in stdlib path log")
+	}
+}
+
+func TestDumpLogger_NativeErrorPropagation(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	errMiddleware := aarv.WrapMiddleware(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			return errors.New("middleware error")
+		}
+	})
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New())
+	app.Use(errMiddleware)
+	app.Get("/err", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/err", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+}
+
+func TestDumpLogger_RedactHeadersOnly(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(old)
+	})
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		LogRequestHeaders:  true,
+		LogResponseHeaders: true,
+		LogRequestBody:     true,
+		LogResponseBody:    true,
+		RedactSensitive:    true,
+		SensitiveHeaders:   []string{"Authorization", "Set-Cookie"},
+		SensitiveFields:    []string{"token"},
+		RedactSurfaces: []RedactionSurface{
+			RedactRequestHeaders,
+			RedactResponseHeaders,
+		},
+		MaxBodySize: 128,
+	}))
+
+	app.Post("/test", func(c *aarv.Context) error {
+		c.Response().Header().Set("Set-Cookie", "session=secret")
+		return c.JSON(200, map[string]string{"token": "body-visible"})
+	})
+
+	req := httptest.NewRequest("POST", "/test", bytes.NewReader([]byte(`{"token":"request-visible"}`)))
+	req.Header.Set("Authorization", "Bearer secret-header")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, "Bearer secret-header") || strings.Contains(logOutput, "session=secret") {
+		t.Fatalf("expected header surfaces to be redacted, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "request-visible") || !strings.Contains(logOutput, "body-visible") {
+		t.Fatalf("expected bodies to remain visible, got: %s", logOutput)
+	}
+}
+
 func BenchmarkDumpLogger(b *testing.B) {
 	// Discard logs during benchmark
 	slog.SetDefault(slog.New(slog.NewJSONHandler(bytes.NewBuffer(nil), nil)))

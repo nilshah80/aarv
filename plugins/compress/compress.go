@@ -376,7 +376,7 @@ func New(config ...Config) aarv.Middleware {
 		return false
 	}
 
-	return func(next http.Handler) http.Handler {
+	m := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			acceptEncoding := r.Header.Get("Accept-Encoding")
 
@@ -417,4 +417,42 @@ func New(config ...Config) aarv.Middleware {
 			}
 		})
 	}
+
+	native := func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			acceptEncoding := c.Header("Accept-Encoding")
+			acceptsGzip := strings.Contains(acceptEncoding, "gzip")
+			acceptsDeflate := strings.Contains(acceptEncoding, "deflate")
+
+			if !acceptsGzip && !acceptsDeflate {
+				return next(c)
+			}
+
+			orig := c.Response()
+			if orig.Header().Get("Content-Encoding") != "" {
+				return next(c)
+			}
+
+			useGzip := acceptsGzip && (cfg.PreferGzip || !acceptsDeflate)
+			if useGzip {
+				gz := gzipPool.Get().(gzipCompressor)
+				gz.Reset(orig)
+				grw := acquireGzipResponseWriter(orig, gz, gzipPool, cfg.MinSize, isExcluded)
+				defer grw.finish()
+				c.SetResponse(grw)
+				defer c.SetResponse(orig)
+				return next(c)
+			}
+
+			fw := deflatePool.Get().(deflateCompressor)
+			fw.Reset(orig)
+			drw := acquireDeflateResponseWriter(orig, fw, deflatePool, cfg.MinSize, isExcluded)
+			defer drw.finish()
+			c.SetResponse(drw)
+			defer c.SetResponse(orig)
+			return next(c)
+		}
+	}
+
+	return aarv.RegisterNativeMiddleware(m, native)
 }

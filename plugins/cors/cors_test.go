@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/nilshah80/aarv"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -133,5 +135,92 @@ func TestNewAllowsWildcardAndDynamicOriginFunction(t *testing.T) {
 	dynamic.ServeHTTP(rec, req)
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://dynamic.example" {
 		t.Fatalf("expected dynamic origin echo, got %q", got)
+	}
+}
+
+func TestNewNativeMiddlewarePathFull(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		AllowOrigins:     []string{"https://app.example"},
+		ExposeHeaders:    []string{"X-Trace-ID"},
+		AllowCredentials: true,
+		MaxAge:           60,
+	}))
+	app.Get("/api", func(c *aarv.Context) error {
+		return c.Text(http.StatusOK, "ok")
+	})
+
+	// No origin — pass through
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/api", nil))
+	if rec.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatal("expected no CORS headers without origin")
+	}
+
+	// Blocked origin
+	req := httptest.NewRequest("GET", "/api", nil)
+	req.Header.Set("Origin", "https://blocked.example")
+	rec = httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatal("expected no CORS headers for blocked origin")
+	}
+
+	// Allowed origin — normal GET
+	req = httptest.NewRequest("GET", "/api", nil)
+	req.Header.Set("Origin", "https://app.example")
+	rec = httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example" {
+		t.Fatalf("expected echoed origin, got %q", got)
+	}
+	if rec.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Fatal("expected credentials header")
+	}
+	if rec.Header().Get("Access-Control-Expose-Headers") != "X-Trace-ID" {
+		t.Fatal("expected expose headers")
+	}
+	if rec.Header().Get("Vary") != "Origin" {
+		t.Fatal("expected Vary Origin")
+	}
+
+	// Preflight OPTIONS — need an OPTIONS route for native chain
+	app2 := aarv.New(aarv.WithBanner(false))
+	app2.Use(New(Config{
+		AllowOrigins:     []string{"https://app.example"},
+		AllowCredentials: true,
+		MaxAge:           60,
+	}))
+	app2.Options("/api", func(c *aarv.Context) error {
+		return c.NoContent(http.StatusOK)
+	})
+	req = httptest.NewRequest("OPTIONS", "/api", nil)
+	req.Header.Set("Origin", "https://app.example")
+	rec = httptest.NewRecorder()
+	app2.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+	if rec.Header().Get("Access-Control-Allow-Methods") == "" {
+		t.Fatal("expected allow methods header")
+	}
+	if rec.Header().Get("Access-Control-Max-Age") != "60" {
+		t.Fatalf("expected max-age 60, got %q", rec.Header().Get("Access-Control-Max-Age"))
+	}
+}
+
+func TestNewNativeWildcardOrigin(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New()) // wildcard default
+	app.Get("/api", func(c *aarv.Context) error {
+		return c.Text(http.StatusOK, "ok")
+	})
+
+	req := httptest.NewRequest("GET", "/api", nil)
+	req.Header.Set("Origin", "https://any.example")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("expected wildcard origin, got %q", got)
 	}
 }

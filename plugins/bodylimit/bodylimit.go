@@ -33,7 +33,14 @@ func New(maxBytes int64) aarv.Middleware {
 		maxBytes = DefaultConfig().MaxBytes
 	}
 
-	return func(next http.Handler) http.Handler {
+	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			c.SetBody(http.MaxBytesReader(c.Response(), c.BodyReader(), maxBytes))
+			return next(c)
+		}
+	})
+
+	m := aarv.Middleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Wrap the body with MaxBytesReader, which returns an error if
 			// the body exceeds the limit.
@@ -51,7 +58,8 @@ func New(maxBytes int64) aarv.Middleware {
 			// is to let the MaxBytesReader do its job and let downstream
 			// handlers deal with the error naturally.
 		})
-	}
+	})
+	return aarv.RegisterNativeMiddleware(m, native)
 }
 
 // NewWithResponse creates a body size limit middleware that intercepts the error
@@ -61,27 +69,39 @@ func NewWithResponse(maxBytes int64) aarv.Middleware {
 		maxBytes = DefaultConfig().MaxBytes
 	}
 
-	return func(next http.Handler) http.Handler {
+	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			c.SetBody(http.MaxBytesReader(c.Response(), c.BodyReader(), maxBytes))
+
+			rw := &limitResponseWriter{
+				ResponseWriter: c.Response(),
+			}
+
+			orig := c.Response()
+			c.SetResponse(rw)
+			defer c.SetResponse(orig)
+			return next(c)
+		}
+	})
+
+	m := aarv.Middleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 
 			rw := &limitResponseWriter{
 				ResponseWriter: w,
-				request:        r,
-				maxBytes:       maxBytes,
 			}
 
 			next.ServeHTTP(rw, r)
 		})
-	}
+	})
+	return aarv.RegisterNativeMiddleware(m, native)
 }
 
 // limitResponseWriter intercepts writes to detect if a MaxBytesError was
 // triggered and convert it into a proper 413 response.
 type limitResponseWriter struct {
 	http.ResponseWriter
-	request  *http.Request
-	maxBytes int64
 }
 
 func (lw *limitResponseWriter) WriteHeader(code int) {

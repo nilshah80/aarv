@@ -117,11 +117,40 @@ func (c *Context) Request() *http.Request {
 	return c.req
 }
 
+// RawRequest returns the underlying *http.Request without materializing
+// path params onto the stdlib request object. Use this in middleware that
+// only needs the request for passing to next.ServeHTTP after modifying
+// the context (e.g., setting a deadline via [Context.SetContext] or adding
+// a value via [Context.SetContextValue]).
+//
+// Do not use RawRequest when downstream code needs path parameters
+// accessible via r.PathValue — use [Context.Request] instead, which
+// materializes them first.
+func (c *Context) RawRequest() *http.Request { return c.req }
+
 // Response returns the underlying http.ResponseWriter.
 func (c *Context) Response() http.ResponseWriter { return c.res }
 
 // SetResponse replaces the underlying response writer.
 func (c *Context) SetResponse(w http.ResponseWriter) { c.res = w }
+
+// BodyReader returns the underlying request body reader without materializing
+// path params onto the stdlib request object.
+func (c *Context) BodyReader() io.ReadCloser { return c.req.Body }
+
+// SetBody replaces the underlying request body reader without materializing
+// path params onto the stdlib request object.
+func (c *Context) SetBody(body io.ReadCloser) {
+	c.req.Body = body
+	c.bodyRead = false
+	if c.bodyCache != nil {
+		if cap(c.bodyCache) > maxReusableBodyCache {
+			c.bodyCache = nil
+		} else {
+			c.bodyCache = c.bodyCache[:0]
+		}
+	}
+}
 
 // Context returns the request's context.Context.
 func (c *Context) Context() context.Context { return c.req.Context() }

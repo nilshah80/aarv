@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/nilshah80/aarv"
 )
 
 type fakeCompressor struct {
@@ -284,4 +286,103 @@ func TestWriterBranchesForErrorsAndExcludedTypes(t *testing.T) {
 	if rec.Header().Get("Content-Encoding") != "" || rec.Body.String() != "pdf" {
 		t.Fatalf("expected exact excluded type to skip compression, headers=%v body=%q", rec.Header(), rec.Body.String())
 	}
+}
+
+func TestNewNativeMiddlewarePath(t *testing.T) {
+	body := strings.Repeat("n", 1500)
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{MinSize: 1}))
+	app.Get("/test", func(c *aarv.Context) error {
+		c.SetHeader("Content-Type", "text/plain; charset=utf-8")
+		return c.Text(http.StatusOK, body)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("expected gzip content-encoding, got %q", rec.Header().Get("Content-Encoding"))
+	}
+
+	gr, err := gzip.NewReader(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("gzip reader failed: %v", err)
+	}
+	defer func() { _ = gr.Close() }()
+	decoded, err := io.ReadAll(gr)
+	if err != nil {
+		t.Fatalf("gzip decode failed: %v", err)
+	}
+	if string(decoded) != body {
+		t.Fatalf("unexpected decoded body length=%d", len(decoded))
+	}
+}
+
+func TestNewNativeDeflateAndSkipPaths(t *testing.T) {
+	body := strings.Repeat("d", 1500)
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{MinSize: 1, PreferGzip: false}))
+	app.Get("/test", func(c *aarv.Context) error {
+		return c.Text(http.StatusOK, body)
+	})
+
+	// Deflate path
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Accept-Encoding", "deflate")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Header().Get("Content-Encoding") != "deflate" {
+		t.Fatalf("expected deflate encoding, got %q", rec.Header().Get("Content-Encoding"))
+	}
+
+	// No accept-encoding — skip compression
+	req = httptest.NewRequest(http.MethodGet, "/test", nil)
+	rec = httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("expected no encoding, got %q", rec.Header().Get("Content-Encoding"))
+	}
+}
+
+func TestNewNativeSkipsAlreadyEncoded(t *testing.T) {
+	// Use a native middleware that sets Content-Encoding before compress
+	preEncode := aarv.WrapMiddleware(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			c.Response().Header().Set("Content-Encoding", "br")
+			return next(c)
+		}
+	})
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(preEncode)
+	app.Use(New(Config{MinSize: 1}))
+	app.Get("/test", func(c *aarv.Context) error {
+		return c.Text(http.StatusOK, "already-encoded")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Content-Encoding"); got != "br" {
+		t.Fatalf("expected existing encoding preserved, got %q", got)
+	}
+}
+
+func TestReleaseLargeBuffer(t *testing.T) {
+	grw := &gzipResponseWriter{
+		ResponseWriter: httptest.NewRecorder(),
+		buf:            make([]byte, 0, 128<<10),
+	}
+	releaseGzipResponseWriter(grw)
+
+	drw := &deflateResponseWriter{
+		ResponseWriter: httptest.NewRecorder(),
+		buf:            make([]byte, 0, 128<<10),
+	}
+	releaseDeflateResponseWriter(drw)
 }

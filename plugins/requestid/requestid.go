@@ -165,7 +165,7 @@ func New(config ...Config) aarv.Middleware {
 			if c, ok := aarv.FromRequest(r); ok {
 				c.Set("requestId", id)
 				c.SetContextValue(contextKey{}, id)
-				r = c.Request()
+				r = c.RawRequest()
 			} else {
 				ctx := context.WithValue(r.Context(), contextKey{}, id)
 				r = r.WithContext(ctx)

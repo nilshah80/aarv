@@ -110,51 +110,51 @@ func New(config ...Config) aarv.Middleware {
 		}
 	}
 
-	return func(next http.Handler) http.Handler {
+	applyHeaders := func(h http.Header) {
+		if cfg.XSSProtection != "" {
+			h.Set("X-XSS-Protection", cfg.XSSProtection)
+		}
+		if cfg.ContentTypeNosniff != "" {
+			h.Set("X-Content-Type-Options", cfg.ContentTypeNosniff)
+		}
+		if cfg.XFrameOptions != "" {
+			h.Set("X-Frame-Options", cfg.XFrameOptions)
+		}
+		if hstsValue != "" {
+			h.Set("Strict-Transport-Security", hstsValue)
+		}
+		if cfg.ContentSecurityPolicy != "" {
+			h.Set("Content-Security-Policy", cfg.ContentSecurityPolicy)
+		}
+		if cfg.ReferrerPolicy != "" {
+			h.Set("Referrer-Policy", cfg.ReferrerPolicy)
+		}
+		if cfg.PermissionsPolicy != "" {
+			h.Set("Permissions-Policy", cfg.PermissionsPolicy)
+		}
+		if cfg.CrossOriginOpenerPolicy != "" {
+			h.Set("Cross-Origin-Opener-Policy", cfg.CrossOriginOpenerPolicy)
+		}
+		if cfg.CrossOriginEmbedderPolicy != "" {
+			h.Set("Cross-Origin-Embedder-Policy", cfg.CrossOriginEmbedderPolicy)
+		}
+		if cfg.CrossOriginResourcePolicy != "" {
+			h.Set("Cross-Origin-Resource-Policy", cfg.CrossOriginResourcePolicy)
+		}
+	}
+
+	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			applyHeaders(c.Response().Header())
+			return next(c)
+		}
+	})
+
+	m := aarv.Middleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			h := w.Header()
-
-			if cfg.XSSProtection != "" {
-				h.Set("X-XSS-Protection", cfg.XSSProtection)
-			}
-
-			if cfg.ContentTypeNosniff != "" {
-				h.Set("X-Content-Type-Options", cfg.ContentTypeNosniff)
-			}
-
-			if cfg.XFrameOptions != "" {
-				h.Set("X-Frame-Options", cfg.XFrameOptions)
-			}
-
-			if hstsValue != "" {
-				h.Set("Strict-Transport-Security", hstsValue)
-			}
-
-			if cfg.ContentSecurityPolicy != "" {
-				h.Set("Content-Security-Policy", cfg.ContentSecurityPolicy)
-			}
-
-			if cfg.ReferrerPolicy != "" {
-				h.Set("Referrer-Policy", cfg.ReferrerPolicy)
-			}
-
-			if cfg.PermissionsPolicy != "" {
-				h.Set("Permissions-Policy", cfg.PermissionsPolicy)
-			}
-
-			if cfg.CrossOriginOpenerPolicy != "" {
-				h.Set("Cross-Origin-Opener-Policy", cfg.CrossOriginOpenerPolicy)
-			}
-
-			if cfg.CrossOriginEmbedderPolicy != "" {
-				h.Set("Cross-Origin-Embedder-Policy", cfg.CrossOriginEmbedderPolicy)
-			}
-
-			if cfg.CrossOriginResourcePolicy != "" {
-				h.Set("Cross-Origin-Resource-Policy", cfg.CrossOriginResourcePolicy)
-			}
-
+			applyHeaders(w.Header())
 			next.ServeHTTP(w, r)
 		})
-	}
+	})
+	return aarv.RegisterNativeMiddleware(m, native)
 }

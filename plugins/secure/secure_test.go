@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/nilshah80/aarv"
 )
 
 func TestDefaultAndRelaxedConfig(t *testing.T) {
@@ -98,5 +100,32 @@ func TestNewAddsPreloadWhenAllowed(t *testing.T) {
 	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
 	if got := rec.Header().Get("Strict-Transport-Security"); got != "max-age=200; includeSubDomains; preload" {
 		t.Fatalf("unexpected preload hsts value %q", got)
+	}
+}
+
+func TestNewNativeMiddlewarePath(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New())
+	app.Get("/api", func(c *aarv.Context) error {
+		return c.Text(http.StatusOK, "ok")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/api", nil))
+
+	if rec.Header().Get("X-XSS-Protection") != "1; mode=block" {
+		t.Fatal("expected xss protection header")
+	}
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("expected nosniff header")
+	}
+	if rec.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatal("expected frame options")
+	}
+	if !strings.Contains(rec.Header().Get("Strict-Transport-Security"), "includeSubDomains") {
+		t.Fatal("expected HSTS header")
+	}
+	if rec.Header().Get("Content-Security-Policy") == "" {
+		t.Fatal("expected CSP header")
 	}
 }

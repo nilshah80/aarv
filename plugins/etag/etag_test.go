@@ -1,10 +1,13 @@
 package etag
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/nilshah80/aarv"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -122,4 +125,127 @@ func TestNewSetsAndMatchesETag(t *testing.T) {
 	if got := rec.Header().Get("ETag"); !strings.HasPrefix(got, `W/"`) {
 		t.Fatalf("expected weak etag, got %q", got)
 	}
+}
+
+func TestNewNativeMiddlewarePath(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New())
+	app.Get("/test", func(c *aarv.Context) error {
+		return c.Text(http.StatusOK, "hello-native")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/test", nil))
+	etag := rec.Header().Get("ETag")
+	if etag == "" || rec.Body.String() != "hello-native" {
+		t.Fatalf("expected native etag response, headers=%v body=%q", rec.Header(), rec.Body.String())
+	}
+}
+
+func TestNewNativeNonGetPassThrough(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New())
+	app.Post("/test", func(c *aarv.Context) error {
+		return c.Text(http.StatusAccepted, "posted")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/test", nil))
+	if rec.Header().Get("ETag") != "" {
+		t.Fatal("expected no etag for POST")
+	}
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
+	}
+}
+
+func TestNewNativeNon2xxAndEmptyBody(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New())
+	app.Get("/notfound", func(c *aarv.Context) error {
+		return c.Text(http.StatusNotFound, "missing")
+	})
+	app.Get("/nocontent", func(c *aarv.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/notfound", nil))
+	if rec.Header().Get("ETag") != "" {
+		t.Fatal("expected no etag for 404")
+	}
+	if rec.Code != http.StatusNotFound || rec.Body.String() != "missing" {
+		t.Fatalf("expected 404 body, got status=%d body=%q", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nocontent", nil))
+	if rec.Header().Get("ETag") != "" {
+		t.Fatal("expected no etag for empty body")
+	}
+}
+
+func TestNewNativeWeakETag(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{Weak: true}))
+	app.Get("/test", func(c *aarv.Context) error {
+		return c.Text(http.StatusOK, "weak-body")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/test", nil))
+	etag := rec.Header().Get("ETag")
+	if !strings.HasPrefix(etag, `W/"`) {
+		t.Fatalf("expected weak etag, got %q", etag)
+	}
+}
+
+func TestNewNativeIfNoneMatch(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New())
+	app.Get("/test", func(c *aarv.Context) error {
+		return c.Text(http.StatusOK, "cached-body")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/test", nil))
+	etag := rec.Header().Get("ETag")
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("If-None-Match", etag)
+	rec = httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("expected 304, got %d", rec.Code)
+	}
+}
+
+func TestNewNativeErrorPropagation(t *testing.T) {
+	errMiddleware := aarv.WrapMiddleware(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			return errors.New("middleware error")
+		}
+	})
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New())
+	app.Use(errMiddleware)
+	app.Get("/err", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/err", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+}
+
+func TestReleaseLargeCaptureBuffer(t *testing.T) {
+	cw := &captureWriter{
+		ResponseWriter: httptest.NewRecorder(),
+	}
+	cw.body.Grow(128 << 10)
+	cw.body.Write(make([]byte, 128<<10))
+	releaseCaptureWriter(cw)
 }

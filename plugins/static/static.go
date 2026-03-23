@@ -78,7 +78,7 @@ func New(config Config) aarv.Middleware {
 
 	prefix := config.Prefix
 
-	return func(next http.Handler) http.Handler {
+	m := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Only serve GET and HEAD requests
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -150,6 +150,64 @@ func New(config Config) aarv.Middleware {
 			fileServer.ServeHTTP(w, r)
 		})
 	}
+
+	native := func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			req := c.Request()
+
+			if req.Method != http.MethodGet && req.Method != http.MethodHead {
+				return next(c)
+			}
+
+			upath := req.URL.Path
+
+			if prefix != "" {
+				if !strings.HasPrefix(upath, prefix) {
+					return next(c)
+				}
+				upath = strings.TrimPrefix(upath, prefix)
+				if upath == "" || upath[0] != '/' {
+					upath = "/" + upath
+				}
+			}
+
+			filePath := filepath.Join(root, filepath.FromSlash(upath))
+			info, err := os.Stat(filePath)
+			if err != nil {
+				if config.SPA {
+					serveIndex(c.Response(), req, root, config.Index, cacheControl)
+					return nil
+				}
+				return next(c)
+			}
+
+			if info.IsDir() {
+				indexPath := filepath.Join(filePath, config.Index)
+				if _, err := os.Stat(indexPath); err != nil {
+					if config.Browse {
+						if cacheControl != "" {
+							c.SetHeader("Cache-Control", cacheControl)
+						}
+						fileServer.ServeHTTP(c.Response(), req)
+						return nil
+					}
+					if config.SPA {
+						serveIndex(c.Response(), req, root, config.Index, cacheControl)
+						return nil
+					}
+					return next(c)
+				}
+			}
+
+			if cacheControl != "" {
+				c.SetHeader("Cache-Control", cacheControl)
+			}
+			fileServer.ServeHTTP(c.Response(), req)
+			return nil
+		}
+	}
+
+	return aarv.RegisterNativeMiddleware(m, native)
 }
 
 // serveIndex serves the root index file for SPA fallback.

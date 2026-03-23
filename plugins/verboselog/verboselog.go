@@ -99,7 +99,27 @@ type Config struct {
 	// Set to false to disable all redaction for maximum performance.
 	// Default: true.
 	RedactSensitive bool
+
+	// RedactSurfaces narrows where sensitive data redaction is applied.
+	// When empty and RedactSensitive is true, redaction applies to all supported
+	// surfaces: request headers, response headers, query params, request body,
+	// and response body.
+	//
+	// Use this to selectively redact only specific surfaces, for example:
+	// []RedactionSurface{RedactRequestBody, RedactResponseBody}.
+	RedactSurfaces []RedactionSurface
 }
+
+// RedactionSurface identifies a log surface where sensitive data can be redacted.
+type RedactionSurface string
+
+const (
+	RedactRequestHeaders  RedactionSurface = "request_headers"
+	RedactResponseHeaders RedactionSurface = "response_headers"
+	RedactQueryParams     RedactionSurface = "query_params"
+	RedactRequestBody     RedactionSurface = "request_body"
+	RedactResponseBody    RedactionSurface = "response_body"
+)
 
 // DefaultConfig returns the default dump logger configuration.
 func DefaultConfig() Config {
@@ -259,8 +279,22 @@ func New(config ...Config) aarv.Middleware {
 		sensitiveFields[strings.ToLower(field)] = struct{}{}
 	}
 	redactionPatterns := buildRedactionPatterns(cfg.SensitiveFields)
+	redactSurfaces := make(map[RedactionSurface]struct{}, len(cfg.RedactSurfaces))
+	for _, surface := range cfg.RedactSurfaces {
+		redactSurfaces[surface] = struct{}{}
+	}
+	shouldRedact := func(surface RedactionSurface) bool {
+		if !cfg.RedactSensitive {
+			return false
+		}
+		if len(redactSurfaces) == 0 {
+			return true
+		}
+		_, ok := redactSurfaces[surface]
+		return ok
+	}
 
-	return func(next http.Handler) http.Handler {
+	m := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
 
@@ -298,7 +332,7 @@ func New(config ...Config) aarv.Middleware {
 			if cfg.LogRequestHeaders {
 				reqHeaders = make(map[string]string, len(r.Header))
 				for k, v := range r.Header {
-					if cfg.RedactSensitive {
+					if shouldRedact(RedactRequestHeaders) {
 						if _, sensitive := sensitiveHeaders[strings.ToLower(k)]; sensitive {
 							reqHeaders[k] = "[REDACTED]"
 							continue
@@ -313,7 +347,7 @@ func New(config ...Config) aarv.Middleware {
 			if cfg.LogQueryParams {
 				queryParams = make(map[string]string, len(r.URL.Query()))
 				for k, v := range r.URL.Query() {
-					if cfg.RedactSensitive {
+					if shouldRedact(RedactQueryParams) {
 						if _, sensitive := sensitiveFields[strings.ToLower(k)]; sensitive {
 							queryParams[k] = "[REDACTED]"
 							continue
@@ -343,7 +377,7 @@ func New(config ...Config) aarv.Middleware {
 			if cfg.LogResponseHeaders {
 				respHeaders = make(map[string]string, len(respWriter.Header()))
 				for k, v := range respWriter.Header() {
-					if cfg.RedactSensitive {
+					if shouldRedact(RedactResponseHeaders) {
 						if _, sensitive := sensitiveHeaders[strings.ToLower(k)]; sensitive {
 							respHeaders[k] = "[REDACTED]"
 							continue
@@ -361,7 +395,7 @@ func New(config ...Config) aarv.Middleware {
 				} else {
 					reqBodyStr = string(reqBody)
 				}
-				if cfg.RedactSensitive {
+				if shouldRedact(RedactRequestBody) {
 					reqBodyStr = redactSensitiveBody(reqBodyStr, redactionPatterns)
 				}
 			}
@@ -374,7 +408,7 @@ func New(config ...Config) aarv.Middleware {
 				} else {
 					respBodyStr = respWriter.body.String()
 				}
-				if cfg.RedactSensitive {
+				if shouldRedact(RedactResponseBody) {
 					respBodyStr = redactSensitiveBody(respBodyStr, redactionPatterns)
 				}
 			}
@@ -419,6 +453,166 @@ func New(config ...Config) aarv.Middleware {
 			slog.Log(r.Context(), cfg.Level, "http_dump", attrs...)
 		})
 	}
+
+	native := func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			path := c.Path()
+			method := c.Method()
+
+			if _, ok := skipPaths[path]; ok {
+				return next(c)
+			}
+
+			start := time.Now()
+			requestID := c.RequestID()
+			userAgent := ""
+			if cfg.LogUserAgent {
+				userAgent = c.Header("User-Agent")
+			}
+			clientIPValue := ""
+			if cfg.LogClientIP {
+				clientIPValue = c.RealIP()
+			}
+
+			var req *http.Request
+			if cfg.LogRequestBody || cfg.LogRequestHeaders || cfg.LogContentInfo {
+				req = c.Request()
+			}
+
+			var reqBody []byte
+			if cfg.LogRequestBody && req.Body != nil && req.ContentLength > 0 {
+				reqBody, _ = io.ReadAll(io.LimitReader(req.Body, int64(cfg.MaxBodySize)+1))
+				if closeErr := req.Body.Close(); closeErr != nil {
+					c.Logger().Warn("verboselog request body close failed", "error", closeErr)
+				}
+				req.Body = io.NopCloser(bytes.NewReader(reqBody))
+			}
+
+			var reqHeaders map[string]string
+			if cfg.LogRequestHeaders {
+				reqHeaders = make(map[string]string, len(req.Header))
+				for k, v := range req.Header {
+					if shouldRedact(RedactRequestHeaders) {
+						if _, sensitive := sensitiveHeaders[strings.ToLower(k)]; sensitive {
+							reqHeaders[k] = "[REDACTED]"
+							continue
+						}
+					}
+					reqHeaders[k] = firstOrJoin(v)
+				}
+			}
+
+			var queryParams map[string]string
+			if cfg.LogQueryParams {
+				values := c.QueryParams()
+				queryParams = make(map[string]string, len(values))
+				for k, v := range values {
+					if shouldRedact(RedactQueryParams) {
+						if _, sensitive := sensitiveFields[strings.ToLower(k)]; sensitive {
+							queryParams[k] = "[REDACTED]"
+							continue
+						}
+					}
+					queryParams[k] = firstOrJoin(v)
+				}
+			}
+
+			bodyBuf := acquireBodyBuffer()
+			defer releaseBodyBuffer(bodyBuf)
+
+			orig := c.Response()
+			respWriter := &bodyCapturingWriter{
+				ResponseWriter: orig,
+				body:           bodyBuf,
+				statusCode:     http.StatusOK,
+				maxBodySize:    cfg.MaxBodySize,
+			}
+
+			c.SetResponse(respWriter)
+			defer c.SetResponse(orig)
+			if err := next(c); err != nil {
+				return err
+			}
+
+			latency := time.Since(start)
+
+			var respHeaders map[string]string
+			if cfg.LogResponseHeaders {
+				respHeaders = make(map[string]string, len(respWriter.Header()))
+				for k, v := range respWriter.Header() {
+					if shouldRedact(RedactResponseHeaders) {
+						if _, sensitive := sensitiveHeaders[strings.ToLower(k)]; sensitive {
+							respHeaders[k] = "[REDACTED]"
+							continue
+						}
+					}
+					respHeaders[k] = firstOrJoin(v)
+				}
+			}
+
+			reqBodyStr := ""
+			if cfg.LogRequestBody && len(reqBody) > 0 {
+				if len(reqBody) > cfg.MaxBodySize {
+					reqBodyStr = string(reqBody[:cfg.MaxBodySize]) + "[truncated]"
+				} else {
+					reqBodyStr = string(reqBody)
+				}
+				if shouldRedact(RedactRequestBody) {
+					reqBodyStr = redactSensitiveBody(reqBodyStr, redactionPatterns)
+				}
+			}
+
+			respBodyStr := ""
+			if cfg.LogResponseBody && respWriter.body.Len() > 0 {
+				if respWriter.body.Len() >= cfg.MaxBodySize {
+					respBodyStr = respWriter.body.String() + "[truncated]"
+				} else {
+					respBodyStr = respWriter.body.String()
+				}
+				if shouldRedact(RedactResponseBody) {
+					respBodyStr = redactSensitiveBody(respBodyStr, redactionPatterns)
+				}
+			}
+
+			attrs := make([]any, 0, 32)
+			attrs = append(attrs, "request_id", requestID, "method", method, "path", path)
+			if cfg.LogQueryParams && len(queryParams) > 0 {
+				attrs = append(attrs, "query", queryParams)
+			}
+			if cfg.LogClientIP {
+				attrs = append(attrs, "client_ip", clientIPValue)
+			}
+			if cfg.LogUserAgent {
+				attrs = append(attrs, "user_agent", userAgent)
+			}
+			if cfg.LogContentInfo {
+				attrs = append(attrs, "content_type", req.Header.Get("Content-Type"), "content_length", req.ContentLength)
+			}
+			if cfg.LogRequestHeaders && reqHeaders != nil {
+				attrs = append(attrs, "request_headers", reqHeaders)
+			}
+			if cfg.LogRequestBody && reqBodyStr != "" {
+				attrs = append(attrs, "request_body", reqBodyStr)
+			}
+
+			attrs = append(attrs, "status", respWriter.statusCode, "latency", latency.String())
+			if cfg.LogLatencyMS {
+				attrs = append(attrs, "latency_ms", float64(latency.Microseconds())/1000.0)
+			}
+			if cfg.LogResponseHeaders && respHeaders != nil {
+				attrs = append(attrs, "response_headers", respHeaders)
+			}
+			if cfg.LogResponseBody && respBodyStr != "" {
+				attrs = append(attrs, "response_body", respBodyStr)
+			}
+			attrs = append(attrs, "bytes_out", respWriter.bytesWritten)
+
+			slog.Log(c.Context(), cfg.Level, "http_dump", attrs...)
+			return nil
+		}
+	}
+
+	return aarv.RegisterNativeMiddleware(m, native)
 }
 
 func buildRedactionPatterns(fields []string) []redactionPattern {

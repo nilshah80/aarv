@@ -1,166 +1,131 @@
-// Example: JSON Structured Logging with Full Request/Response Dump
+// Example: structured logging with ready-made verboselog presets.
 //
-// This example demonstrates two logging approaches:
-// 1. Standard logger - logs metadata only (method, path, status, latency)
-// 2. Verbose logger - logs full request/response including headers and body
-//
-// Run: go run main.go
-// Test: curl -X POST http://localhost:8080/users -H "Content-Type: application/json" -d '{"name":"alice"}'
+// This example shows:
+// 1. Standard logger middleware for metadata-only logging
+// 2. Verbose logger presets for debug, production-safe, and minimal/perf usage
+// 3. Built-in middleware/plugins that can use Aarv's native middleware path automatically
 package main
 
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 
 	"github.com/nilshah80/aarv"
-	"github.com/nilshah80/aarv/plugins/verboselog"
 	"github.com/nilshah80/aarv/plugins/logger"
+	"github.com/nilshah80/aarv/plugins/recover"
+	"github.com/nilshah80/aarv/plugins/requestid"
+	"github.com/nilshah80/aarv/plugins/verboselog"
 )
 
+func debugVerboseConfig() verboselog.Config {
+	cfg := verboselog.DefaultConfig()
+	cfg.SkipPaths = []string{"/health"}
+	cfg.MaxBodySize = 64 * 1024
+	return cfg
+}
+
+func productionSafeConfig() verboselog.Config {
+	cfg := verboselog.DefaultConfig()
+	cfg.SkipPaths = []string{"/health"}
+	cfg.LogResponseBody = false
+	cfg.RedactSensitive = true
+	cfg.RedactSurfaces = []verboselog.RedactionSurface{
+		verboselog.RedactRequestHeaders,
+		verboselog.RedactResponseHeaders,
+		verboselog.RedactQueryParams,
+		verboselog.RedactRequestBody,
+	}
+	cfg.SensitiveHeaders = []string{"Authorization", "Cookie", "Set-Cookie", "X-API-Key"}
+	cfg.SensitiveFields = []string{"password", "token", "secret", "api_key"}
+	return cfg
+}
+
+func performanceMinimalConfig() verboselog.Config {
+	cfg := verboselog.MinimalConfig()
+	cfg.SkipPaths = []string{"/health"}
+	cfg.LogLatencyMS = true
+	return cfg
+}
+
 func main() {
-	// Configure slog for JSON output
-	// This affects both logger and verboselog plugins
 	jsonHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
 	slog.SetDefault(slog.New(jsonHandler))
 
-	app := aarv.New()
+	app := aarv.New(aarv.WithBanner(true))
 
-	// Choose your logging strategy:
+	// These built-ins now support Aarv's native middleware fast path automatically
+	// when the whole route stack is native-compatible.
+	app.Use(recover.New(), requestid.New())
 
-	// Option 1: Standard logger (metadata only, low overhead)
-	// Output: {"time":"...","level":"INFO","msg":"request","method":"GET","path":"/users",...}
-	// app.Use(logger.New())
+	app.Get("/health", func(c *aarv.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
 
-	// Option 2: Full verbose logger (captures headers + body, higher overhead)
-	// Output: {"time":"...","level":"INFO","msg":"http_dump","request_headers":{...},"request_body":"...",...}
-	app.Use(verboselog.New(verboselog.Config{
-		LogRequestBody:     true,
-		LogResponseBody:    true,
-		LogRequestHeaders:  true,
-		LogResponseHeaders: true,
-		MaxBodySize:        64 * 1024, // 64KB max
-		SkipPaths:          []string{"/health"},
-		// Sensitive data is auto-redacted
-		SensitiveHeaders: []string{"Authorization", "Cookie", "X-API-Key"},
-		SensitiveFields:  []string{"password", "token", "secret", "api_key"},
-	}))
-
-	// Example: Use standard logger for high-traffic routes
-	// and verbose logger only for specific debug routes
-	app.Group("/debug", func(g *aarv.RouteGroup) {
-		g.Use(verboselog.New())
-		g.Get("/inspect", func(c *aarv.Context) error {
-			return c.JSON(200, map[string]string{"debug": "enabled"})
+	app.Group("/standard", func(g *aarv.RouteGroup) {
+		g.Use(logger.New())
+		g.Get("/users", func(c *aarv.Context) error {
+			return c.JSON(http.StatusOK, []map[string]any{
+				{"id": "1", "name": "Alice"},
+				{"id": "2", "name": "Bob"},
+			})
 		})
 	})
 
-	// Regular routes with standard logger
-	app.Group("/api", func(g *aarv.RouteGroup) {
-		g.Use(logger.New(logger.Config{
-			SkipPaths: []string{"/api/health"},
-		}))
-
-		g.Get("/users", func(c *aarv.Context) error {
-			return c.JSON(200, []map[string]any{
-				{"id": "1", "name": "Alice", "email": "alice@example.com"},
-				{"id": "2", "name": "Bob", "email": "bob@example.com"},
-			})
-		})
-
-		g.Post("/users", func(c *aarv.Context) error {
-			var user struct {
-				Name  string `json:"name"`
-				Email string `json:"email"`
-			}
-			if err := c.BindJSON(&user); err != nil {
-				return c.JSON(400, map[string]string{"error": err.Error()})
-			}
-			return c.JSON(201, map[string]any{
-				"id":    "3",
-				"name":  user.Name,
-				"email": user.Email,
-			})
-		})
-
-		// Login endpoint - password will be redacted in logs
+	app.Group("/debug", func(g *aarv.RouteGroup) {
+		g.Use(verboselog.New(debugVerboseConfig()))
 		g.Post("/login", func(c *aarv.Context) error {
-			var creds struct {
+			var body map[string]any
+			if err := c.BindJSON(&body); err != nil {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+			}
+			return c.JSON(http.StatusOK, map[string]any{
+				"message": "debug preset",
+				"token":   "jwt-token-here",
+				"input":   body,
+			})
+		})
+	})
+
+	app.Group("/production", func(g *aarv.RouteGroup) {
+		g.Use(verboselog.New(productionSafeConfig()))
+		g.Post("/login", func(c *aarv.Context) error {
+			var body struct {
 				Username string `json:"username"`
 				Password string `json:"password"`
 			}
-			if err := c.BindJSON(&creds); err != nil {
-				return c.JSON(400, map[string]string{"error": err.Error()})
+			if err := c.BindJSON(&body); err != nil {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 			}
-			// In logs, password will show as [REDACTED]
-			return c.JSON(200, map[string]string{
+			return c.JSON(http.StatusOK, map[string]any{
+				"message": "production-safe preset",
 				"token":   "jwt-token-here",
-				"message": "logged in",
 			})
 		})
 	})
 
-	// Health check - excluded from logging
-	app.Get("/health", func(c *aarv.Context) error {
-		return c.JSON(200, map[string]string{"status": "ok"})
+	app.Group("/minimal", func(g *aarv.RouteGroup) {
+		g.Use(verboselog.New(performanceMinimalConfig()))
+		g.Get("/users", func(c *aarv.Context) error {
+			return c.JSON(http.StatusOK, []map[string]any{
+				{"id": "1", "name": "Alice"},
+				{"id": "2", "name": "Bob"},
+			})
+		})
 	})
 
-	fmt.Println("Server starting on :8080")
+	fmt.Println("Structured Logging Demo on :8080")
+	fmt.Println("  GET  /standard/users      — metadata-only logger")
+	fmt.Println("  POST /debug/login         — full verbose logging preset")
+	fmt.Println("  POST /production/login    — production-safe redaction preset")
+	fmt.Println("  GET  /minimal/users       — minimal/perf preset")
+	fmt.Println("  GET  /health              — excluded from verbose examples")
 	fmt.Println()
-	fmt.Println("Example requests:")
-	fmt.Println("  curl http://localhost:8080/api/users")
-	fmt.Println("  curl -X POST http://localhost:8080/api/users -H 'Content-Type: application/json' -d '{\"name\":\"charlie\"}'")
-	fmt.Println("  curl -X POST http://localhost:8080/api/login -H 'Content-Type: application/json' -d '{\"username\":\"alice\",\"password\":\"secret123\"}'")
-	fmt.Println("  curl http://localhost:8080/health  # Not logged")
-	fmt.Println()
-	fmt.Println("Watch the JSON logs in stdout...")
+	fmt.Println("The built-in recover/requestid/logger/verboselog middleware can use")
+	fmt.Println("Aarv's native middleware path automatically when the route stack allows it.")
 
 	app.Listen(":8080")
 }
-
-// Example log output (JSON formatted):
-//
-// Standard logger output:
-// {
-//   "time": "2024-06-20T10:30:00Z",
-//   "level": "INFO",
-//   "msg": "request",
-//   "method": "POST",
-//   "path": "/api/users",
-//   "status": 201,
-//   "latency": "1.234ms",
-//   "client_ip": "127.0.0.1",
-//   "user_agent": "curl/8.0.1",
-//   "bytes_out": 45,
-//   "request_id": "01HX..."
-// }
-//
-// Verbose logger output:
-// {
-//   "time": "2024-06-20T10:30:00Z",
-//   "level": "INFO",
-//   "msg": "http_dump",
-//   "request_id": "01HX...",
-//   "method": "POST",
-//   "path": "/api/login",
-//   "query": {},
-//   "client_ip": "127.0.0.1",
-//   "user_agent": "curl/8.0.1",
-//   "content_type": "application/json",
-//   "content_length": 45,
-//   "request_headers": {
-//     "Content-Type": "application/json",
-//     "Authorization": "[REDACTED]"
-//   },
-//   "request_body": "{\"username\":\"alice\",\"password\":\"[REDACTED]\"}",
-//   "status": 200,
-//   "latency": "1.234ms",
-//   "latency_ms": 1.234,
-//   "response_headers": {
-//     "Content-Type": "application/json"
-//   },
-//   "response_body": "{\"token\":\"[REDACTED]\",\"message\":\"logged in\"}",
-//   "bytes_out": 42
-// }

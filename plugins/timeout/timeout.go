@@ -1,8 +1,15 @@
 // Package timeout provides request timeout middleware for the aarv framework.
 //
-// It wraps the request context with a deadline. If the handler does not complete
-// within the configured duration, the middleware returns a 504 Gateway Timeout
-// response.
+// Two middleware variants are provided:
+//
+//   - [New] creates an enforced timeout that runs the handler in a separate
+//     goroutine, blocks late writes, and returns 504 Gateway Timeout when
+//     the deadline is exceeded. This is the heavy, strict option.
+//
+//   - [Context] creates a lightweight deadline-propagation middleware that
+//     sets a timeout on the request context and lets context-aware handlers
+//     return early. No goroutine, no response interception. This variant
+//     supports the native fast chain.
 package timeout
 
 import (
@@ -105,7 +112,7 @@ func New(d time.Duration) aarv.Middleware {
 
 			if c, ok := aarv.FromRequest(r); ok {
 				c.SetContext(ctx)
-				r = c.Request()
+				r = c.RawRequest()
 			} else {
 				r = r.WithContext(ctx)
 			}
@@ -153,4 +160,48 @@ func New(d time.Duration) aarv.Middleware {
 			}
 		})
 	}
+}
+
+// Context creates a lightweight deadline-propagation middleware.
+// It sets a timeout on the request context via context.WithTimeout but does
+// not run the handler in a separate goroutine and does not intercept the
+// response. Context-aware code (database drivers, HTTP clients, etc.) will
+// observe the deadline and return early. Handlers that ignore the context
+// will run to completion regardless of the deadline.
+//
+// This variant supports the native fast chain and is significantly cheaper
+// than [New].
+//
+// If d is <= 0, the default of 30 seconds is used.
+func Context(d time.Duration) aarv.Middleware {
+	if d <= 0 {
+		d = DefaultConfig().Timeout
+	}
+
+	m := aarv.Middleware(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, cancel := context.WithTimeout(r.Context(), d)
+			defer cancel()
+
+			if c, ok := aarv.FromRequest(r); ok {
+				c.SetContext(ctx)
+				r = c.RawRequest()
+			} else {
+				r = r.WithContext(ctx)
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			ctx, cancel := context.WithTimeout(c.Context(), d)
+			defer cancel()
+			c.SetContext(ctx)
+			return next(c)
+		}
+	})
+
+	return aarv.RegisterNativeMiddleware(m, native)
 }

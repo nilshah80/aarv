@@ -138,8 +138,8 @@ func New(config ...Config) aarv.Middleware {
 
 			orig := c.Response()
 			c.SetResponse(rw)
+			defer c.SetResponse(orig)
 			err := next(c)
-			c.SetResponse(orig)
 
 			latency := time.Since(start)
 			baseLogger.LogAttrs(c.Context(), cfg.Level, "request",

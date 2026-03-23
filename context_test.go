@@ -205,6 +205,19 @@ func TestContextHelpers(t *testing.T) {
 			t.Errorf("expected ErrorWithDetail to return an app error")
 		}
 
+		originalBody := c.BodyReader()
+		if originalBody == nil {
+			t.Errorf("expected body reader to be available")
+		}
+		c.SetBody(io.NopCloser(strings.NewReader("replaced")))
+		body, err := io.ReadAll(c.BodyReader())
+		if err != nil {
+			t.Errorf("expected replaced body to be readable: %v", err)
+		}
+		if string(body) != "replaced" {
+			t.Errorf("expected replaced body, got %q", string(body))
+		}
+
 		return c.Redirect(302, "https://example.com")
 	})
 
@@ -766,4 +779,42 @@ func TestContextInternalWrappersAndSetters(t *testing.T) {
 			t.Fatalf("expected added context value, got %#v", got)
 		}
 	})
+}
+
+func TestRawRequestSkipsMaterializePathParams(t *testing.T) {
+	type testKey string
+
+	app := New(WithBanner(false))
+
+	app.Get("/items/{id}", func(c *Context) error {
+		// At this point path params are set but not yet materialized.
+		// SetContext clones the request and resets pathParamsApplied.
+		deadline := context.WithValue(c.Context(), testKey("test"), "val")
+		c.SetContext(deadline)
+
+		// RawRequest should return the cloned request with the new context
+		// but without materializing path params.
+		raw := c.RawRequest()
+		if raw.Context().Value(testKey("test")) != "val" {
+			t.Fatal("RawRequest should carry the updated context")
+		}
+		// Path params should NOT be materialized yet on the raw request.
+		if raw.PathValue("id") != "" {
+			t.Fatal("RawRequest should not materialize path params")
+		}
+
+		// Now call Request() which should materialize them.
+		full := c.Request()
+		if full.PathValue("id") != "99" {
+			t.Fatalf("Request() should materialize path params, got %q", full.PathValue("id"))
+		}
+
+		return c.NoContent(http.StatusNoContent)
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/items/99", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
 }
