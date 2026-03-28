@@ -37,9 +37,14 @@ func DefaultConfig() Config {
 }
 
 // timeoutWriter is a response writer that guards against writes after timeout.
+// It buffers headers in its own map so the handler goroutine never touches the
+// real writer's header map directly — eliminating the race between the handler
+// goroutine (writing via tw.Header()) and the timeout goroutine (writing via
+// the original w.Header()).
 type timeoutWriter struct {
 	http.ResponseWriter
 	mu         sync.Mutex
+	h          http.Header // buffered headers; copied to real writer on commit
 	timedOut   bool
 	written    bool
 	statusCode int
@@ -52,6 +57,11 @@ var timeoutWriterPool = sync.Pool{
 func acquireTimeoutWriter(w http.ResponseWriter) *timeoutWriter {
 	tw := timeoutWriterPool.Get().(*timeoutWriter)
 	tw.ResponseWriter = w
+	if tw.h == nil {
+		tw.h = make(http.Header)
+	} else {
+		clear(tw.h)
+	}
 	tw.timedOut = false
 	tw.written = false
 	tw.statusCode = http.StatusOK
@@ -62,11 +72,28 @@ func releaseTimeoutWriter(tw *timeoutWriter) {
 	if tw == nil {
 		return
 	}
+	tw.mu.Lock()
 	tw.ResponseWriter = nil
 	tw.timedOut = false
 	tw.written = false
 	tw.statusCode = 0
+	tw.mu.Unlock()
 	timeoutWriterPool.Put(tw)
+}
+
+// Header returns the buffered header map. The handler goroutine writes here
+// instead of the real writer, so there is no race with the timeout goroutine.
+func (tw *timeoutWriter) Header() http.Header {
+	return tw.h
+}
+
+// copyHeaders copies buffered headers to the real writer. Must be called
+// under tw.mu.
+func (tw *timeoutWriter) copyHeaders() {
+	dst := tw.ResponseWriter.Header()
+	for k, v := range tw.h {
+		dst[k] = v
+	}
 }
 
 func (tw *timeoutWriter) WriteHeader(code int) {
@@ -77,6 +104,7 @@ func (tw *timeoutWriter) WriteHeader(code int) {
 	}
 	tw.statusCode = code
 	tw.written = true
+	tw.copyHeaders()
 	tw.ResponseWriter.WriteHeader(code)
 }
 
@@ -88,6 +116,7 @@ func (tw *timeoutWriter) Write(b []byte) (int, error) {
 	}
 	if !tw.written {
 		tw.written = true
+		tw.copyHeaders()
 		tw.ResponseWriter.WriteHeader(tw.statusCode)
 	}
 	return tw.ResponseWriter.Write(b)

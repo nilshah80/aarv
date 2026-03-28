@@ -12,7 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"net/http"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nilshah80/aarv"
@@ -40,12 +40,9 @@ func DefaultConfig() Config {
 	}
 }
 
-// ULID generator state
-var (
-	ulidMu      sync.Mutex
-	ulidLastMs  int64
-	ulidCounter uint16
-)
+// ulidState packs the last-seen millisecond (upper 48 bits) and a monotonic
+// counter (lower 16 bits) into a single uint64 for lock-free CAS updates.
+var ulidState atomic.Uint64
 
 // ulidEncoding is Crockford's Base32 encoding.
 const ulidEncoding = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -57,20 +54,26 @@ func GenerateULID() string {
 
 	// Timestamp: 48-bit milliseconds since Unix epoch
 	ms := time.Now().UnixMilli()
+	msU48 := uint64(ms) & 0xFFFFFFFFFFFF
 
-	ulidMu.Lock()
-	// Increment counter if same millisecond, else reset
-	if ms == ulidLastMs {
-		ulidCounter++
-	} else {
-		ulidLastMs = ms
-		// Random counter start for new millisecond
-		var b [2]byte
-		_, _ = rand.Read(b[:])
-		ulidCounter = binary.BigEndian.Uint16(b[:])
+	// Lock-free CAS: upper 48 bits = millisecond, lower 16 bits = counter.
+	var counter uint16
+	for {
+		old := ulidState.Load()
+		oldMs := old >> 16
+		var newState uint64
+		if msU48 == oldMs {
+			newState = (msU48 << 16) | uint64(uint16(old)+1)
+		} else {
+			var b [2]byte
+			_, _ = rand.Read(b[:])
+			newState = (msU48 << 16) | uint64(binary.BigEndian.Uint16(b[:]))
+		}
+		if ulidState.CompareAndSwap(old, newState) {
+			counter = uint16(newState)
+			break
+		}
 	}
-	counter := ulidCounter
-	ulidMu.Unlock()
 
 	// Encode timestamp (10 chars, 5 bits each = 50 bits, we use 48)
 	ulid[0] = ulidEncoding[(ms>>45)&0x1F]

@@ -249,6 +249,29 @@ func TestAarvTimeoutAlreadyWritten(t *testing.T) {
 	}
 }
 
+func TestNewHeaderMutationRace(t *testing.T) {
+	// Verify the handler goroutine can set headers concurrently with the
+	// timeout goroutine writing the 504 response — no data race.
+	handler := New(5 * time.Millisecond)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Continuously mutate headers until the context is cancelled,
+		// then keep writing a bit longer to maximise the race window.
+		for i := 0; i < 200; i++ {
+			w.Header().Set("X-Test", "value")
+			time.Sleep(100 * time.Microsecond)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("late"))
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+
+	// The timeout should have fired; handler's late write is blocked.
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("expected 504, got %d", rec.Code)
+	}
+}
+
 // --- Context (lightweight deadline-propagation) tests ---
 
 func TestContextDefaultDuration(t *testing.T) {

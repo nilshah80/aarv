@@ -270,7 +270,7 @@ func New(config ...Config) aarv.Middleware {
 	// Build sensitive headers set (lowercase for case-insensitive matching)
 	sensitiveHeaders := make(map[string]struct{}, len(cfg.SensitiveHeaders))
 	for _, h := range cfg.SensitiveHeaders {
-		sensitiveHeaders[strings.ToLower(h)] = struct{}{}
+		sensitiveHeaders[http.CanonicalHeaderKey(h)] = struct{}{}
 	}
 
 	// Build sensitive field set for body and query redaction.
@@ -333,7 +333,7 @@ func New(config ...Config) aarv.Middleware {
 				reqHeaders = make(map[string]string, len(r.Header))
 				for k, v := range r.Header {
 					if shouldRedact(RedactRequestHeaders) {
-						if _, sensitive := sensitiveHeaders[strings.ToLower(k)]; sensitive {
+						if _, sensitive := sensitiveHeaders[k]; sensitive {
 							reqHeaders[k] = "[REDACTED]"
 							continue
 						}
@@ -378,7 +378,7 @@ func New(config ...Config) aarv.Middleware {
 				respHeaders = make(map[string]string, len(respWriter.Header()))
 				for k, v := range respWriter.Header() {
 					if shouldRedact(RedactResponseHeaders) {
-						if _, sensitive := sensitiveHeaders[strings.ToLower(k)]; sensitive {
+						if _, sensitive := sensitiveHeaders[k]; sensitive {
 							respHeaders[k] = "[REDACTED]"
 							continue
 						}
@@ -414,7 +414,8 @@ func New(config ...Config) aarv.Middleware {
 			}
 
 			// Build log attributes dynamically based on config
-			attrs := make([]any, 0, 32)
+			var attrsBuf [32]any
+			attrs := attrsBuf[:0]
 			attrs = append(attrs, "request_id", requestID, "method", r.Method, "path", path)
 
 			if cfg.LogQueryParams && len(queryParams) > 0 {
@@ -476,7 +477,7 @@ func New(config ...Config) aarv.Middleware {
 
 			var req *http.Request
 			if cfg.LogRequestBody || cfg.LogRequestHeaders || cfg.LogContentInfo {
-				req = c.Request()
+				req = c.RawRequest()
 			}
 
 			var reqBody []byte
@@ -493,7 +494,7 @@ func New(config ...Config) aarv.Middleware {
 				reqHeaders = make(map[string]string, len(req.Header))
 				for k, v := range req.Header {
 					if shouldRedact(RedactRequestHeaders) {
-						if _, sensitive := sensitiveHeaders[strings.ToLower(k)]; sensitive {
+						if _, sensitive := sensitiveHeaders[k]; sensitive {
 							reqHeaders[k] = "[REDACTED]"
 							continue
 						}
@@ -541,7 +542,7 @@ func New(config ...Config) aarv.Middleware {
 				respHeaders = make(map[string]string, len(respWriter.Header()))
 				for k, v := range respWriter.Header() {
 					if shouldRedact(RedactResponseHeaders) {
-						if _, sensitive := sensitiveHeaders[strings.ToLower(k)]; sensitive {
+						if _, sensitive := sensitiveHeaders[k]; sensitive {
 							respHeaders[k] = "[REDACTED]"
 							continue
 						}
@@ -574,7 +575,8 @@ func New(config ...Config) aarv.Middleware {
 				}
 			}
 
-			attrs := make([]any, 0, 32)
+			var attrsBuf [32]any
+			attrs := attrsBuf[:0]
 			attrs = append(attrs, "request_id", requestID, "method", method, "path", path)
 			if cfg.LogQueryParams && len(queryParams) > 0 {
 				attrs = append(attrs, "query", queryParams)
