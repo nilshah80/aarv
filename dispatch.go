@@ -556,33 +556,39 @@ func compileDirectPattern(pattern string) directPattern {
 }
 
 func (p directPattern) match(path string, c *Context) bool {
-	remaining := strings.TrimPrefix(path, "/")
+	// Skip leading slash without allocating a new string
+	if len(path) > 0 && path[0] == '/' {
+		path = path[1:]
+	}
+
+	// Buffer params locally — only commit to context on successful match.
 	var names [16]string
 	var values [16]string
 	n := 0
+
 	for i, part := range p.parts {
 		if part.catchAll {
 			if part.name != "" {
 				names[n] = part.name
-				values[n] = decodePathValue(remaining)
+				values[n] = decodePathValue(path)
 				n++
 			}
 			if c != nil {
-				for i := 0; i < n; i++ {
-					c.setDirectPathParam(names[i], values[i])
+				for j := 0; j < n; j++ {
+					c.setDirectPathParam(names[j], values[j])
 				}
 			}
 			return true
 		}
-		if remaining == "" {
+		if len(path) == 0 {
 			return false
 		}
-		seg := remaining
-		if idx := strings.IndexByte(remaining, '/'); idx >= 0 {
-			seg = remaining[:idx]
-			remaining = remaining[idx+1:]
+		seg := path
+		if idx := strings.IndexByte(path, '/'); idx >= 0 {
+			seg = path[:idx]
+			path = path[idx+1:]
 		} else {
-			remaining = ""
+			path = ""
 		}
 		if part.name != "" {
 			names[n] = part.name
@@ -592,29 +598,32 @@ func (p directPattern) match(path string, c *Context) bool {
 			return false
 		}
 		if i == len(p.parts)-1 {
-			if remaining != "" {
+			if len(path) != 0 {
 				return false
 			}
 			if c != nil {
-				for i := 0; i < n; i++ {
-					c.setDirectPathParam(names[i], values[i])
+				for j := 0; j < n; j++ {
+					c.setDirectPathParam(names[j], values[j])
 				}
 			}
 			return true
 		}
 	}
-	return remaining == ""
+	return len(path) == 0
 }
 
 func decodePathValue(seg string) string {
-	if !strings.Contains(seg, "%") {
-		return seg
+	// Fast path: most segments don't contain percent-encoding
+	for i := 0; i < len(seg); i++ {
+		if seg[i] == '%' {
+			decoded, err := url.PathUnescape(seg)
+			if err != nil {
+				return seg
+			}
+			return decoded
+		}
 	}
-	decoded, err := url.PathUnescape(seg)
-	if err != nil {
-		return seg
-	}
-	return decoded
+	return seg
 }
 
 // shouldRedirectTrailingSlash checks if we should redirect based on trailing slash.

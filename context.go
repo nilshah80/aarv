@@ -98,17 +98,22 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.written = false
 	c.statusCode = http.StatusOK
 	c.query = nil
-	c.cachedLogger = nil
-	if len(c.store) > maxReusableStoreKeys {
-		c.store = nil // release oversized maps
-	} else if c.store != nil {
-		clear(c.store)
-	}
 	c.requestID = ""
 	c.requestIDSet = false
-	c.hookErr = nil
 	c.pathParamCount = 0
 	c.pathParamsApplied = false
+	c.hookErr = nil
+	// Lazy cleanup for infrequently-used fields
+	if c.cachedLogger != nil {
+		c.cachedLogger = nil
+	}
+	if c.store != nil {
+		if len(c.store) > maxReusableStoreKeys {
+			c.store = nil
+		} else {
+			clear(c.store)
+		}
+	}
 }
 
 // Request returns the underlying *http.Request.
