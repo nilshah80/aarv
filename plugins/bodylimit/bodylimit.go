@@ -235,7 +235,7 @@ func (w *limitInterceptWriter) flushTo(dst http.ResponseWriter) {
 		dst.WriteHeader(w.statusCode)
 	}
 	if len(w.buf) > 0 {
-		dst.Write(w.buf)
+		_, _ = dst.Write(w.buf)
 	}
 }
 

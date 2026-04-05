@@ -54,7 +54,7 @@ func TestDumpLogger_RequestBody(t *testing.T) {
 	app.Use(New())
 
 	app.Post("/users", func(c *aarv.Context) error {
-		c.Body() // consume the body so the tee reader captures it
+		_, _ = c.Body() // consume the body so the tee reader captures it
 		return c.JSON(201, map[string]string{"id": "1"})
 	})
 
@@ -718,7 +718,7 @@ func TestDumpLogger_RedactHeadersOnly(t *testing.T) {
 	}))
 
 	app.Post("/test", func(c *aarv.Context) error {
-		c.Body() // consume so tee reader captures it
+		_, _ = c.Body() // consume so tee reader captures it
 		c.Response().Header().Set("Set-Cookie", "session=secret")
 		return c.JSON(200, map[string]string{"token": "body-visible"})
 	})
@@ -813,7 +813,7 @@ func TestDumpLogger_NativePanicCleansUp(t *testing.T) {
 			defer func() {
 				if rec := recover(); rec != nil {
 					w.WriteHeader(500)
-					w.Write([]byte("recovered"))
+					_, _ = w.Write([]byte("recovered"))
 				}
 			}()
 			next.ServeHTTP(w, r)
@@ -824,7 +824,7 @@ func TestDumpLogger_NativePanicCleansUp(t *testing.T) {
 			defer func() {
 				if rec := recover(); rec != nil {
 					c.Response().WriteHeader(500)
-					c.Response().Write([]byte("recovered"))
+					_, _ = c.Response().Write([]byte("recovered"))
 				}
 			}()
 			return next(c)
@@ -870,7 +870,7 @@ func TestDumpLogger_StdlibPanicCleansUp(t *testing.T) {
 			defer func() {
 				if rec := recover(); rec != nil {
 					w.WriteHeader(500)
-					w.Write([]byte("recovered"))
+					_, _ = w.Write([]byte("recovered"))
 				}
 			}()
 			next.ServeHTTP(w, r)
@@ -1019,7 +1019,7 @@ func TestDumpLogger_ChunkedBodyLogged(t *testing.T) {
 	}))
 
 	app.Post("/test", func(c *aarv.Context) error {
-		c.Body() // consume the body
+		_, _ = c.Body() // consume the body
 		return c.Text(200, "ok")
 	})
 
@@ -1115,7 +1115,7 @@ func BenchmarkDumpLogger_Native(b *testing.B) {
 	app.Use(New())
 
 	app.Post("/users", func(c *aarv.Context) error {
-		c.Body() // consume body so tee captures it
+		_, _ = c.Body() // consume body so tee captures it
 		return c.JSON(200, map[string]string{"id": "1", "name": "alice"})
 	})
 
@@ -1135,10 +1135,10 @@ func BenchmarkDumpLogger_Stdlib(b *testing.B) {
 
 	middleware := New()
 	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.ReadAll(r.Body) // consume body so tee captures it
+		_, _ = io.ReadAll(r.Body) // consume body so tee captures it
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
-		w.Write([]byte(`{"id":"1","name":"alice"}`))
+		_, _ = w.Write([]byte(`{"id":"1","name":"alice"}`))
 	}))
 
 	body := []byte(`{"name":"alice","email":"alice@test.com"}`)
@@ -1184,7 +1184,7 @@ func BenchmarkDumpLogger_Stdlib_NoBody(b *testing.B) {
 	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
-		w.Write([]byte(`{"id":"1"}`))
+		_, _ = w.Write([]byte(`{"id":"1"}`))
 	}))
 
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -1208,7 +1208,7 @@ func BenchmarkDumpLogger_Native_LargeBody(b *testing.B) {
 	}))
 
 	app.Post("/upload", func(c *aarv.Context) error {
-		c.Body() // consume body
+		_, _ = c.Body() // consume body
 		return c.Text(200, "ok")
 	})
 
@@ -1234,9 +1234,9 @@ func BenchmarkDumpLogger_Stdlib_LargeBody(b *testing.B) {
 		MaxBodySize:     1024,
 	})
 	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.ReadAll(r.Body) // consume body
+		_, _ = io.ReadAll(r.Body) // consume body
 		w.WriteHeader(200)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 
 	largeBody := bytes.Repeat([]byte("x"), 8*1024)

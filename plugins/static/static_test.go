@@ -696,7 +696,7 @@ func TestNoBrowseFSOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected file to open, got %v", err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	// Missing file — should fail
 	_, err = fs.Open("/missing.txt")

@@ -320,16 +320,16 @@ func (fs noBrowseFS) Open(name string) (http.File, error) {
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	if info.IsDir() {
 		idx, err := dir.Open(name + "/" + fs.index)
 		if err != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, os.ErrNotExist
 		}
-		idx.Close()
+		_ = idx.Close()
 	}
 	return f, nil
 }
