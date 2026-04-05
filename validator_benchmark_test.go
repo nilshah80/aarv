@@ -22,6 +22,41 @@ type validatorBenchmarkPayload struct {
 	Role    string `json:"role" validate:"required,oneof=admin user editor"`
 }
 
+type binderBenchmarkPayload struct {
+	ID      int      `param:"id"`
+	Name    string   `query:"name" default:"guest"`
+	Enabled bool     `query:"enabled"`
+	Role    string   `header:"X-Role" default:"user"`
+	Token   string   `cookie:"token"`
+	Age     int      `form:"age" default:"21"`
+	Tags    []string `query:"tags"`
+}
+
+type queryBenchmarkPayload struct {
+	Page    int      `query:"page" default:"1"`
+	Name    string   `query:"name"`
+	Enabled bool     `query:"enabled"`
+	Tags    []string `query:"tags"`
+}
+
+type formBenchmarkPayload struct {
+	Age  int    `form:"age"`
+	Name string `json:"name"`
+}
+
+type bindJSONBenchmarkPayload struct {
+	Name    string `json:"name"`
+	Email   string `json:"email"`
+	Age     int    `json:"age"`
+	Phone   string `json:"phone"`
+	Street  string `json:"street"`
+	City    string `json:"city"`
+	State   string `json:"state"`
+	Zip     string `json:"zip"`
+	Country string `json:"country"`
+	Role    string `json:"role"`
+}
+
 type benchmarkDiscardResponseWriter struct {
 	header http.Header
 	Status int
@@ -64,6 +99,10 @@ var (
 	}
 	validatorBenchmarkBody      = []byte(`{"name":"alice","email":"a@t.com","age":30,"phone":"55555","street":"123 Main","city":"NYC","state":"NY","zip":"10001","country":"US","role":"admin"}`)
 	validatorBenchmarkSliceSink []ValidationError
+	binderBenchmarkSink         binderBenchmarkPayload
+	queryBenchmarkSink          queryBenchmarkPayload
+	formBenchmarkSink           formBenchmarkPayload
+	bindJSONBenchmarkSink       bindJSONBenchmarkPayload
 )
 
 func newValidatorBenchmarkRequest() *http.Request {
@@ -74,6 +113,19 @@ func newValidatorBenchmarkRequest() *http.Request {
 		Body:          io.NopCloser(bytes.NewReader(validatorBenchmarkBody)),
 		ContentLength: int64(len(validatorBenchmarkBody)),
 	}
+}
+
+func newBinderBenchmarkRequest() *http.Request {
+	req := &http.Request{
+		Method:        http.MethodPost,
+		URL:           &url.URL{Path: "/users/42", RawQuery: "name=alice&enabled=true&tags=a,b"},
+		Header:        http.Header{"Content-Type": []string{"application/x-www-form-urlencoded"}, "X-Role": []string{"admin"}},
+		Body:          io.NopCloser(bytes.NewReader([]byte("age=12"))),
+		ContentLength: int64(len("age=12")),
+	}
+	req.AddCookie(&http.Cookie{Name: "token", Value: "cookie-token"})
+	req.SetPathValue("id", "42")
+	return req
 }
 
 func BenchmarkValidator10FieldsAarv(b *testing.B) {
@@ -120,4 +172,190 @@ func BenchmarkBindValidate10FieldsAarv(b *testing.B) {
 
 		app.ReleaseContext(ctx)
 	}
+}
+
+func BenchmarkBinderMultiSourceDefaultsAarv(b *testing.B) {
+	app := New(WithBanner(false))
+	reqType := reflect.TypeOf(binderBenchmarkPayload{})
+	binder := buildStructBinder(reqType)
+	if binder == nil {
+		b.Fatal("expected binder")
+	}
+
+	var rw benchmarkDiscardResponseWriter
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rw.Reset()
+		req := newBinderBenchmarkRequest()
+		ctx := app.AcquireContext(&rw, req)
+		var payload binderBenchmarkPayload
+		if err := binder.bind(ctx, &payload); err != nil {
+			b.Fatal(err)
+		}
+		binder.applyDefaults(&payload)
+		binderBenchmarkSink = payload
+		app.ReleaseContext(ctx)
+	}
+}
+
+func BenchmarkBindQueryAarv(b *testing.B) {
+	app := New(WithBanner(false))
+	req := &http.Request{
+		Method: http.MethodGet,
+		URL:    &url.URL{Path: "/users", RawQuery: "page=9&name=alice&enabled=true&tags=a,b"},
+		Header: make(http.Header),
+	}
+	var rw benchmarkDiscardResponseWriter
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rw.Reset()
+		ctx := app.AcquireContext(&rw, req)
+		var payload queryBenchmarkPayload
+		if err := bindQueryParams(ctx, &payload); err != nil {
+			b.Fatal(err)
+		}
+		queryBenchmarkSink = payload
+		app.ReleaseContext(ctx)
+	}
+}
+
+func BenchmarkContextBindQueryAarv(b *testing.B) {
+	app := New(WithBanner(false))
+	req := &http.Request{
+		Method: http.MethodGet,
+		URL:    &url.URL{Path: "/users", RawQuery: "page=9&name=alice&enabled=true&tags=a,b"},
+		Header: make(http.Header),
+	}
+	var rw benchmarkDiscardResponseWriter
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rw.Reset()
+		ctx := app.AcquireContext(&rw, req)
+		var payload queryBenchmarkPayload
+		if err := ctx.BindQuery(&payload); err != nil {
+			b.Fatal(err)
+		}
+		queryBenchmarkSink = payload
+		app.ReleaseContext(ctx)
+	}
+}
+
+func BenchmarkBindFormAarv(b *testing.B) {
+	app := New(WithBanner(false))
+	var rw benchmarkDiscardResponseWriter
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rw.Reset()
+		req := &http.Request{
+			Method:        http.MethodPost,
+			URL:           &url.URL{Path: "/users"},
+			Header:        http.Header{"Content-Type": []string{"application/x-www-form-urlencoded"}},
+			Body:          io.NopCloser(bytes.NewReader([]byte("age=12&name=form-name"))),
+			ContentLength: int64(len("age=12&name=form-name")),
+		}
+		ctx := app.AcquireContext(&rw, req)
+		if err := ctx.req.ParseForm(); err != nil {
+			b.Fatal(err)
+		}
+		var payload formBenchmarkPayload
+		if err := bindFormValues(ctx, &payload); err != nil {
+			b.Fatal(err)
+		}
+		formBenchmarkSink = payload
+		app.ReleaseContext(ctx)
+	}
+}
+
+func BenchmarkContextBindFormAarv(b *testing.B) {
+	app := New(WithBanner(false))
+	var rw benchmarkDiscardResponseWriter
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rw.Reset()
+		req := &http.Request{
+			Method:        http.MethodPost,
+			URL:           &url.URL{Path: "/users"},
+			Header:        http.Header{"Content-Type": []string{"application/x-www-form-urlencoded"}},
+			Body:          io.NopCloser(bytes.NewReader([]byte("age=12&name=form-name"))),
+			ContentLength: int64(len("age=12&name=form-name")),
+		}
+		ctx := app.AcquireContext(&rw, req)
+		var payload formBenchmarkPayload
+		if err := ctx.BindForm(&payload); err != nil {
+			b.Fatal(err)
+		}
+		formBenchmarkSink = payload
+		app.ReleaseContext(ctx)
+	}
+}
+
+func BenchmarkBindJSONAarv(b *testing.B) {
+	app := New(WithBanner(false))
+	var rw benchmarkDiscardResponseWriter
+
+	b.Run("small", func(b *testing.B) {
+		body := validatorBenchmarkBody
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			rw.Reset()
+			req := &http.Request{
+				Method:        http.MethodPost,
+				URL:           &url.URL{Path: "/users"},
+				Header:        http.Header{"Content-Type": []string{"application/json"}},
+				Body:          io.NopCloser(bytes.NewReader(body)),
+				ContentLength: int64(len(body)),
+			}
+			ctx := app.AcquireContext(&rw, req)
+			var payload bindJSONBenchmarkPayload
+			if err := ctx.BindJSON(&payload); err != nil {
+				b.Fatal(err)
+			}
+			bindJSONBenchmarkSink = payload
+			app.ReleaseContext(ctx)
+		}
+	})
+
+	b.Run("medium_12kb", func(b *testing.B) {
+		var body bytes.Buffer
+		body.WriteByte('[')
+		for i := 0; i < 64; i++ {
+			if i > 0 {
+				body.WriteByte(',')
+			}
+			body.Write(validatorBenchmarkBody)
+		}
+		body.WriteByte(']')
+		payloadBody := body.Bytes()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			rw.Reset()
+			req := &http.Request{
+				Method:        http.MethodPost,
+				URL:           &url.URL{Path: "/users"},
+				Header:        http.Header{"Content-Type": []string{"application/json"}},
+				Body:          io.NopCloser(bytes.NewReader(payloadBody)),
+				ContentLength: int64(len(payloadBody)),
+			}
+			ctx := app.AcquireContext(&rw, req)
+			var payload []bindJSONBenchmarkPayload
+			if err := ctx.BindJSON(&payload); err != nil {
+				b.Fatal(err)
+			}
+			if len(payload) > 0 {
+				bindJSONBenchmarkSink = payload[0]
+			}
+			app.ReleaseContext(ctx)
+		}
+	})
 }

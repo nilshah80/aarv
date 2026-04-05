@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/nilshah80/aarv"
+	"github.com/nilshah80/aarv/internal/headerbuffer"
 )
 
 var filepathAbs = filepath.Abs
@@ -53,6 +54,47 @@ func DefaultConfig() Config {
 	}
 }
 
+// notFoundInterceptor wraps a ResponseWriter to detect 404 responses from
+// http.FileServer without pre-statting every request. When a 404 is detected,
+// the intercepted flag is set and no bytes are written to the underlying writer.
+// Headers are buffered locally until commit so that a suppressed 404 does not
+// leak stale headers into the fallback response.
+type notFoundInterceptor struct {
+	http.ResponseWriter
+	headers     headerbuffer.Buffer
+	intercepted bool
+	committed   bool
+}
+
+func (w *notFoundInterceptor) Header() http.Header {
+	return w.headers.Header()
+}
+
+func (w *notFoundInterceptor) WriteHeader(code int) {
+	if code == http.StatusNotFound {
+		w.intercepted = true
+		return
+	}
+	w.copyHeaders()
+	w.committed = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *notFoundInterceptor) Write(b []byte) (int, error) {
+	if w.intercepted {
+		return len(b), nil // discard
+	}
+	if !w.committed {
+		w.copyHeaders()
+		w.committed = true
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *notFoundInterceptor) copyHeaders() {
+	w.headers.CopyTo(w.ResponseWriter.Header())
+}
+
 // New creates a static file serving middleware with the given configuration.
 // The Config.Root field is required.
 func New(config Config) aarv.Middleware {
@@ -75,8 +117,15 @@ func New(config Config) aarv.Middleware {
 	}
 
 	fileServer := http.FileServer(http.Dir(root))
+	// When Browse is disabled (the default), use a filesystem that hides
+	// directory listings so http.FileServer returns 404 for directories
+	// without an index file, instead of rendering a listing.
+	if !config.Browse {
+		fileServer = http.FileServer(noBrowseFS{root: root, index: config.Index})
+	}
 
 	prefix := config.Prefix
+	needSPAorBrowse := config.SPA || config.Browse
 
 	m := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -104,27 +153,40 @@ func New(config Config) aarv.Middleware {
 				}
 			}
 
-			// Check if the file exists
-			filePath := filepath.Join(root, filepath.FromSlash(upath))
-			info, err := os.Stat(filePath)
+			if !needSPAorBrowse {
+				// Fast path: no SPA, no browse — let http.FileServer
+				// handle everything. Use a 404 interceptor so we can
+				// fall through to next handler on miss.
+				nfi := &notFoundInterceptor{ResponseWriter: w}
+				if cacheControl != "" {
+					nfi.Header().Set("Cache-Control", cacheControl)
+				}
+				fileServer.ServeHTTP(nfi, r)
+				if nfi.intercepted {
+					// 404 was suppressed — headers were buffered and never
+					// copied, so the real writer is clean for the fallback.
+					next.ServeHTTP(w, r)
+				}
+				return
+			}
 
-			if err != nil {
+			// SPA/browse path: need to check file existence for fallback decisions.
+			filePath := filepath.Join(root, filepath.FromSlash(upath))
+			info, statErr := os.Stat(filePath)
+
+			if statErr != nil {
 				if config.SPA {
-					// SPA fallback: serve the index file
 					serveIndex(w, r, root, config.Index, cacheControl)
 					return
 				}
-				// File not found, pass to next handler
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			// If it's a directory, check for an index file
 			if info.IsDir() {
 				indexPath := filepath.Join(filePath, config.Index)
 				if _, err := os.Stat(indexPath); err != nil {
 					if config.Browse {
-						// Directory listing enabled
 						if cacheControl != "" {
 							w.Header().Set("Cache-Control", cacheControl)
 						}
@@ -135,18 +197,14 @@ func New(config Config) aarv.Middleware {
 						serveIndex(w, r, root, config.Index, cacheControl)
 						return
 					}
-					// No index, no browse, no SPA — pass to next handler
 					next.ServeHTTP(w, r)
 					return
 				}
 			}
 
-			// Set Cache-Control header
 			if cacheControl != "" {
 				w.Header().Set("Cache-Control", cacheControl)
 			}
-
-			// Serve the file
 			fileServer.ServeHTTP(w, r)
 		})
 	}
@@ -171,9 +229,23 @@ func New(config Config) aarv.Middleware {
 				}
 			}
 
+			if !needSPAorBrowse {
+				// Fast path: no SPA, no browse — let http.FileServer handle it.
+				nfi := &notFoundInterceptor{ResponseWriter: c.Response()}
+				if cacheControl != "" {
+					nfi.Header().Set("Cache-Control", cacheControl)
+				}
+				fileServer.ServeHTTP(nfi, req)
+				if nfi.intercepted {
+					return next(c)
+				}
+				return nil
+			}
+
+			// SPA/browse path
 			filePath := filepath.Join(root, filepath.FromSlash(upath))
-			info, err := os.Stat(filePath)
-			if err != nil {
+			info, statErr := os.Stat(filePath)
+			if statErr != nil {
 				if config.SPA {
 					serveIndex(c.Response(), req, root, config.Index, cacheControl)
 					return nil
@@ -217,4 +289,47 @@ func serveIndex(w http.ResponseWriter, r *http.Request, root, index, cacheContro
 		w.Header().Set("Cache-Control", cacheControl)
 	}
 	http.ServeFile(w, r, indexPath)
+}
+
+// noBrowseFS wraps http.Dir to suppress directory listings and support
+// custom index filenames. http.FileServer hardcodes "index.html", so when
+// a custom index is configured, this FS transparently serves the custom
+// index file in place of the missing "index.html".
+type noBrowseFS struct {
+	root  string
+	index string
+}
+
+func (fs noBrowseFS) Open(name string) (http.File, error) {
+	dir := http.Dir(fs.root)
+
+	// When http.FileServer asks for "index.html" inside a directory and the
+	// configured index is different, serve the custom index file instead.
+	if fs.index != "index.html" && strings.HasSuffix(name, "/index.html") {
+		customName := strings.TrimSuffix(name, "index.html") + fs.index
+		if f, err := dir.Open(customName); err == nil {
+			return f, nil
+		}
+		// Custom index not found either — fall through to normal Open
+		// which will fail and prevent directory listing.
+	}
+
+	f, err := dir.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if info.IsDir() {
+		idx, err := dir.Open(name + "/" + fs.index)
+		if err != nil {
+			f.Close()
+			return nil, os.ErrNotExist
+		}
+		idx.Close()
+	}
+	return f, nil
 }

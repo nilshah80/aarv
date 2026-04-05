@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/nilshah80/aarv"
+	"github.com/nilshah80/aarv/internal/headerbuffer"
 )
 
 // Config holds configuration for the timeout middleware.
@@ -44,7 +45,7 @@ func DefaultConfig() Config {
 type timeoutWriter struct {
 	http.ResponseWriter
 	mu         sync.Mutex
-	h          http.Header // buffered headers; copied to real writer on commit
+	headers    headerbuffer.Buffer
 	timedOut   bool
 	written    bool
 	statusCode int
@@ -57,11 +58,7 @@ var timeoutWriterPool = sync.Pool{
 func acquireTimeoutWriter(w http.ResponseWriter) *timeoutWriter {
 	tw := timeoutWriterPool.Get().(*timeoutWriter)
 	tw.ResponseWriter = w
-	if tw.h == nil {
-		tw.h = make(http.Header)
-	} else {
-		clear(tw.h)
-	}
+	tw.headers.Reset()
 	tw.timedOut = false
 	tw.written = false
 	tw.statusCode = http.StatusOK
@@ -84,16 +81,13 @@ func releaseTimeoutWriter(tw *timeoutWriter) {
 // Header returns the buffered header map. The handler goroutine writes here
 // instead of the real writer, so there is no race with the timeout goroutine.
 func (tw *timeoutWriter) Header() http.Header {
-	return tw.h
+	return tw.headers.Header()
 }
 
 // copyHeaders copies buffered headers to the real writer. Must be called
 // under tw.mu.
 func (tw *timeoutWriter) copyHeaders() {
-	dst := tw.ResponseWriter.Header()
-	for k, v := range tw.h {
-		dst[k] = v
-	}
+	tw.headers.CopyTo(tw.ResponseWriter.Header())
 }
 
 func (tw *timeoutWriter) WriteHeader(code int) {

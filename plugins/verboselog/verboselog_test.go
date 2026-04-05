@@ -7,17 +7,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/nilshah80/aarv"
 )
-
-type failingCloseReadCloser struct {
-	io.Reader
-}
-
-func (failingCloseReadCloser) Close() error { return errors.New("close failure") }
 
 func TestDumpLogger_Basic(t *testing.T) {
 	var logBuf bytes.Buffer
@@ -59,6 +54,7 @@ func TestDumpLogger_RequestBody(t *testing.T) {
 	app.Use(New())
 
 	app.Post("/users", func(c *aarv.Context) error {
+		c.Body() // consume the body so the tee reader captures it
 		return c.JSON(201, map[string]string{"id": "1"})
 	})
 
@@ -74,65 +70,8 @@ func TestDumpLogger_RequestBody(t *testing.T) {
 	}
 }
 
-func TestDumpLogger_LogsBodyCloseFailure(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
-	old := slog.Default()
-	slog.SetDefault(logger)
-	t.Cleanup(func() {
-		slog.SetDefault(old)
-	})
-
-	app := aarv.New(aarv.WithBanner(false), aarv.WithLogger(logger))
-	app.Use(New())
-
-	app.Post("/users", func(c *aarv.Context) error {
-		return c.JSON(201, map[string]string{"id": "1"})
-	})
-
-	body := []byte(`{"name":"alice"}`)
-	req := httptest.NewRequest("POST", "/users", nil)
-	req.Body = failingCloseReadCloser{Reader: bytes.NewReader(body)}
-	req.Header.Set("Content-Type", "application/json")
-	req.ContentLength = int64(len(body))
-
-	rec := httptest.NewRecorder()
-	app.ServeHTTP(rec, req)
-
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, "verboselog request body close failed") {
-		t.Fatalf("expected close warning log, got: %s", logOutput)
-	}
-}
-
-func TestDumpLogger_LogsBodyCloseFailureWithoutAarvContext(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
-	old := slog.Default()
-	slog.SetDefault(logger)
-	t.Cleanup(func() {
-		slog.SetDefault(old)
-	})
-
-	middleware := New()
-	body := []byte(`{"name":"alice"}`)
-	req := httptest.NewRequest(http.MethodPost, "/users", nil)
-	req.Body = failingCloseReadCloser{Reader: bytes.NewReader(body)}
-	req.Header.Set("Content-Type", "application/json")
-	req.ContentLength = int64(len(body))
-
-	rec := httptest.NewRecorder()
-	middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("expected status 204, got %d", rec.Code)
-	}
-	if !strings.Contains(logBuf.String(), "verboselog request body close failed") {
-		t.Fatalf("expected fallback close warning log, got: %s", logBuf.String())
-	}
-}
+// Body close is now the handler's responsibility since the tee reader
+// delegates Close() to the original body. Close-failure tests removed.
 
 func TestDumpLogger_SensitiveHeaderRedaction(t *testing.T) {
 	var logBuf bytes.Buffer
@@ -697,43 +636,6 @@ func TestDumpLogger_StdlibResponseBodyAndQueryLogging(t *testing.T) {
 	}
 }
 
-func TestDumpLogger_StdlibBodyCloseFailureWithAarvContext(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
-	old := slog.Default()
-	slog.SetDefault(logger)
-	t.Cleanup(func() { slog.SetDefault(old) })
-
-	// Force stdlib path by wrapping with a non-native middleware, but
-	// ensure aarv context is available on the request.
-	stdlibWrapper := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	app := aarv.New(aarv.WithBanner(false), aarv.WithLogger(logger))
-	app.Use(stdlibWrapper)
-	app.Use(New())
-	app.Post("/test", func(c *aarv.Context) error {
-		return c.Text(200, "ok")
-	})
-
-	body := []byte(`{"name":"alice"}`)
-	req := httptest.NewRequest("POST", "/test", nil)
-	req.Body = failingCloseReadCloser{Reader: bytes.NewReader(body)}
-	req.Header.Set("Content-Type", "application/json")
-	req.ContentLength = int64(len(body))
-
-	rec := httptest.NewRecorder()
-	app.ServeHTTP(rec, req)
-
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, "verboselog request body close failed") {
-		t.Fatalf("expected close warning via aarv context logger, got: %s", logOutput)
-	}
-}
-
 func TestDumpLogger_StdlibRequestIDFromContext(t *testing.T) {
 	var logBuf bytes.Buffer
 	old := slog.Default()
@@ -816,6 +718,7 @@ func TestDumpLogger_RedactHeadersOnly(t *testing.T) {
 	}))
 
 	app.Post("/test", func(c *aarv.Context) error {
+		c.Body() // consume so tee reader captures it
 		c.Response().Header().Set("Set-Cookie", "session=secret")
 		return c.JSON(200, map[string]string{"token": "body-visible"})
 	})
@@ -835,14 +738,384 @@ func TestDumpLogger_RedactHeadersOnly(t *testing.T) {
 	}
 }
 
-func BenchmarkDumpLogger(b *testing.B) {
-	// Discard logs during benchmark
+// TestDumpLogger_NativeQueryParamsOnlyConfig verifies that query params are
+// logged correctly when LogQueryParams is true but LogRequestBody,
+// LogRequestHeaders, and LogContentInfo are all false. This exercises the
+// code path where req must still be initialized for query parsing.
+func TestDumpLogger_NativeQueryParamsOnlyConfig(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		LogQueryParams:     true,
+		LogRequestBody:     false,
+		LogRequestHeaders:  false,
+		LogResponseBody:    false,
+		LogResponseHeaders: false,
+		LogContentInfo:     false,
+		LogClientIP:        false,
+		LogUserAgent:       false,
+		LogLatencyMS:       false,
+	}))
+	app.Get("/test", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/test?color=blue&size=large", nil))
+
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "http_dump") {
+		t.Fatal("expected http_dump log line")
+	}
+
+	// Parse the JSON log and verify query params are present
+	var logEntry map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logStr), "\n") {
+		if strings.Contains(line, "http_dump") {
+			if err := json.Unmarshal([]byte(line), &logEntry); err != nil {
+				t.Fatalf("failed to parse log JSON: %v", err)
+			}
+			break
+		}
+	}
+
+	query, ok := logEntry["query"].(map[string]any)
+	if !ok {
+		t.Fatal("expected 'query' field in log to be a map")
+	}
+	if query["color"] != "blue" {
+		t.Errorf("expected query color=blue, got %v", query["color"])
+	}
+	if query["size"] != "large" {
+		t.Errorf("expected query size=large, got %v", query["size"])
+	}
+}
+
+// TestDumpLogger_NativePanicCleansUp verifies that when the handler panics,
+// the middleware restores the original response writer and releases all pooled
+// resources (bodyBuf, reqHeaders, queryParams, respHeaders).
+func TestDumpLogger_NativePanicCleansUp(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	app := aarv.New(aarv.WithBanner(false))
+
+	// Recovery middleware registered with native implementation so the entire
+	// chain stays in native mode — exercising the native panic cleanup path.
+	stdlibRecovery := aarv.Middleware(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					w.WriteHeader(500)
+					w.Write([]byte("recovered"))
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	})
+	nativeRecovery := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			defer func() {
+				if rec := recover(); rec != nil {
+					c.Response().WriteHeader(500)
+					c.Response().Write([]byte("recovered"))
+				}
+			}()
+			return next(c)
+		}
+	})
+	app.Use(aarv.RegisterNativeMiddleware(stdlibRecovery, nativeRecovery))
+
+	app.Use(New(DefaultConfig()))
+	app.Get("/panic", func(c *aarv.Context) error {
+		panic("test panic")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/panic?q=1", nil))
+
+	// The recovery middleware should have caught the panic
+	if rec.Code != 500 {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+
+	// The response body should be from recovery, not from verboselog's wrapper
+	body := rec.Body.String()
+	if !strings.Contains(body, "recovered") {
+		t.Errorf("expected 'recovered' in body, got %q", body)
+	}
+
+	// Verify no http_dump was logged (panic interrupted before slog.Log)
+	if strings.Contains(logBuf.String(), "http_dump") {
+		t.Error("expected no http_dump log on panic — the handler never completed")
+	}
+}
+
+// TestDumpLogger_StdlibPanicCleansUp verifies that when the handler panics in the
+// stdlib path, the deferred cleanup releases both reqBodyBuf and respBodyBuf.
+func TestDumpLogger_StdlibPanicCleansUp(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	recovery := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					w.WriteHeader(500)
+					w.Write([]byte("recovered"))
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	middleware := New(Config{
+		LogRequestBody:  true,
+		LogResponseBody: true,
+		RedactSensitive: false,
+		MaxBodySize:     1024,
+	})
+
+	handler := recovery(middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("stdlib panic")
+	})))
+
+	body := strings.NewReader(`{"data":"value"}`)
+	req := httptest.NewRequest("POST", "/panic", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 500 {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "recovered") {
+		t.Fatalf("expected 'recovered' in body, got %q", rec.Body.String())
+	}
+	// No http_dump should be logged since the handler panicked before logging
+	if strings.Contains(logBuf.String(), "http_dump") {
+		t.Error("expected no http_dump log on panic")
+	}
+}
+
+// TestDumpLogger_LargeBodyNotTruncatedForDownstream verifies that when the request
+// body exceeds MaxBodySize, downstream handlers still receive the full body (not truncated).
+func TestDumpLogger_LargeBodyNotTruncatedForDownstream(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		LogRequestBody:  true,
+		LogResponseBody: false,
+		RedactSensitive: false,
+		MaxBodySize:     10,
+	}))
+
+	var receivedBody string
+	app.Post("/test", func(c *aarv.Context) error {
+		b, err := c.Body()
+		if err != nil {
+			return err
+		}
+		receivedBody = string(b)
+		return c.Text(200, "ok")
+	})
+
+	fullBody := "this-is-a-body-that-exceeds-max-body-size"
+	req := httptest.NewRequest("POST", "/test", strings.NewReader(fullBody))
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if receivedBody != fullBody {
+		t.Fatalf("downstream received truncated body: got %q, want %q", receivedBody, fullBody)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "[truncated]") {
+		t.Fatal("expected truncated marker in log output")
+	}
+	// Log should contain at most MaxBodySize bytes of the body
+	if strings.Contains(logOutput, fullBody) {
+		t.Fatal("full body should not appear in log when it exceeds MaxBodySize")
+	}
+}
+
+// TestDumpLogger_LargeBodyStdlib is the stdlib-path equivalent of the large body test.
+func TestDumpLogger_LargeBodyStdlib(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	middleware := New(Config{
+		LogRequestBody:  true,
+		LogResponseBody: false,
+		RedactSensitive: false,
+		MaxBodySize:     10,
+	})
+
+	fullBody := "this-is-a-body-that-exceeds-max-body-size"
+	var receivedBody string
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		receivedBody = string(b)
+		w.WriteHeader(200)
+	}))
+
+	req := httptest.NewRequest("POST", "/test", strings.NewReader(fullBody))
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if receivedBody != fullBody {
+		t.Fatalf("downstream received truncated body: got %q, want %q", receivedBody, fullBody)
+	}
+}
+
+// TestRedactSensitiveBody_MultipleOccurrences verifies that all occurrences of
+// sensitive fields are redacted, not just the first.
+func TestRedactSensitiveBody_MultipleOccurrences(t *testing.T) {
+	patterns := buildRedactionPatterns([]string{"token"})
+	body := `{"token":"first-secret","other":"value","token":"second-secret"}`
+	result := redactSensitiveBody(body, patterns)
+
+	if strings.Contains(result, "first-secret") {
+		t.Fatalf("first token value should be redacted, got: %s", result)
+	}
+	if strings.Contains(result, "second-secret") {
+		t.Fatalf("second token value should be redacted, got: %s", result)
+	}
+	if !strings.Contains(result, `"other":"value"`) {
+		t.Fatalf("non-sensitive field should be preserved, got: %s", result)
+	}
+}
+
+// TestDumpLogger_ChunkedBodyLogged verifies that request bodies with unknown
+// content length (ContentLength == -1) are still captured for logging.
+func TestDumpLogger_ChunkedBodyLogged(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		LogRequestBody:  true,
+		LogResponseBody: false,
+		RedactSensitive: false,
+		MaxBodySize:     1024,
+	}))
+
+	app.Post("/test", func(c *aarv.Context) error {
+		c.Body() // consume the body
+		return c.Text(200, "ok")
+	})
+
+	// Create a request with unknown content length (simulating chunked transfer)
+	body := "chunked-body-content"
+	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "chunked-body-content") {
+		t.Fatalf("expected chunked body to be logged, got: %s", logOutput)
+	}
+}
+
+// TestClientIP_SplitHostPortFallback verifies that clientIP falls back to
+// RemoteAddr when SplitHostPort fails (e.g., no port in address).
+func TestClientIP_SplitHostPortFallback(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "192.168.1.1" // no port — SplitHostPort will fail
+	if got := clientIP(req); got != "192.168.1.1" {
+		t.Fatalf("expected fallback to RemoteAddr, got %q", got)
+	}
+}
+
+func TestNegativeMaxBodySizeClamped(t *testing.T) {
+	var logBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		MaxBodySize: -1,
+	}))
+	app.Get("/test", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/test", nil))
+	if rec.Code != 200 {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestBodyTeeReaderClose(t *testing.T) {
+	inner := io.NopCloser(strings.NewReader("body"))
+	tee := &bodyTeeReader{
+		reader: inner,
+		buf:    &bytes.Buffer{},
+		limit:  1024,
+	}
+	if err := tee.Close(); err != nil {
+		t.Fatalf("expected no error from Close, got %v", err)
+	}
+}
+
+func TestReleaseBodyBufferOversizedCap(t *testing.T) {
+	// Create a buffer that exceeds MaxPooledBufferCap
+	buf := bytes.NewBuffer(make([]byte, 0, 128*1024))
+	buf.WriteString("data")
+	releaseBodyBuffer(buf) // should discard, not panic
+}
+
+func TestRedactSensitiveBodyNoClosingQuote(t *testing.T) {
+	// Pattern match found but no closing quote — should not loop forever
+	patterns := buildRedactionPatterns([]string{"token"})
+	body := `{"token":"no-end-quote`
+	result := redactSensitiveBody(body, patterns)
+	// Should return unchanged since there's no closing quote to redact
+	if result != body {
+		t.Fatalf("expected unchanged body when closing quote missing, got %q", result)
+	}
+}
+
+func TestRedactSensitiveBodyStartPastEnd(t *testing.T) {
+	// Pattern match at the very end of the string
+	patterns := buildRedactionPatterns([]string{"token"})
+	body := `{"token":"`
+	result := redactSensitiveBody(body, patterns)
+	if result != body {
+		t.Fatalf("expected unchanged body when value is empty, got %q", result)
+	}
+}
+
+func BenchmarkDumpLogger_Native(b *testing.B) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(bytes.NewBuffer(nil), nil)))
 
 	app := aarv.New(aarv.WithBanner(false))
 	app.Use(New())
 
 	app.Post("/users", func(c *aarv.Context) error {
+		c.Body() // consume body so tee captures it
 		return c.JSON(200, map[string]string{"id": "1", "name": "alice"})
 	})
 
@@ -857,7 +1130,29 @@ func BenchmarkDumpLogger(b *testing.B) {
 	}
 }
 
-func BenchmarkDumpLogger_NoBody(b *testing.B) {
+func BenchmarkDumpLogger_Stdlib(b *testing.B) {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(bytes.NewBuffer(nil), nil)))
+
+	middleware := New()
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body) // consume body so tee captures it
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write([]byte(`{"id":"1","name":"alice"}`))
+	}))
+
+	body := []byte(`{"name":"alice","email":"alice@test.com"}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest("POST", "/users", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkDumpLogger_Native_NoBody(b *testing.B) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(bytes.NewBuffer(nil), nil)))
 
 	app := aarv.New(aarv.WithBanner(false))
@@ -876,5 +1171,81 @@ func BenchmarkDumpLogger_NoBody(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		rec := httptest.NewRecorder()
 		app.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkDumpLogger_Stdlib_NoBody(b *testing.B) {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(bytes.NewBuffer(nil), nil)))
+
+	middleware := New(Config{
+		LogRequestBody:  false,
+		LogResponseBody: false,
+	})
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write([]byte(`{"id":"1"}`))
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkDumpLogger_Native_LargeBody(b *testing.B) {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(bytes.NewBuffer(nil), nil)))
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		LogRequestBody:  true,
+		LogResponseBody: true,
+		RedactSensitive: false,
+		MaxBodySize:     1024,
+	}))
+
+	app.Post("/upload", func(c *aarv.Context) error {
+		c.Body() // consume body
+		return c.Text(200, "ok")
+	})
+
+	// 8KB body — well above the 1KB MaxBodySize
+	largeBody := bytes.Repeat([]byte("x"), 8*1024)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest("POST", "/upload", bytes.NewReader(largeBody))
+		req.Header.Set("Content-Type", "application/octet-stream")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkDumpLogger_Stdlib_LargeBody(b *testing.B) {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(bytes.NewBuffer(nil), nil)))
+
+	middleware := New(Config{
+		LogRequestBody:  true,
+		LogResponseBody: true,
+		RedactSensitive: false,
+		MaxBodySize:     1024,
+	})
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body) // consume body
+		w.WriteHeader(200)
+		w.Write([]byte("ok"))
+	}))
+
+	largeBody := bytes.Repeat([]byte("x"), 8*1024)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest("POST", "/upload", bytes.NewReader(largeBody))
+		req.Header.Set("Content-Type", "application/octet-stream")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
 	}
 }

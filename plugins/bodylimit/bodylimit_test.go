@@ -124,13 +124,146 @@ func TestNewWithResponseNativeMiddlewarePath(t *testing.T) {
 	app := aarv.New(aarv.WithBanner(false))
 	app.Use(NewWithResponse(16))
 	app.Post("/upload", func(c *aarv.Context) error {
-		_, _ = io.ReadAll(c.Request().Body)
+		_, err := io.ReadAll(c.Request().Body)
+		if err != nil {
+			return err
+		}
 		return c.Text(http.StatusOK, "done")
 	})
 
+	// Under limit — should succeed
 	rec := httptest.NewRecorder()
 	app.ServeHTTP(rec, httptest.NewRequest("POST", "/upload", bytes.NewReader([]byte("ok"))))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	// Over limit — should auto-respond 413
+	rec = httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("POST", "/upload", bytes.NewReader(bytes.Repeat([]byte("x"), 32))))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 from NewWithResponse native path, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "payload_too_large") {
+		t.Fatalf("expected payload_too_large body, got %q", rec.Body.String())
+	}
+}
+
+func TestNewWithResponseStdlibAutoResponds413(t *testing.T) {
+	middleware := NewWithResponse(16)
+	// Handler reads the body but does NOT check for MaxBytesError —
+	// the middleware should auto-send 413.
+	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.ReadAll(r.Body)
+		if err != nil {
+			// Handler sees the error but doesn't handle it
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Over limit
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("POST", "/upload", bytes.NewReader(bytes.Repeat([]byte("x"), 32))))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 from NewWithResponse stdlib path, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "payload_too_large") {
+		t.Fatalf("expected payload_too_large body, got %q", rec.Body.String())
+	}
+
+	// Under limit — should pass through
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("POST", "/upload", bytes.NewReader([]byte("ok"))))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestBodyLimitTrackerRead(t *testing.T) {
+	tracker := &bodyLimitTracker{
+		ReadCloser: http.MaxBytesReader(httptest.NewRecorder(), io.NopCloser(bytes.NewReader(bytes.Repeat([]byte("x"), 32))), 16),
+	}
+	buf := make([]byte, 64)
+	// Read until error — MaxBytesReader will eventually return MaxBytesError
+	var err error
+	for err == nil {
+		_, err = tracker.Read(buf)
+	}
+	if !tracker.limitExceeded {
+		t.Fatal("expected limitExceeded to be true after exceeding MaxBytesReader limit")
+	}
+}
+
+func TestNewWithResponseNativeBufferCapCommitsDownstreamResponse(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(NewWithResponse(16))
+	app.Post("/upload", func(c *aarv.Context) error {
+		if _, err := c.Response().Write(bytes.Repeat([]byte("a"), maxInterceptBufSize+32)); err != nil {
+			return err
+		}
+		_, err := io.ReadAll(c.Request().Body)
+		return err
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("POST", "/upload", bytes.NewReader(bytes.Repeat([]byte("x"), 64))))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected downstream response to stand after cap flush, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "payload_too_large") {
+		t.Fatalf("expected best-effort path to preserve committed downstream response, got %q", rec.Body.String())
+	}
+	if rec.Body.Len() <= maxInterceptBufSize {
+		t.Fatalf("expected large downstream body to be committed, got len=%d", rec.Body.Len())
+	}
+}
+
+func TestLimitInterceptWriterUnwrap(t *testing.T) {
+	base := httptest.NewRecorder()
+	w := &limitInterceptWriter{ResponseWriter: base}
+	if w.Unwrap() != base {
+		t.Fatal("Unwrap should return underlying writer")
+	}
+}
+
+func TestLimitInterceptWriterFlushToAlreadyFlushed(t *testing.T) {
+	base := httptest.NewRecorder()
+	w := &limitInterceptWriter{ResponseWriter: base}
+	w.Header().Set("X-Test", "val")
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte("buffered"))
+
+	// First flush should work
+	w.flushTo(base)
+	if base.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", base.Code)
+	}
+	if base.Body.String() != "buffered" {
+		t.Fatalf("expected buffered body, got %q", base.Body.String())
+	}
+	if base.Header().Get("X-Test") != "val" {
+		t.Fatal("expected header to be copied on flush")
+	}
+
+	// Second flush should be a no-op
+	base2 := httptest.NewRecorder()
+	w.flushTo(base2)
+	if base2.Code != http.StatusOK {
+		t.Fatal("expected second flushTo to be a no-op")
+	}
+}
+
+func TestLimitInterceptWriterDirectWriteAfterFlush(t *testing.T) {
+	base := httptest.NewRecorder()
+	w := &limitInterceptWriter{ResponseWriter: base}
+	w.flushed = true // simulate already-flushed state
+	n, err := w.Write([]byte("direct"))
+	if err != nil || n != 6 {
+		t.Fatalf("expected direct write, got n=%d err=%v", n, err)
+	}
+	if base.Body.String() != "direct" {
+		t.Fatalf("expected direct write body, got %q", base.Body.String())
 	}
 }

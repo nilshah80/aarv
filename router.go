@@ -1,7 +1,6 @@
 package aarv
 
 import (
-	"context"
 	"net/http"
 	"net/url"
 	"strings"
@@ -346,7 +345,7 @@ func withFrameworkContext(r *http.Request, c *Context) *http.Request {
 	if existing, ok := r.Context().Value(ctxKey{}).(*Context); ok && existing == c {
 		return r
 	}
-	return r.WithContext(context.WithValue(r.Context(), ctxKey{}, c))
+	return r.WithContext(withAarvContext(r.Context(), c))
 }
 
 func stripPrefixPreserveContext(prefix string, h http.Handler) http.Handler {

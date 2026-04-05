@@ -96,6 +96,9 @@ type gzipResponseWriter struct {
 	statusCode     int
 	headerSent     bool
 	compressed     bool
+	passthrough    bool
+	ctChecked      bool
+	ctExcluded     bool
 	isExcludedFunc func(string) bool
 }
 
@@ -111,11 +114,16 @@ func (grw *gzipResponseWriter) Write(b []byte) (int, error) {
 		return grw.gzWriter.Write(b)
 	}
 
+	if grw.passthrough {
+		return grw.ResponseWriter.Write(b)
+	}
+
 	// Check if content type is excluded
 	if grw.isExcludedFunc != nil {
-		ct := grw.ResponseWriter.Header().Get("Content-Type")
-		if ct != "" && grw.isExcludedFunc(ct) {
+		ctExcluded, known := grw.isContentTypeExcluded()
+		if known && ctExcluded {
 			// Skip compression for excluded types
+			grw.passthrough = true
 			grw.headerSent = true
 			grw.ResponseWriter.WriteHeader(grw.statusCode)
 			return grw.ResponseWriter.Write(b)
@@ -157,7 +165,7 @@ func (grw *gzipResponseWriter) finish() {
 	}
 	if !grw.compressed {
 		// Response was smaller than minSize — send uncompressed
-		if !grw.headerSent {
+		if !grw.headerSent && !grw.passthrough {
 			grw.headerSent = true
 			grw.ResponseWriter.WriteHeader(grw.statusCode)
 		}
@@ -173,6 +181,21 @@ func (grw *gzipResponseWriter) Unwrap() http.ResponseWriter {
 	return grw.ResponseWriter
 }
 
+func (grw *gzipResponseWriter) isContentTypeExcluded() (excluded, known bool) {
+	if grw.ctChecked {
+		return grw.ctExcluded, true
+	}
+
+	ct := grw.ResponseWriter.Header().Get("Content-Type")
+	if ct == "" {
+		return false, false
+	}
+
+	grw.ctChecked = true
+	grw.ctExcluded = grw.isExcludedFunc(ct)
+	return grw.ctExcluded, true
+}
+
 // deflateResponseWriter wraps http.ResponseWriter for deflate compression.
 type deflateResponseWriter struct {
 	http.ResponseWriter
@@ -183,6 +206,9 @@ type deflateResponseWriter struct {
 	statusCode     int
 	headerSent     bool
 	compressed     bool
+	passthrough    bool
+	ctChecked      bool
+	ctExcluded     bool
 	isExcludedFunc func(string) bool
 }
 
@@ -197,10 +223,15 @@ func (drw *deflateResponseWriter) Write(b []byte) (int, error) {
 		return drw.deflateWriter.Write(b)
 	}
 
+	if drw.passthrough {
+		return drw.ResponseWriter.Write(b)
+	}
+
 	// Check if content type is excluded
 	if drw.isExcludedFunc != nil {
-		ct := drw.ResponseWriter.Header().Get("Content-Type")
-		if ct != "" && drw.isExcludedFunc(ct) {
+		ctExcluded, known := drw.isContentTypeExcluded()
+		if known && ctExcluded {
+			drw.passthrough = true
 			drw.headerSent = true
 			drw.ResponseWriter.WriteHeader(drw.statusCode)
 			return drw.ResponseWriter.Write(b)
@@ -235,7 +266,7 @@ func (drw *deflateResponseWriter) finish() {
 		drw.pool.Put(drw.deflateWriter)
 	}
 	if !drw.compressed {
-		if !drw.headerSent {
+		if !drw.headerSent && !drw.passthrough {
 			drw.headerSent = true
 			drw.ResponseWriter.WriteHeader(drw.statusCode)
 		}
@@ -250,6 +281,21 @@ func (drw *deflateResponseWriter) Unwrap() http.ResponseWriter {
 	return drw.ResponseWriter
 }
 
+func (drw *deflateResponseWriter) isContentTypeExcluded() (excluded, known bool) {
+	if drw.ctChecked {
+		return drw.ctExcluded, true
+	}
+
+	ct := drw.ResponseWriter.Header().Get("Content-Type")
+	if ct == "" {
+		return false, false
+	}
+
+	drw.ctChecked = true
+	drw.ctExcluded = drw.isExcludedFunc(ct)
+	return drw.ctExcluded, true
+}
+
 func acquireGzipResponseWriter(w http.ResponseWriter, gz gzipCompressor, pool *sync.Pool, minSize int, isExcludedFunc func(string) bool) *gzipResponseWriter {
 	grw := gzipResponseWriterPool.Get().(*gzipResponseWriter)
 	grw.ResponseWriter = w
@@ -260,6 +306,9 @@ func acquireGzipResponseWriter(w http.ResponseWriter, gz gzipCompressor, pool *s
 	grw.statusCode = http.StatusOK
 	grw.headerSent = false
 	grw.compressed = false
+	grw.passthrough = false
+	grw.ctChecked = false
+	grw.ctExcluded = false
 	grw.isExcludedFunc = isExcludedFunc
 	return grw
 }
@@ -271,7 +320,7 @@ func releaseGzipResponseWriter(grw *gzipResponseWriter) {
 	grw.ResponseWriter = nil
 	grw.gzWriter = nil
 	grw.pool = nil
-	if cap(grw.buf) > 64<<10 {
+	if cap(grw.buf) > aarv.MaxPooledBufferCap {
 		grw.buf = nil
 	} else {
 		grw.buf = grw.buf[:0]
@@ -280,6 +329,9 @@ func releaseGzipResponseWriter(grw *gzipResponseWriter) {
 	grw.statusCode = http.StatusOK
 	grw.headerSent = false
 	grw.compressed = false
+	grw.passthrough = false
+	grw.ctChecked = false
+	grw.ctExcluded = false
 	grw.isExcludedFunc = nil
 	gzipResponseWriterPool.Put(grw)
 }
@@ -294,6 +346,9 @@ func acquireDeflateResponseWriter(w http.ResponseWriter, fw deflateCompressor, p
 	drw.statusCode = http.StatusOK
 	drw.headerSent = false
 	drw.compressed = false
+	drw.passthrough = false
+	drw.ctChecked = false
+	drw.ctExcluded = false
 	drw.isExcludedFunc = isExcludedFunc
 	return drw
 }
@@ -305,7 +360,7 @@ func releaseDeflateResponseWriter(drw *deflateResponseWriter) {
 	drw.ResponseWriter = nil
 	drw.deflateWriter = nil
 	drw.pool = nil
-	if cap(drw.buf) > 64<<10 {
+	if cap(drw.buf) > aarv.MaxPooledBufferCap {
 		drw.buf = nil
 	} else {
 		drw.buf = drw.buf[:0]
@@ -314,8 +369,140 @@ func releaseDeflateResponseWriter(drw *deflateResponseWriter) {
 	drw.statusCode = http.StatusOK
 	drw.headerSent = false
 	drw.compressed = false
+	drw.passthrough = false
+	drw.ctChecked = false
+	drw.ctExcluded = false
 	drw.isExcludedFunc = nil
 	deflateResponseWriterPool.Put(drw)
+}
+
+func selectEncoding(acceptEncoding string, preferGzip bool) string {
+	var gzipAccepted bool
+	var gzipSpecified bool
+	var deflateAccepted bool
+	var deflateSpecified bool
+	var wildcardAccepted bool
+
+	for len(acceptEncoding) > 0 {
+		part, rest, _ := strings.Cut(acceptEncoding, ",")
+		acceptEncoding = rest
+		part = trimASCIISpace(part)
+		if part == "" {
+			continue
+		}
+
+		token, params, _ := strings.Cut(part, ";")
+		token = trimASCIISpace(token)
+		accepted := qualityAllowed(params)
+
+		switch {
+		case asciiEqualFold(token, "gzip"):
+			gzipSpecified = true
+			gzipAccepted = accepted
+		case asciiEqualFold(token, "deflate"):
+			deflateSpecified = true
+			deflateAccepted = accepted
+		case token == "*":
+			wildcardAccepted = accepted
+		}
+	}
+
+	if wildcardAccepted {
+		if !gzipSpecified {
+			gzipAccepted = true
+		}
+		if !deflateSpecified {
+			deflateAccepted = true
+		}
+	}
+
+	if preferGzip {
+		if gzipAccepted {
+			return "gzip"
+		}
+		if deflateAccepted {
+			return "deflate"
+		}
+		return ""
+	}
+
+	if deflateAccepted {
+		return "deflate"
+	}
+	if gzipAccepted {
+		return "gzip"
+	}
+	return ""
+}
+
+func qualityAllowed(params string) bool {
+	if params == "" {
+		return true
+	}
+
+	for len(params) > 0 {
+		param, rest, _ := strings.Cut(params, ";")
+		params = rest
+		param = trimASCIISpace(param)
+		if param == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(param, "=")
+		if !ok {
+			continue
+		}
+		if !asciiEqualFold(trimASCIISpace(name), "q") {
+			continue
+		}
+		return qualityValuePositive(value)
+	}
+
+	return true
+}
+
+func qualityValuePositive(value string) bool {
+	sawDigit := false
+	for _, ch := range trimASCIISpace(value) {
+		switch {
+		case ch >= '1' && ch <= '9':
+			return true
+		case ch == '0':
+			sawDigit = true
+		case ch == '.':
+			continue
+		default:
+			return true
+		}
+	}
+	return !sawDigit
+}
+
+func trimASCIISpace(s string) string {
+	start := 0
+	for start < len(s) && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
+		start++
+	}
+	end := len(s)
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
+		end--
+	}
+	return s[start:end]
+}
+
+func asciiEqualFold(s, target string) bool {
+	if len(s) != len(target) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch >= 'A' && ch <= 'Z' {
+			ch += 'a' - 'A'
+		}
+		if ch != target[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // New creates a compression middleware with optional configuration.
@@ -378,53 +565,41 @@ func New(config ...Config) aarv.Middleware {
 
 	m := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			acceptEncoding := r.Header.Get("Accept-Encoding")
-
-			// Determine which encoding to use
-			acceptsGzip := strings.Contains(acceptEncoding, "gzip")
-			acceptsDeflate := strings.Contains(acceptEncoding, "deflate")
-
-			if !acceptsGzip && !acceptsDeflate {
+			encoding := selectEncoding(r.Header.Get("Accept-Encoding"), cfg.PreferGzip)
+			if encoding == "" {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			// Skip if the response is already encoded
+			// Skip if the response is already encoded.
 			if w.Header().Get("Content-Encoding") != "" {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			// Choose encoding: prefer gzip if configured and both are accepted
-			useGzip := acceptsGzip && (cfg.PreferGzip || !acceptsDeflate)
-
-			if useGzip {
+			if encoding == "gzip" {
 				gz := gzipPool.Get().(gzipCompressor)
 				gz.Reset(w)
 
 				grw := acquireGzipResponseWriter(w, gz, gzipPool, cfg.MinSize, isExcluded)
-
 				defer grw.finish()
 				next.ServeHTTP(grw, r)
-			} else {
-				fw := deflatePool.Get().(deflateCompressor)
-				fw.Reset(w)
-
-				drw := acquireDeflateResponseWriter(w, fw, deflatePool, cfg.MinSize, isExcluded)
-
-				defer drw.finish()
-				next.ServeHTTP(drw, r)
+				return
 			}
+
+			fw := deflatePool.Get().(deflateCompressor)
+			fw.Reset(w)
+
+			drw := acquireDeflateResponseWriter(w, fw, deflatePool, cfg.MinSize, isExcluded)
+			defer drw.finish()
+			next.ServeHTTP(drw, r)
 		})
 	}
 
 	native := func(next aarv.HandlerFunc) aarv.HandlerFunc {
 		return func(c *aarv.Context) error {
-			acceptEncoding := c.Header("Accept-Encoding")
-			acceptsGzip := strings.Contains(acceptEncoding, "gzip")
-			acceptsDeflate := strings.Contains(acceptEncoding, "deflate")
-
-			if !acceptsGzip && !acceptsDeflate {
+			encoding := selectEncoding(c.Header("Accept-Encoding"), cfg.PreferGzip)
+			if encoding == "" {
 				return next(c)
 			}
 
@@ -433,8 +608,7 @@ func New(config ...Config) aarv.Middleware {
 				return next(c)
 			}
 
-			useGzip := acceptsGzip && (cfg.PreferGzip || !acceptsDeflate)
-			if useGzip {
+			if encoding == "gzip" {
 				gz := gzipPool.Get().(gzipCompressor)
 				gz.Reset(orig)
 				grw := acquireGzipResponseWriter(orig, gz, gzipPool, cfg.MinSize, isExcluded)

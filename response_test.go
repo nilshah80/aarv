@@ -161,3 +161,11 @@ func TestResponseUnwrap(t *testing.T) {
 		t.Errorf("Expected hijack to return err on httptest context")
 	}
 }
+
+func TestReleaseBufferedWriterOversizedCap(t *testing.T) {
+	w := httptest.NewRecorder()
+	bw := acquireBufferedWriter(w)
+	// Grow the buffer beyond MaxPooledBufferCap
+	_, _ = bw.Write(make([]byte, MaxPooledBufferCap+1))
+	releaseBufferedWriter(bw) // should discard oversized buffer, not panic
+}

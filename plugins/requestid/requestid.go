@@ -11,7 +11,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	fastrand "math/rand/v2"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,15 +42,39 @@ func DefaultConfig() Config {
 	}
 }
 
+// FastConfig returns the request ID configuration optimized for throughput.
+// It keeps the default header name but switches generation to FastGenerator.
+func FastConfig() Config {
+	return Config{
+		Header:    "X-Request-ID",
+		Generator: FastGenerator,
+	}
+}
+
 // ulidState packs the last-seen millisecond (upper 48 bits) and a monotonic
 // counter (lower 16 bits) into a single uint64 for lock-free CAS updates.
 var ulidState atomic.Uint64
+
+// fastRandPool is a pool of independently-seeded ChaCha8 PRNGs.
+// Each goroutine gets its own PRNG instance, avoiding both the cost of
+// crypto/rand syscalls and mutex contention from a shared generator.
+var fastRandPool = sync.Pool{
+	New: func() any {
+		var seed [32]byte
+		if _, err := rand.Read(seed[:]); err != nil {
+			panic("requestid: failed to seed fast PRNG: " + err.Error())
+		}
+		return fastrand.New(fastrand.NewChaCha8(seed))
+	},
+}
 
 // ulidEncoding is Crockford's Base32 encoding.
 const ulidEncoding = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 // GenerateULID generates a ULID (Universally Unique Lexicographically Sortable Identifier).
 // Format: 10 characters timestamp (48-bit ms) + 16 characters randomness (80-bit).
+// This is the default generator and uses crypto/rand for strong randomness.
+// For higher throughput at the cost of weaker randomness, use FastGenerator.
 func GenerateULID() string {
 	var ulid [26]byte
 
@@ -94,6 +120,72 @@ func GenerateULID() string {
 	_, _ = rand.Read(randomness[2:])
 
 	// Encode 80 bits (10 bytes) as 16 chars (5 bits each)
+	ulid[10] = ulidEncoding[(randomness[0]>>3)&0x1F]
+	ulid[11] = ulidEncoding[((randomness[0]&0x07)<<2)|((randomness[1]>>6)&0x03)]
+	ulid[12] = ulidEncoding[(randomness[1]>>1)&0x1F]
+	ulid[13] = ulidEncoding[((randomness[1]&0x01)<<4)|((randomness[2]>>4)&0x0F)]
+	ulid[14] = ulidEncoding[((randomness[2]&0x0F)<<1)|((randomness[3]>>7)&0x01)]
+	ulid[15] = ulidEncoding[(randomness[3]>>2)&0x1F]
+	ulid[16] = ulidEncoding[((randomness[3]&0x03)<<3)|((randomness[4]>>5)&0x07)]
+	ulid[17] = ulidEncoding[randomness[4]&0x1F]
+	ulid[18] = ulidEncoding[(randomness[5]>>3)&0x1F]
+	ulid[19] = ulidEncoding[((randomness[5]&0x07)<<2)|((randomness[6]>>6)&0x03)]
+	ulid[20] = ulidEncoding[(randomness[6]>>1)&0x1F]
+	ulid[21] = ulidEncoding[((randomness[6]&0x01)<<4)|((randomness[7]>>4)&0x0F)]
+	ulid[22] = ulidEncoding[((randomness[7]&0x0F)<<1)|((randomness[8]>>7)&0x01)]
+	ulid[23] = ulidEncoding[(randomness[8]>>2)&0x1F]
+	ulid[24] = ulidEncoding[((randomness[8]&0x03)<<3)|((randomness[9]>>5)&0x07)]
+	ulid[25] = ulidEncoding[randomness[9]&0x1F]
+
+	return string(ulid[:])
+}
+
+// FastGenerator generates a ULID using a process-seeded ChaCha8 PRNG instead
+// of crypto/rand. This is significantly faster than GenerateULID because it
+// avoids per-request system calls to the kernel CSPRNG. The generated IDs are
+// still globally unique and lexicographically sortable, but use weaker
+// randomness — suitable for request tracing, not for security tokens.
+func FastGenerator() string {
+	rng := fastRandPool.Get().(*fastrand.Rand)
+	defer fastRandPool.Put(rng)
+
+	var ulid [26]byte
+
+	ms := time.Now().UnixMilli()
+	msU48 := uint64(ms) & 0xFFFFFFFFFFFF
+
+	var counter uint16
+	for {
+		old := ulidState.Load()
+		oldMs := old >> 16
+		var newState uint64
+		if msU48 == oldMs {
+			newState = (msU48 << 16) | uint64(uint16(old)+1)
+		} else {
+			newState = (msU48 << 16) | uint64(uint16(rng.Uint32()))
+		}
+		if ulidState.CompareAndSwap(old, newState) {
+			counter = uint16(newState)
+			break
+		}
+	}
+
+	ulid[0] = ulidEncoding[(ms>>45)&0x1F]
+	ulid[1] = ulidEncoding[(ms>>40)&0x1F]
+	ulid[2] = ulidEncoding[(ms>>35)&0x1F]
+	ulid[3] = ulidEncoding[(ms>>30)&0x1F]
+	ulid[4] = ulidEncoding[(ms>>25)&0x1F]
+	ulid[5] = ulidEncoding[(ms>>20)&0x1F]
+	ulid[6] = ulidEncoding[(ms>>15)&0x1F]
+	ulid[7] = ulidEncoding[(ms>>10)&0x1F]
+	ulid[8] = ulidEncoding[(ms>>5)&0x1F]
+	ulid[9] = ulidEncoding[ms&0x1F]
+
+	var randomness [10]byte
+	binary.BigEndian.PutUint16(randomness[:2], counter)
+	r64 := rng.Uint64()
+	binary.LittleEndian.PutUint64(randomness[2:], r64)
+
 	ulid[10] = ulidEncoding[(randomness[0]>>3)&0x1F]
 	ulid[11] = ulidEncoding[((randomness[0]&0x07)<<2)|((randomness[1]>>6)&0x03)]
 	ulid[12] = ulidEncoding[(randomness[1]>>1)&0x1F]

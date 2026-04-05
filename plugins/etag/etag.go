@@ -3,6 +3,9 @@
 // It computes a CRC32 hash of the response body and sets it as the ETag header.
 // If the client sends an If-None-Match header that matches the computed ETag,
 // a 304 Not Modified response is returned instead of the full body.
+//
+// WARNING: This middleware buffers the entire response body in memory to compute
+// the hash. Do not use on routes that serve large or streaming responses.
 package etag
 
 import (

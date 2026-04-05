@@ -2,9 +2,12 @@ package aarv
 
 import (
 	"fmt"
+	"net/http"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // CustomBinder is an interface for types that can bind themselves from the request context.
@@ -23,12 +26,11 @@ type ParamParser interface {
 type bindSource int
 
 const (
-	sourceParam       bindSource = iota // path parameter
-	sourceQuery                         // query string
-	sourceHeader                        // request header
-	sourceCookie                        // cookie
-	sourceForm                          // form data
-	sourceDefaultOnly                   // no binding source, only default value
+	sourceParam  bindSource = iota // path parameter
+	sourceQuery                    // query string
+	sourceHeader                   // request header
+	sourceCookie                   // cookie
+	sourceForm                     // form data
 )
 
 // fieldBinding describes how to populate a single struct field from the request.
@@ -36,21 +38,34 @@ type fieldBinding struct {
 	source         bindSource
 	name           string // tag value (e.g., "userId")
 	fieldIndex     []int  // reflect field index path
+	directIndex    int
+	hasDirectIndex bool
 	kind           reflect.Kind
 	fieldType      reflect.Type
+	setter         fieldSetter
 	defaultValue   string
 	hasDefault     bool
 	hasParamParser bool // true if field type implements ParamParser
 }
 
+type fieldSetter func(field reflect.Value, raw string) error
+
 // paramParserType is the reflect.Type for the ParamParser interface.
 var paramParserType = reflect.TypeOf((*ParamParser)(nil)).Elem()
+
+var (
+	binderCache      sync.Map
+	queryBinderCache sync.Map
+	formBinderCache  sync.Map
+)
 
 // structBinder holds pre-computed binding info for a struct type.
 type structBinder struct {
 	fields      []fieldBinding
+	defaults    []fieldBinding
 	hasDefaults bool
 	needBody    bool // true if any field uses json tag (body binding)
+	needForm    bool // true if any field uses form tag
 }
 
 // buildStructBinder inspects a struct type at registration time and returns a binder.
@@ -60,6 +75,10 @@ func buildStructBinder(t reflect.Type) *structBinder {
 	}
 	if t.Kind() != reflect.Struct {
 		return nil
+	}
+
+	if cached, ok := binderCache.Load(t); ok {
+		return cached.(*structBinder)
 	}
 
 	sb := &structBinder{}
@@ -75,19 +94,36 @@ func buildStructBinder(t reflect.Type) *structBinder {
 			if embedded != nil {
 				for _, ef := range embedded.fields {
 					ef.fieldIndex = append([]int{i}, ef.fieldIndex...)
+					ef.hasDirectIndex = false
 					sb.fields = append(sb.fields, ef)
+				}
+				for _, ef := range embedded.defaults {
+					ef.fieldIndex = append([]int{i}, ef.fieldIndex...)
+					ef.hasDirectIndex = false
+					sb.defaults = append(sb.defaults, ef)
+				}
+				if embedded.hasDefaults {
+					sb.hasDefaults = true
 				}
 				if embedded.needBody {
 					sb.needBody = true
+				}
+				if embedded.needForm {
+					sb.needForm = true
 				}
 			}
 			continue
 		}
 
 		fb := fieldBinding{
-			fieldIndex: f.Index,
-			kind:       f.Type.Kind(),
-			fieldType:  f.Type,
+			fieldIndex:     f.Index,
+			kind:           f.Type.Kind(),
+			fieldType:      f.Type,
+			setter:         buildFieldSetter(f.Type),
+			hasDirectIndex: len(f.Index) == 1,
+		}
+		if fb.hasDirectIndex {
+			fb.directIndex = f.Index[0]
 		}
 
 		// Check if the field type implements ParamParser
@@ -120,13 +156,12 @@ func buildStructBinder(t reflect.Type) *structBinder {
 		} else if tag := f.Tag.Get("form"); tag != "" {
 			fb.source = sourceForm
 			fb.name = tag
+			sb.needForm = true
 			sb.fields = append(sb.fields, fb)
-		} else if fb.hasDefault {
-			// Field has a default but no binding source (e.g., JSON-only fields).
-			// Track it so applyDefaults can set the default for zero-value fields.
-			fb.source = sourceDefaultOnly
-			fb.name = f.Name
-			sb.fields = append(sb.fields, fb)
+		}
+
+		if fb.hasDefault {
+			sb.defaults = append(sb.defaults, fb)
 		}
 
 		if tag := f.Tag.Get("json"); tag != "" && tag != "-" {
@@ -134,6 +169,92 @@ func buildStructBinder(t reflect.Type) *structBinder {
 		}
 	}
 
+	binderCache.Store(t, sb)
+	return sb
+}
+
+type simpleFieldBinding struct {
+	name       string
+	fieldIndex int
+	setter     fieldSetter
+	defaultVal string
+	hasDefault bool
+}
+
+type simpleBinder struct {
+	fields []simpleFieldBinding
+}
+
+func buildQueryBinder(t reflect.Type) *simpleBinder {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	if cached, ok := queryBinderCache.Load(t); ok {
+		return cached.(*simpleBinder)
+	}
+
+	sb := &simpleBinder{}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		tag := f.Tag.Get("query")
+		if tag == "" {
+			continue
+		}
+		sb.fields = append(sb.fields, simpleFieldBinding{
+			name:       tag,
+			fieldIndex: i,
+			setter:     buildFieldSetter(f.Type),
+			defaultVal: f.Tag.Get("default"),
+			hasDefault: f.Tag.Get("default") != "",
+		})
+	}
+	queryBinderCache.Store(t, sb)
+	return sb
+}
+
+func buildFormBinder(t reflect.Type) *simpleBinder {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	if cached, ok := formBinderCache.Load(t); ok {
+		return cached.(*simpleBinder)
+	}
+
+	sb := &simpleBinder{}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		tag := f.Tag.Get("form")
+		if tag == "" {
+			tag = f.Tag.Get("json")
+		}
+		if tag == "" || tag == "-" {
+			continue
+		}
+		if idx := strings.IndexByte(tag, ','); idx >= 0 {
+			tag = tag[:idx]
+		}
+		if tag == "" {
+			continue
+		}
+		sb.fields = append(sb.fields, simpleFieldBinding{
+			name:       tag,
+			fieldIndex: i,
+			setter:     buildFieldSetter(f.Type),
+		})
+	}
+	formBinderCache.Store(t, sb)
 	return sb
 }
 
@@ -149,6 +270,22 @@ func (sb *structBinder) bind(c *Context, dest any) error {
 		v = v.Elem()
 	}
 
+	// Parse form once before the loop if any field needs it.
+	// net/http caches the result, but calling it per-field still acquires
+	// an internal mutex each time.
+	var formParsed bool
+	var queryValues url.Values
+	var headers http.Header
+	var formValues url.Values
+	if sb.needForm {
+		formParsed = c.req.ParseForm() == nil
+		if formParsed {
+			formValues = c.req.Form
+		}
+	}
+	queryValues = c.queryValues()
+	headers = c.req.Header
+
 	for _, fb := range sb.fields {
 		var raw string
 		var found bool
@@ -158,10 +295,10 @@ func (sb *structBinder) bind(c *Context, dest any) error {
 			raw = c.Param(fb.name)
 			found = raw != ""
 		case sourceQuery:
-			raw = c.Query(fb.name)
+			raw = queryValues.Get(fb.name)
 			found = raw != ""
 		case sourceHeader:
-			raw = c.Header(fb.name)
+			raw = headers.Get(fb.name)
 			found = raw != ""
 		case sourceCookie:
 			cookie, err := c.Cookie(fb.name)
@@ -170,13 +307,10 @@ func (sb *structBinder) bind(c *Context, dest any) error {
 				found = true
 			}
 		case sourceForm:
-			if err := c.req.ParseForm(); err == nil {
-				raw = c.req.FormValue(fb.name)
+			if formParsed {
+				raw = formValues.Get(fb.name)
 				found = raw != ""
 			}
-		case sourceDefaultOnly:
-			// No binding source — defaults are applied by applyDefaults.
-			continue
 		}
 
 		if !found && fb.hasDefault {
@@ -189,6 +323,9 @@ func (sb *structBinder) bind(c *Context, dest any) error {
 		}
 
 		field := v.FieldByIndex(fb.fieldIndex)
+		if fb.hasDirectIndex {
+			field = v.Field(fb.directIndex)
+		}
 
 		// If field implements ParamParser, use it
 		if fb.hasParamParser {
@@ -198,7 +335,7 @@ func (sb *structBinder) bind(c *Context, dest any) error {
 			continue
 		}
 
-		if err := setFieldValue(field, raw); err != nil {
+		if err := fb.setter(field, raw); err != nil {
 			return fmt.Errorf("field %s: %w", fb.name, err)
 		}
 	}
@@ -226,11 +363,11 @@ func (sb *structBinder) applyDefaults(dest any) {
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
-	for _, fb := range sb.fields {
-		if !fb.hasDefault {
-			continue
-		}
+	for _, fb := range sb.defaults {
 		field := v.FieldByIndex(fb.fieldIndex)
+		if fb.hasDirectIndex {
+			field = v.Field(fb.directIndex)
+		}
 		if field.IsZero() {
 			_ = setFieldValue(field, fb.defaultValue)
 		}
@@ -238,42 +375,100 @@ func (sb *structBinder) applyDefaults(dest any) {
 }
 
 func setFieldValue(field reflect.Value, raw string) error {
-	switch field.Kind() {
+	return buildFieldSetter(field.Type())(field, raw)
+}
+
+func buildFieldSetter(t reflect.Type) fieldSetter {
+	switch t.Kind() {
 	case reflect.String:
-		field.SetString(raw)
+		return func(field reflect.Value, raw string) error {
+			field.SetString(raw)
+			return nil
+		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		n, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil {
-			return fmt.Errorf("cannot parse %q as int: %w", raw, err)
+		return func(field reflect.Value, raw string) error {
+			n, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				return fmt.Errorf("cannot parse %q as int: %w", raw, err)
+			}
+			field.SetInt(n)
+			return nil
 		}
-		field.SetInt(n)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		n, err := strconv.ParseUint(raw, 10, 64)
-		if err != nil {
-			return fmt.Errorf("cannot parse %q as uint: %w", raw, err)
+		return func(field reflect.Value, raw string) error {
+			n, err := strconv.ParseUint(raw, 10, 64)
+			if err != nil {
+				return fmt.Errorf("cannot parse %q as uint: %w", raw, err)
+			}
+			field.SetUint(n)
+			return nil
 		}
-		field.SetUint(n)
 	case reflect.Float32, reflect.Float64:
-		f, err := strconv.ParseFloat(raw, 64)
-		if err != nil {
-			return fmt.Errorf("cannot parse %q as float: %w", raw, err)
+		return func(field reflect.Value, raw string) error {
+			f, err := strconv.ParseFloat(raw, 64)
+			if err != nil {
+				return fmt.Errorf("cannot parse %q as float: %w", raw, err)
+			}
+			field.SetFloat(f)
+			return nil
 		}
-		field.SetFloat(f)
 	case reflect.Bool:
-		b, err := strconv.ParseBool(raw)
-		if err != nil {
-			return fmt.Errorf("cannot parse %q as bool: %w", raw, err)
+		return func(field reflect.Value, raw string) error {
+			b, err := strconv.ParseBool(raw)
+			if err != nil {
+				return fmt.Errorf("cannot parse %q as bool: %w", raw, err)
+			}
+			field.SetBool(b)
+			return nil
 		}
-		field.SetBool(b)
 	case reflect.Slice:
-		if field.Type().Elem().Kind() == reflect.String {
-			parts := strings.Split(raw, ",")
-			field.Set(reflect.ValueOf(parts))
+		if t.Elem().Kind() == reflect.String {
+			return func(field reflect.Value, raw string) error {
+				field.Set(reflect.ValueOf(strings.Split(raw, ",")))
+				return nil
+			}
 		}
-	default:
-		return fmt.Errorf("unsupported field kind: %s", field.Kind())
 	}
-	return nil
+
+	return func(field reflect.Value, raw string) error {
+		switch field.Kind() {
+		case reflect.String:
+			field.SetString(raw)
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			n, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				return fmt.Errorf("cannot parse %q as int: %w", raw, err)
+			}
+			field.SetInt(n)
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			n, err := strconv.ParseUint(raw, 10, 64)
+			if err != nil {
+				return fmt.Errorf("cannot parse %q as uint: %w", raw, err)
+			}
+			field.SetUint(n)
+		case reflect.Float32, reflect.Float64:
+			f, err := strconv.ParseFloat(raw, 64)
+			if err != nil {
+				return fmt.Errorf("cannot parse %q as float: %w", raw, err)
+			}
+			field.SetFloat(f)
+		case reflect.Bool:
+			b, err := strconv.ParseBool(raw)
+			if err != nil {
+				return fmt.Errorf("cannot parse %q as bool: %w", raw, err)
+			}
+			field.SetBool(b)
+		case reflect.Slice:
+			if field.Type().Elem().Kind() == reflect.String {
+				field.Set(reflect.ValueOf(strings.Split(raw, ",")))
+				return nil
+			}
+			fallthrough
+		default:
+			return fmt.Errorf("unsupported field kind: %s", field.Kind())
+		}
+		return nil
+	}
 }
 
 // bindQueryParams binds query parameters to a struct (used by Context.BindQuery).
@@ -282,30 +477,27 @@ func bindQueryParams(c *Context, dest any) error {
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
+	binder := buildQueryBinder(t)
+	if binder == nil {
+		return nil
+	}
 	v := reflect.ValueOf(dest)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
 
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		if !f.IsExported() {
-			continue
-		}
-		tag := f.Tag.Get("query")
-		if tag == "" {
-			continue
-		}
-		raw := c.Query(tag)
+	query := c.queryValues()
+	for _, fb := range binder.fields {
+		raw := query.Get(fb.name)
 		if raw == "" {
-			if def := f.Tag.Get("default"); def != "" {
-				raw = def
+			if fb.hasDefault {
+				raw = fb.defaultVal
 			} else {
 				continue
 			}
 		}
-		if err := setFieldValue(v.Field(i), raw); err != nil {
-			return fmt.Errorf("query field %s: %w", tag, err)
+		if err := fb.setter(v.Field(fb.fieldIndex), raw); err != nil {
+			return fmt.Errorf("query field %s: %w", fb.name, err)
 		}
 	}
 	return nil
@@ -317,29 +509,26 @@ func bindFormValues(c *Context, dest any) error {
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
+	binder := buildFormBinder(t)
+	if binder == nil {
+		return nil
+	}
 	v := reflect.ValueOf(dest)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
+	if err := c.req.ParseForm(); err != nil {
+		return err
+	}
+	formValues := c.req.Form
 
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		if !f.IsExported() {
-			continue
-		}
-		tag := f.Tag.Get("form")
-		if tag == "" {
-			tag = f.Tag.Get("json")
-		}
-		if tag == "" || tag == "-" {
-			continue
-		}
-		raw := c.req.FormValue(tag)
+	for _, fb := range binder.fields {
+		raw := formValues.Get(fb.name)
 		if raw == "" {
 			continue
 		}
-		if err := setFieldValue(v.Field(i), raw); err != nil {
-			return fmt.Errorf("form field %s: %w", tag, err)
+		if err := fb.setter(v.Field(fb.fieldIndex), raw); err != nil {
+			return fmt.Errorf("form field %s: %w", fb.name, err)
 		}
 	}
 	return nil

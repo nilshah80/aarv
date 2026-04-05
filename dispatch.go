@@ -1,7 +1,6 @@
 package aarv
 
 import (
-	"context"
 	"net/http"
 	"net/url"
 	"strings"
@@ -419,7 +418,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Set up context bridge for stdlib middleware/plugin access via FromRequest.
 	if a.config.RequestContextBridge {
-		r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, c))
+		r = r.WithContext(withAarvContext(r.Context(), c))
 		c.req = r
 	} else {
 		storeRequestContext(r, c)

@@ -129,6 +129,27 @@ func TestNewAdditionalBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("native path with FastGenerator", func(t *testing.T) {
+		app := aarv.New(aarv.WithBanner(false))
+		app.Use(New(FastConfig()))
+		app.Get("/id", func(c *aarv.Context) error {
+			return c.Text(http.StatusOK, c.RequestID())
+		})
+
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/id", nil))
+
+		id := rec.Body.String()
+		if len(id) != 26 {
+			t.Fatalf("expected 26-char ULID from FastGenerator, got %q", id)
+		}
+		for _, r := range id {
+			if !strings.ContainsRune(ulidEncoding, r) {
+				t.Fatalf("unexpected ulid rune %q in FastGenerator output", r)
+			}
+		}
+	})
+
 	t.Run("stdlib path updates aarv context when present", func(t *testing.T) {
 		app := aarv.New(aarv.WithBanner(false))
 		app.Use(func(next http.Handler) http.Handler {
@@ -156,4 +177,91 @@ func TestNewAdditionalBranches(t *testing.T) {
 			t.Fatalf("unexpected aarv body %q", body)
 		}
 	})
+}
+
+func TestFastGeneratorUniqueness(t *testing.T) {
+	ids := make(map[string]struct{}, 10000)
+	for i := 0; i < 10000; i++ {
+		id := FastGenerator()
+		if _, dup := ids[id]; dup {
+			t.Fatalf("duplicate FastGenerator ID at iteration %d: %q", i, id)
+		}
+		ids[id] = struct{}{}
+	}
+}
+
+func TestFastConfig(t *testing.T) {
+	cfg := FastConfig()
+	if cfg.Header != "X-Request-ID" {
+		t.Fatalf("expected default header, got %q", cfg.Header)
+	}
+	if cfg.Generator == nil {
+		t.Fatal("expected fast generator to be configured")
+	}
+	id := cfg.Generator()
+	if len(id) != 26 {
+		t.Fatalf("expected 26-char ULID from fast config, got %q", id)
+	}
+}
+
+func BenchmarkGenerateULID(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		GenerateULID()
+	}
+}
+
+func BenchmarkFastGenerator(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		FastGenerator()
+	}
+}
+
+func BenchmarkGenerateULID_Parallel(b *testing.B) {
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			GenerateULID()
+		}
+	})
+}
+
+func BenchmarkFastGenerator_Parallel(b *testing.B) {
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			FastGenerator()
+		}
+	})
+}
+
+func BenchmarkMiddleware_CryptoULID(b *testing.B) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New()) // default: GenerateULID with crypto/rand
+	app.Get("/", func(c *aarv.Context) error {
+		return c.NoContent(200)
+	})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	}
+}
+
+func BenchmarkMiddleware_FastGenerator(b *testing.B) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(FastConfig()))
+	app.Get("/", func(c *aarv.Context) error {
+		return c.NoContent(200)
+	})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	}
 }

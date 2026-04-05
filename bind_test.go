@@ -442,6 +442,32 @@ func TestBindingAndHandlerAdditionalCoverage(t *testing.T) {
 		if hidden := buildStructBinder(reflect.TypeOf(hiddenOnly{})); hidden == nil || len(hidden.fields) != 0 {
 			t.Fatalf("expected unexported binding fields to be skipped, got %+v", hidden)
 		}
+
+		type EmbeddedDefaults struct {
+			Page int `form:"page" default:"3"`
+		}
+		type embeddedPayload struct {
+			EmbeddedDefaults
+		}
+		embeddedReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("page=9"))
+		embeddedReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		embeddedApp := New(WithBanner(false))
+		embeddedCtx, _ := newAppContext(embeddedApp, embeddedReq)
+		defer embeddedApp.ReleaseContext(embeddedCtx)
+
+		embeddedBinder := buildStructBinder(reflect.TypeOf(embeddedPayload{}))
+		if embeddedBinder == nil || !embeddedBinder.needForm || !embeddedBinder.hasDefaults {
+			t.Fatalf("expected embedded binder to propagate form/default metadata, got %+v", embeddedBinder)
+		}
+
+		var embeddedGot embeddedPayload
+		if err := embeddedBinder.bind(embeddedCtx, &embeddedGot); err != nil {
+			t.Fatalf("unexpected embedded bind error: %v", err)
+		}
+		embeddedBinder.applyDefaults(&embeddedGot)
+		if embeddedGot.Page != 9 {
+			t.Fatalf("expected embedded form value to bind, got %+v", embeddedGot)
+		}
 	})
 
 	t.Run("custom binder, query and form helpers, set field value", func(t *testing.T) {

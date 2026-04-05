@@ -77,15 +77,18 @@ type validationRule struct {
 }
 
 type fieldValidator struct {
-	name       string // json/field name for error messages
-	fieldIndex []int
-	kind       reflect.Kind
-	fieldType  reflect.Type
-	rules      []validationRule
-	nested     *structValidator // for nested structs
-	dive       *structValidator // for nested slice/map elements
-	hasDive    bool
-	diveRules  []validationRule // rules applied to each slice/map element
+	name           string // json/field name for error messages
+	fieldIndex     []int
+	directIndex    int
+	hasDirectIndex bool
+	kind           reflect.Kind
+	fieldType      reflect.Type
+	rules          []validationRule
+	hasOmitEmpty   bool
+	nested         *structValidator // for nested structs
+	dive           *structValidator // for nested slice/map elements
+	hasDive        bool
+	diveRules      []validationRule // rules applied to each slice/map element
 }
 
 type structValidator struct {
@@ -141,10 +144,14 @@ func buildStructValidator(t reflect.Type) *structValidator {
 		}
 
 		fv := fieldValidator{
-			name:       name,
-			fieldIndex: f.Index,
-			kind:       f.Type.Kind(),
-			fieldType:  f.Type,
+			name:           name,
+			fieldIndex:     f.Index,
+			kind:           f.Type.Kind(),
+			fieldType:      f.Type,
+			hasDirectIndex: len(f.Index) == 1,
+		}
+		if fv.hasDirectIndex {
+			fv.directIndex = f.Index[0]
 		}
 
 		if tag != "" {
@@ -156,6 +163,7 @@ func buildStructValidator(t reflect.Type) *structValidator {
 			} else {
 				fv.rules = rules
 			}
+			fv.hasOmitEmpty = hasOmitEmptyRule(fv.rules)
 			hasRules = true
 		}
 
@@ -248,17 +256,12 @@ func (sv *structValidator) validate(dest any) []ValidationError {
 
 	for _, fv := range sv.fields {
 		field := v.FieldByIndex(fv.fieldIndex)
-
-		// Check for omitempty: skip all validation if field is zero
-		skipRules := false
-		for _, rule := range fv.rules {
-			if rule.tag == "omitempty" {
-				if isZero(field) {
-					skipRules = true
-				}
-				break
-			}
+		if fv.hasDirectIndex {
+			field = v.Field(fv.directIndex)
 		}
+
+		// Check for omitempty: skip all validation if field is zero.
+		skipRules := fv.hasOmitEmpty && isZero(field)
 
 		if !skipRules {
 			for _, rule := range fv.rules {

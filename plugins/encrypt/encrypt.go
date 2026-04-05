@@ -3,6 +3,10 @@
 // It encrypts response bodies and decrypts request bodies using AES-256-GCM
 // authenticated encryption. This provides both confidentiality and integrity.
 //
+// WARNING: This middleware fully reads request bodies and buffers entire response
+// bodies in memory for encryption/decryption. Do not use on routes that handle
+// large or streaming payloads.
+//
 // Usage:
 //
 //	key := encrypt.GenerateKey() // Generate a 256-bit key

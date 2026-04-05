@@ -63,6 +63,7 @@ Concrete examples live under [`examples/`](./examples):
 - `examples/middleware-bridge` — stdlib middleware using `r.WithContext(...)` with Aarv compatibility
 - `examples/json-logger` — standard logger plus debug, production-safe, and minimal `verboselog` presets
 - `examples/encrypt` — AES-GCM request/response encryption
+- `examples/performance-profile` — bridge-off plus fast JSON codec for throughput-oriented services
 - `examples/custom-plugin` — decorators, dependencies, plugin-scoped routes, dual middleware registration
 - `examples/auth` — JWT, API key, and session auth
 - `examples/database` — repository-style app with typed handlers
@@ -201,6 +202,51 @@ app := aarv.New(
     aarv.WithRequestContextBridge(false),
 )
 ```
+
+## Middleware Buffering Notes
+
+Not all middleware have the same memory and streaming behavior. For production workloads, the important split is:
+
+- Stream-safe: plain routing, native middleware, most header-only middleware, `bodylimit`, `recover`, `requestid`, `secure`, `cors`
+- Bounded-buffer: `compress` buffers until the compression threshold decision is made; `verboselog` with body logging buffers captured request bytes and response bytes up to `MaxBodySize`
+- Full-buffer: `etag` buffers the full response body; `encrypt` fully reads encrypted request bodies and buffers full response bodies for encryption
+
+Use the full-buffer plugins only on routes where payload size is bounded and intentional. For large file, streaming, or long-lived responses, keep those routes on stream-safe middleware only.
+
+## Recommended Performance Profile
+
+For services where raw throughput matters more than maximum stdlib middleware compatibility, the measured fast-path profile is:
+
+```go
+import (
+    "github.com/nilshah80/aarv"
+    "github.com/nilshah80/aarv/codec/segmentio"
+)
+
+app := aarv.New(
+    aarv.WithBanner(false),
+    aarv.WithRequestContextBridge(false),
+    aarv.WithCodec(segmentio.New()),
+)
+```
+
+Why this profile:
+
+- `WithRequestContextBridge(false)` removes the cloned-request compatibility overhead for stdlib middleware stacks that never need `aarv.FromRequest(...)` after `r.WithContext(...)`.
+- `segmentio.New()` is currently the best measured JSON codec in the local benchmark harness for both `c.JSON(...)` and bind/decode workloads.
+
+Current local benchmark signal from `tests/benchmark`:
+
+- stdlib middleware chain with bridge on: about `219 ns/op`, `856 B/op`, `5 allocs/op`
+- stdlib middleware chain with bridge off: about `177-181 ns/op`, `512 B/op`, `3 allocs/op`
+- default stdlib JSON response path: about `399-408 ns/op`, `945 B/op`, `9 allocs/op`
+- segmentio JSON response path: about `356-364 ns/op`, `884 B/op`, `7 allocs/op`
+- default stdlib bind path: about `1010-1021 ns/op`, `1308 B/op`, `16 allocs/op`
+- segmentio bind path: about `642-658 ns/op`, `1085-1087 B/op`, `12 allocs/op`
+
+These numbers are machine- and workload-dependent, but the ordering has been stable in the benchmark harness.
+
+See [`examples/performance-profile`](./examples/performance-profile) for a runnable setup using this profile.
 
 ## Architecture
 

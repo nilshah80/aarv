@@ -34,9 +34,20 @@ func acquireBufferedWriter(w http.ResponseWriter) *bufferedResponseWriter {
 	return bw
 }
 
+// MaxPooledBufferCap is the repo-wide maximum buffer capacity retained when
+// returning pooled bytes.Buffer instances. Buffers that grew beyond this limit
+// (e.g. from a single large response) are discarded to prevent permanently
+// inflated RSS. All pooled buffer release functions should use this constant
+// to keep the memory retention policy consistent.
+const MaxPooledBufferCap = 64 * 1024 // 64KB
+
 func releaseBufferedWriter(bw *bufferedResponseWriter) {
 	bw.ResponseWriter = nil
-	bw.buf.Reset()
+	if bw.buf.Cap() > MaxPooledBufferCap {
+		bw.buf = bytes.Buffer{} // discard oversized backing array
+	} else {
+		bw.buf.Reset()
+	}
 	bufferedWriterPool.Put(bw)
 }
 

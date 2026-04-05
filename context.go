@@ -512,9 +512,6 @@ func (c *Context) BindQuery(dest any) error {
 
 // BindForm decodes form data into dest.
 func (c *Context) BindForm(dest any) error {
-	if err := c.req.ParseForm(); err != nil {
-		return err
-	}
 	return bindFormValues(c, dest)
 }
 

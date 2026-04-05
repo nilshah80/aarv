@@ -23,7 +23,7 @@ func Bind[Req any, Res any](fn func(*Context, Req) (Res, error)) HandlerFunc {
 		return registerPreHandledHandler(func(c *Context) error {
 			var req Req
 
-			if c.req.ContentLength > 0 {
+			if c.req.ContentLength != 0 {
 				if c.app != nil && c.app.hasPreParsing {
 					if err := c.app.hooks.run(PreParsing, c); err != nil {
 						return err
@@ -74,7 +74,7 @@ func Bind[Req any, Res any](fn func(*Context, Req) (Res, error)) HandlerFunc {
 		}
 
 		// Step 2: Body parsing (only if struct has json tags and body exists)
-		if needBody && c.req.ContentLength > 0 {
+		if needBody && c.req.ContentLength != 0 {
 			if c.app != nil && c.app.hasPreParsing {
 				if err := c.app.hooks.run(PreParsing, c); err != nil {
 					return err
@@ -137,7 +137,7 @@ func BindReq[Req any](fn func(*Context, Req) error) HandlerFunc {
 		return registerPreHandledHandler(func(c *Context) error {
 			var req Req
 
-			if c.req.ContentLength > 0 {
+			if c.req.ContentLength != 0 {
 				if c.app != nil && c.app.hasPreParsing {
 					if err := c.app.hooks.run(PreParsing, c); err != nil {
 						return err
@@ -179,7 +179,7 @@ func BindReq[Req any](fn func(*Context, Req) error) HandlerFunc {
 			}
 		}
 
-		if needBody && c.req.ContentLength > 0 {
+		if needBody && c.req.ContentLength != 0 {
 			if c.app != nil && c.app.hasPreParsing {
 				if err := c.app.hooks.run(PreParsing, c); err != nil {
 					return err

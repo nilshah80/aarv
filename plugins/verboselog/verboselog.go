@@ -7,6 +7,11 @@
 // This is useful for debugging, auditing, and API monitoring. Use with caution in production
 // as it may log sensitive data and has performance overhead from body buffering.
 //
+// When body logging is enabled (the default), this middleware captures request body bytes
+// as the handler reads them and buffers the response body up to MaxBodySize. This makes it
+// a bounded-buffer middleware — avoid applying it to routes that serve very large responses
+// unless body logging is disabled via Config.
+//
 // Usage:
 //
 //	// Enable JSON output for slog first
@@ -22,6 +27,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +51,8 @@ type Config struct {
 	Level slog.Level
 
 	// LogRequestBody enables logging of request body.
+	// Only bytes actually consumed by the downstream handler are captured;
+	// if the handler does not read the body, it will not appear in the log.
 	// Default: true.
 	LogRequestBody bool
 
@@ -225,6 +233,29 @@ func (w *bodyCapturingWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
+// bodyTeeReader wraps a request body, capturing up to limit bytes
+// for logging while passing the full stream to downstream handlers.
+type bodyTeeReader struct {
+	reader io.ReadCloser
+	buf    *bytes.Buffer
+	limit  int
+}
+
+func (t *bodyTeeReader) Read(p []byte) (int, error) {
+	n, err := t.reader.Read(p)
+	if n > 0 {
+		remaining := t.limit - t.buf.Len()
+		if remaining > 0 {
+			t.buf.Write(p[:min(n, remaining)])
+		}
+	}
+	return n, err
+}
+
+func (t *bodyTeeReader) Close() error {
+	return t.reader.Close()
+}
+
 func acquireBodyBuffer() *bytes.Buffer {
 	buf := bodyBufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
@@ -234,6 +265,9 @@ func acquireBodyBuffer() *bytes.Buffer {
 func releaseBodyBuffer(buf *bytes.Buffer) {
 	if buf == nil {
 		return
+	}
+	if buf.Cap() > aarv.MaxPooledBufferCap {
+		return // discard oversized buffer
 	}
 	buf.Reset()
 	bodyBufferPool.Put(buf)
@@ -250,8 +284,75 @@ func clientIP(r *http.Request) string {
 		}
 		return xff
 	}
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
 	return ip
+}
+
+// extractHeaders builds a map of header name to value, redacting sensitive headers.
+func extractHeaders(headers http.Header, sensitiveHeaders map[string]struct{}, redact bool) map[string]string {
+	m := make(map[string]string, len(headers))
+	for k, v := range headers {
+		if redact {
+			if _, sensitive := sensitiveHeaders[k]; sensitive {
+				m[k] = "[REDACTED]"
+				continue
+			}
+		}
+		m[k] = firstOrJoin(v)
+	}
+	return m
+}
+
+// extractQueryParams builds a map of query parameter name to value, redacting sensitive fields.
+func extractQueryParams(values url.Values, sensitiveFields map[string]struct{}, redact bool) map[string]string {
+	m := make(map[string]string, len(values))
+	for k, v := range values {
+		if redact {
+			if _, sensitive := sensitiveFields[strings.ToLower(k)]; sensitive {
+				m[k] = "[REDACTED]"
+				continue
+			}
+		}
+		m[k] = firstOrJoin(v)
+	}
+	return m
+}
+
+// formatBodyForLog truncates and optionally redacts a body byte slice for logging.
+func formatBodyForLog(body []byte, maxSize int, redact bool, patterns []redactionPattern) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var s string
+	if len(body) > maxSize {
+		s = string(body[:maxSize]) + "[truncated]"
+	} else {
+		s = string(body)
+	}
+	if redact {
+		s = redactSensitiveBody(s, patterns)
+	}
+	return s
+}
+
+// formatRespBodyForLog truncates and optionally redacts a response body buffer for logging.
+func formatRespBodyForLog(buf *bytes.Buffer, maxSize int, redact bool, patterns []redactionPattern) string {
+	if buf.Len() == 0 {
+		return ""
+	}
+	var s string
+	if buf.Len() >= maxSize {
+		s = buf.String() + "[truncated]"
+	} else {
+		s = buf.String()
+	}
+	if redact {
+		s = redactSensitiveBody(s, patterns)
+	}
+	return s
 }
 
 // New creates a full request/response dump logger middleware.
@@ -259,6 +360,10 @@ func New(config ...Config) aarv.Middleware {
 	cfg := DefaultConfig()
 	if len(config) > 0 {
 		cfg = config[0]
+	}
+
+	if cfg.MaxBodySize < 0 {
+		cfg.MaxBodySize = 0
 	}
 
 	// Build skip paths set
@@ -294,6 +399,13 @@ func New(config ...Config) aarv.Middleware {
 		return ok
 	}
 
+	// Pre-compute per-surface redaction booleans (avoids function call + map lookup per header)
+	redactReqHeaders := shouldRedact(RedactRequestHeaders)
+	redactRespHeaders := shouldRedact(RedactResponseHeaders)
+	redactQueryParams := shouldRedact(RedactQueryParams)
+	redactReqBody := shouldRedact(RedactRequestBody)
+	redactRespBody := shouldRedact(RedactResponseBody)
+
 	m := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
@@ -312,57 +424,44 @@ func New(config ...Config) aarv.Middleware {
 				requestID = c.RequestID()
 			}
 
-			// Capture request body
-			var reqBody []byte
-			if cfg.LogRequestBody && r.Body != nil && r.ContentLength > 0 {
-				reqBody, _ = io.ReadAll(io.LimitReader(r.Body, int64(cfg.MaxBodySize)+1))
-				if closeErr := r.Body.Close(); closeErr != nil {
-					if c, ok := aarv.FromRequest(r); ok {
-						c.Logger().Warn("verboselog request body close failed", "error", closeErr)
-					} else {
-						slog.Warn("verboselog request body close failed", "error", closeErr, "path", path)
-					}
+			// Capture request body using tee reader so downstream gets the full body.
+			// The tee only records bytes the handler actually reads — it never
+			// drains unread bytes, so slow/streaming uploads are not stalled.
+			var reqBodyBuf *bytes.Buffer
+			if cfg.LogRequestBody && r.Body != nil && r.ContentLength != 0 {
+				reqBodyBuf = acquireBodyBuffer()
+				r.Body = &bodyTeeReader{
+					reader: r.Body,
+					buf:    reqBodyBuf,
+					limit:  cfg.MaxBodySize + 1,
 				}
-				// Restore the body for downstream handlers
-				r.Body = io.NopCloser(bytes.NewReader(reqBody))
 			}
 
 			// Build request headers map
 			var reqHeaders map[string]string
 			if cfg.LogRequestHeaders {
-				reqHeaders = make(map[string]string, len(r.Header))
-				for k, v := range r.Header {
-					if shouldRedact(RedactRequestHeaders) {
-						if _, sensitive := sensitiveHeaders[k]; sensitive {
-							reqHeaders[k] = "[REDACTED]"
-							continue
-						}
-					}
-					reqHeaders[k] = firstOrJoin(v)
-				}
+				reqHeaders = extractHeaders(r.Header, sensitiveHeaders, redactReqHeaders)
 			}
 
 			// Build query params map (only if enabled)
 			var queryParams map[string]string
 			if cfg.LogQueryParams {
-				queryParams = make(map[string]string, len(r.URL.Query()))
-				for k, v := range r.URL.Query() {
-					if shouldRedact(RedactQueryParams) {
-						if _, sensitive := sensitiveFields[strings.ToLower(k)]; sensitive {
-							queryParams[k] = "[REDACTED]"
-							continue
-						}
-					}
-					queryParams[k] = firstOrJoin(v)
+				qv := r.URL.Query()
+				if len(qv) > 0 {
+					queryParams = extractQueryParams(qv, sensitiveFields, redactQueryParams)
 				}
 			}
 
 			// Create response body capturing writer
-			bodyBuf := acquireBodyBuffer()
-			defer releaseBodyBuffer(bodyBuf)
+			respBodyBuf := acquireBodyBuffer()
+			// Defer cleanup of pooled buffers to handle panics.
+			defer func() {
+				releaseBodyBuffer(reqBodyBuf)
+				releaseBodyBuffer(respBodyBuf)
+			}()
 			respWriter := &bodyCapturingWriter{
 				ResponseWriter: w,
-				body:           bodyBuf,
+				body:           respBodyBuf,
 				statusCode:     http.StatusOK,
 				maxBodySize:    cfg.MaxBodySize,
 			}
@@ -375,43 +474,16 @@ func New(config ...Config) aarv.Middleware {
 			// Build response headers map
 			var respHeaders map[string]string
 			if cfg.LogResponseHeaders {
-				respHeaders = make(map[string]string, len(respWriter.Header()))
-				for k, v := range respWriter.Header() {
-					if shouldRedact(RedactResponseHeaders) {
-						if _, sensitive := sensitiveHeaders[k]; sensitive {
-							respHeaders[k] = "[REDACTED]"
-							continue
-						}
-					}
-					respHeaders[k] = firstOrJoin(v)
-				}
+				respHeaders = extractHeaders(respWriter.Header(), sensitiveHeaders, redactRespHeaders)
 			}
 
-			// Prepare request body for logging
-			reqBodyStr := ""
-			if cfg.LogRequestBody && len(reqBody) > 0 {
-				if len(reqBody) > cfg.MaxBodySize {
-					reqBodyStr = string(reqBody[:cfg.MaxBodySize]) + "[truncated]"
-				} else {
-					reqBodyStr = string(reqBody)
-				}
-				if shouldRedact(RedactRequestBody) {
-					reqBodyStr = redactSensitiveBody(reqBodyStr, redactionPatterns)
-				}
+			var reqBodyStr string
+			if reqBodyBuf != nil {
+				reqBodyStr = formatBodyForLog(reqBodyBuf.Bytes(), cfg.MaxBodySize, redactReqBody, redactionPatterns)
+				releaseBodyBuffer(reqBodyBuf)
+				reqBodyBuf = nil // prevent double-release by defer
 			}
-
-			// Prepare response body for logging
-			respBodyStr := ""
-			if cfg.LogResponseBody && respWriter.body.Len() > 0 {
-				if respWriter.body.Len() >= cfg.MaxBodySize {
-					respBodyStr = respWriter.body.String() + "[truncated]"
-				} else {
-					respBodyStr = respWriter.body.String()
-				}
-				if shouldRedact(RedactResponseBody) {
-					respBodyStr = redactSensitiveBody(respBodyStr, redactionPatterns)
-				}
-			}
+			respBodyStr := formatRespBodyForLog(respWriter.body, cfg.MaxBodySize, redactRespBody, redactionPatterns)
 
 			// Build log attributes dynamically based on config
 			var attrsBuf [32]any
@@ -452,6 +524,11 @@ func New(config ...Config) aarv.Middleware {
 
 			// Log the request/response dump
 			slog.Log(r.Context(), cfg.Level, "http_dump", attrs...)
+
+			// Release respBodyBuf on the normal path; nil prevents
+			// double-release by the deferred cleanup.
+			releaseBodyBuffer(respBodyBuf)
+			respBodyBuf = nil
 		})
 	}
 
@@ -475,105 +552,81 @@ func New(config ...Config) aarv.Middleware {
 				clientIPValue = c.RealIP()
 			}
 
-			var req *http.Request
-			if cfg.LogRequestBody || cfg.LogRequestHeaders || cfg.LogContentInfo {
-				req = c.RawRequest()
-			}
+			// Always get the raw request — needed for headers, body, query params, or content info.
+			req := c.RawRequest()
 
-			var reqBody []byte
-			if cfg.LogRequestBody && req.Body != nil && req.ContentLength > 0 {
-				reqBody, _ = io.ReadAll(io.LimitReader(req.Body, int64(cfg.MaxBodySize)+1))
-				if closeErr := req.Body.Close(); closeErr != nil {
-					c.Logger().Warn("verboselog request body close failed", "error", closeErr)
+			// Capture request body using tee reader so downstream gets the full body.
+			// The tee only records bytes the handler actually reads — it never
+			// drains unread bytes, so slow/streaming uploads are not stalled.
+			var reqBodyBuf *bytes.Buffer
+			if cfg.LogRequestBody && req.Body != nil && req.ContentLength != 0 {
+				reqBodyBuf = acquireBodyBuffer()
+				req.Body = &bodyTeeReader{
+					reader: req.Body,
+					buf:    reqBodyBuf,
+					limit:  cfg.MaxBodySize + 1,
 				}
-				req.Body = io.NopCloser(bytes.NewReader(reqBody))
 			}
 
 			var reqHeaders map[string]string
 			if cfg.LogRequestHeaders {
-				reqHeaders = make(map[string]string, len(req.Header))
-				for k, v := range req.Header {
-					if shouldRedact(RedactRequestHeaders) {
-						if _, sensitive := sensitiveHeaders[k]; sensitive {
-							reqHeaders[k] = "[REDACTED]"
-							continue
-						}
-					}
-					reqHeaders[k] = firstOrJoin(v)
-				}
+				reqHeaders = extractHeaders(req.Header, sensitiveHeaders, redactReqHeaders)
 			}
 
 			var queryParams map[string]string
 			if cfg.LogQueryParams {
-				values := c.QueryParams()
-				queryParams = make(map[string]string, len(values))
-				for k, v := range values {
-					if shouldRedact(RedactQueryParams) {
-						if _, sensitive := sensitiveFields[strings.ToLower(k)]; sensitive {
-							queryParams[k] = "[REDACTED]"
-							continue
-						}
+				// Fast path: skip url.Query() parsing if URL has no query string
+				if req.URL.RawQuery != "" {
+					values := c.QueryParams()
+					if len(values) > 0 {
+						queryParams = extractQueryParams(values, sensitiveFields, redactQueryParams)
 					}
-					queryParams[k] = firstOrJoin(v)
 				}
 			}
 
-			bodyBuf := acquireBodyBuffer()
-			defer releaseBodyBuffer(bodyBuf)
+			respBodyBuf := acquireBodyBuffer()
 
 			orig := c.Response()
 			respWriter := &bodyCapturingWriter{
 				ResponseWriter: orig,
-				body:           bodyBuf,
+				body:           respBodyBuf,
 				statusCode:     http.StatusOK,
 				maxBodySize:    cfg.MaxBodySize,
 			}
 
 			c.SetResponse(respWriter)
-			defer c.SetResponse(orig)
-			if err := next(c); err != nil {
+
+			var respHeaders map[string]string
+
+			// Defer cleanup to handle panics — ensures response writer is restored
+			// and pooled body buffers are released even if next(c) or post-handler
+			// code panics.
+			var logged bool
+			defer func() {
+				c.SetResponse(orig)
+				if !logged {
+					releaseBodyBuffer(reqBodyBuf)
+					releaseBodyBuffer(respBodyBuf)
+				}
+			}()
+
+			err := next(c)
+			if err != nil {
 				return err
 			}
 
 			latency := time.Since(start)
-
-			var respHeaders map[string]string
 			if cfg.LogResponseHeaders {
-				respHeaders = make(map[string]string, len(respWriter.Header()))
-				for k, v := range respWriter.Header() {
-					if shouldRedact(RedactResponseHeaders) {
-						if _, sensitive := sensitiveHeaders[k]; sensitive {
-							respHeaders[k] = "[REDACTED]"
-							continue
-						}
-					}
-					respHeaders[k] = firstOrJoin(v)
-				}
+				respHeaders = extractHeaders(respWriter.Header(), sensitiveHeaders, redactRespHeaders)
 			}
 
-			reqBodyStr := ""
-			if cfg.LogRequestBody && len(reqBody) > 0 {
-				if len(reqBody) > cfg.MaxBodySize {
-					reqBodyStr = string(reqBody[:cfg.MaxBodySize]) + "[truncated]"
-				} else {
-					reqBodyStr = string(reqBody)
-				}
-				if shouldRedact(RedactRequestBody) {
-					reqBodyStr = redactSensitiveBody(reqBodyStr, redactionPatterns)
-				}
+			var reqBodyStr string
+			if reqBodyBuf != nil {
+				reqBodyStr = formatBodyForLog(reqBodyBuf.Bytes(), cfg.MaxBodySize, redactReqBody, redactionPatterns)
+				releaseBodyBuffer(reqBodyBuf)
+				reqBodyBuf = nil
 			}
-
-			respBodyStr := ""
-			if cfg.LogResponseBody && respWriter.body.Len() > 0 {
-				if respWriter.body.Len() >= cfg.MaxBodySize {
-					respBodyStr = respWriter.body.String() + "[truncated]"
-				} else {
-					respBodyStr = respWriter.body.String()
-				}
-				if shouldRedact(RedactResponseBody) {
-					respBodyStr = redactSensitiveBody(respBodyStr, redactionPatterns)
-				}
-			}
+			respBodyStr := formatRespBodyForLog(respWriter.body, cfg.MaxBodySize, redactRespBody, redactionPatterns)
 
 			var attrsBuf [32]any
 			attrs := attrsBuf[:0]
@@ -610,6 +663,10 @@ func New(config ...Config) aarv.Middleware {
 			attrs = append(attrs, "bytes_out", respWriter.bytesWritten)
 
 			slog.Log(c.Context(), cfg.Level, "http_dump", attrs...)
+
+			logged = true
+			// reqBodyBuf already released above after formatting
+			releaseBodyBuffer(respBodyBuf)
 			return nil
 		}
 	}
@@ -641,13 +698,25 @@ func redactSensitiveBody(body string, patterns []redactionPattern) string {
 
 	lowerBody := strings.ToLower(body)
 	for _, pattern := range patterns {
-		if idx := strings.Index(lowerBody, pattern.match); idx >= 0 {
-			start := idx + len(pattern.match)
-			end := strings.IndexByte(body[start:], '"')
-			if end > 0 {
-				body = body[:start] + "[REDACTED]" + body[start+end:]
-				lowerBody = strings.ToLower(body)
+		offset := 0
+		for offset < len(lowerBody) {
+			idx := strings.Index(lowerBody[offset:], pattern.match)
+			if idx < 0 {
+				break
 			}
+			absIdx := offset + idx
+			start := absIdx + len(pattern.match)
+			if start >= len(body) {
+				break
+			}
+			end := strings.IndexByte(body[start:], '"')
+			if end <= 0 {
+				break
+			}
+			replacement := "[REDACTED]"
+			body = body[:start] + replacement + body[start+end:]
+			lowerBody = strings.ToLower(body)
+			offset = start + len(replacement)
 		}
 	}
 	return body
