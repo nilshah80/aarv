@@ -785,6 +785,40 @@ func (c *Context) Stream(status int, contentType string, reader io.Reader) error
 	return err
 }
 
+// SSE returns a writer for sending server-sent events to the client.
+// It bypasses the buffered response writer, sets SSE-appropriate headers
+// (Content-Type: text/event-stream, Cache-Control: no-cache), writes
+// HTTP 200, and returns an SSEWriter bound to the response.
+//
+// Returns ErrResponseAlreadyWritten if the response has already been
+// committed by JSON, Text, Stream, or similar helpers.
+//
+// The Connection header is NOT set automatically — it is hop-by-hop and
+// forbidden on HTTP/2. Go's net/http server manages connection persistence.
+//
+// Client disconnect is detected via the request context: SSEWriter.Send
+// returns the context's error when the client has closed the connection.
+// SSEWriter.Done() returns a channel for use in select loops.
+func (c *Context) SSE() (*SSEWriter, error) {
+	if c.written {
+		return nil, ErrResponseAlreadyWritten
+	}
+	c.written = true
+	if bw, ok := c.res.(*bufferedResponseWriter); ok {
+		bw.Bypass()
+	}
+	c.SetHeader("Content-Type", "text/event-stream")
+	c.SetHeader("Cache-Control", "no-cache")
+	c.res.WriteHeader(http.StatusOK)
+
+	flusher, _ := c.res.(http.Flusher)
+	return &SSEWriter{
+		w:       c.res,
+		flusher: flusher,
+		ctx:     c.req.Context(),
+	}, nil
+}
+
 // Redirect sends an HTTP redirect.
 func (c *Context) Redirect(status int, url string) error {
 	c.written = true

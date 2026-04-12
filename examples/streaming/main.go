@@ -4,6 +4,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,39 +22,92 @@ func main() {
 
 	app.Use(aarv.Recovery(), aarv.Logger())
 
-	// SSE endpoint - sends events every second
-	app.Get("/events", func(c *aarv.Context) error {
-		// Set SSE headers
-		c.SetHeader("Content-Type", "text/event-stream")
-		c.SetHeader("Cache-Control", "no-cache")
-		c.SetHeader("Connection", "keep-alive")
-		c.SetHeader("Access-Control-Allow-Origin", "*")
+	// SSE endpoint using the framework helper — clean, idiomatic version.
+	// Shows Context.SSE() with typed events, Done() for disconnect handling,
+	// and deferred Close().
+	app.Get("/events-helper", func(c *aarv.Context) error {
+		sse, err := c.SSE()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = sse.Close() }()
 
-		// Create a reader that generates SSE events
-		reader := &sseReader{
-			events: make(chan string, 10),
-			done:   make(chan struct{}),
+		for i := 1; i <= 10; i++ {
+			select {
+			case <-sse.Done():
+				return nil // client disconnected
+			case <-time.After(1 * time.Second):
+			}
+
+			if err := sse.Send(aarv.SSEEvent{
+				Event: "tick",
+				ID:    fmt.Sprintf("%d", i),
+				Data:  fmt.Sprintf(`{"count": %d, "time": %q}`, i, time.Now().Format(time.RFC3339)),
+			}); err != nil {
+				// Suppress disconnect-style errors, propagate real write errors.
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return nil
+				}
+				return err
+			}
 		}
 
-		// Start event generator in background
-		go func() {
-			defer close(reader.events)
-			for i := 1; i <= 10; i++ {
-				select {
-				case <-reader.done:
-					return
-				case <-time.After(1 * time.Second):
-					event := fmt.Sprintf("data: {\"count\": %d, \"time\": \"%s\"}\n\n",
-						i, time.Now().Format(time.RFC3339))
-					reader.events <- event
-				}
+		// Send final event — same error policy
+		if err := sse.Send(aarv.SSEEvent{Event: "done", Data: `{"done": true}`}); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil
 			}
-			// Send final event
-			reader.events <- "data: {\"done\": true}\n\n"
-		}()
+			return err
+		}
+		return nil
+	})
 
-		// Stream bypasses buffered writer for real-time output
-		return c.Stream(http.StatusOK, "text/event-stream", reader)
+	// SSE endpoint using the low-level approach — shows manual SSE
+	// formatting, explicit http.Flusher flushing, and direct use of
+	// c.Response() for real-time output. Compare to /events-helper which
+	// does all this automatically.
+	//
+	// Note: Connection: keep-alive is intentionally NOT set — it is a
+	// hop-by-hop header, forbidden on HTTP/2, and Go's net/http server
+	// manages connection persistence automatically.
+	app.Get("/events", func(c *aarv.Context) error {
+		c.SetHeader("Content-Type", "text/event-stream")
+		c.SetHeader("Cache-Control", "no-cache")
+		c.SetHeader("Access-Control-Allow-Origin", "*")
+
+		// Bypass the framework's buffered response writer so writes go
+		// directly to the underlying ResponseWriter.
+		w := c.Response()
+		if bw, ok := w.(interface{ Bypass() }); ok {
+			bw.Bypass()
+		}
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return fmt.Errorf("response writer does not support flushing")
+		}
+
+		ctx := c.Request().Context()
+		for i := 1; i <= 10; i++ {
+			select {
+			case <-ctx.Done():
+				return nil // client disconnected
+			case <-time.After(1 * time.Second):
+			}
+
+			event := fmt.Sprintf("data: {\"count\": %d, \"time\": \"%s\"}\n\n",
+				i, time.Now().Format(time.RFC3339))
+			if _, err := w.Write([]byte(event)); err != nil {
+				return nil
+			}
+			flusher.Flush() // critical: force bytes to the client now
+		}
+
+		// Final event
+		_, _ = w.Write([]byte("data: {\"done\": true}\n\n"))
+		flusher.Flush()
+		return nil
 	})
 
 	// Chunked transfer example - streams a large response in chunks
@@ -100,45 +155,18 @@ func main() {
 	})
 
 	fmt.Println("Streaming Demo on :8080")
-	fmt.Println("  GET /events    — SSE stream (10 events, 1/sec)")
-	fmt.Println("  GET /download  — Chunked file download")
-	fmt.Println("  GET /progress  — Progress updates via SSE")
-	fmt.Println("  GET /proxy     — Proxy/forward a stream")
-	fmt.Println("  GET /buffered  — Normal buffered response")
+	fmt.Println("  GET /events-helper — SSE stream via c.SSE() helper (recommended)")
+	fmt.Println("  GET /events        — SSE stream via raw c.Stream() (low-level)")
+	fmt.Println("  GET /download      — Chunked file download")
+	fmt.Println("  GET /progress      — Progress updates via SSE")
+	fmt.Println("  GET /proxy         — Proxy/forward a stream")
+	fmt.Println("  GET /buffered      — Normal buffered response")
 	fmt.Println()
+	fmt.Println("  Try: curl -N http://localhost:8080/events-helper")
 	fmt.Println("  Try: curl -N http://localhost:8080/events")
 	fmt.Println("  Try: curl http://localhost:8080/download")
 
-	app.Listen(":8080")
-}
-
-// sseReader implements io.Reader for SSE events
-type sseReader struct {
-	events chan string
-	done   chan struct{}
-	buf    []byte
-}
-
-func (r *sseReader) Read(p []byte) (n int, err error) {
-	// If we have buffered data, return it first
-	if len(r.buf) > 0 {
-		n = copy(p, r.buf)
-		r.buf = r.buf[n:]
-		return n, nil
-	}
-
-	// Wait for next event
-	event, ok := <-r.events
-	if !ok {
-		return 0, io.EOF
-	}
-
-	// Copy event to output buffer
-	n = copy(p, event)
-	if n < len(event) {
-		r.buf = []byte(event[n:])
-	}
-	return n, nil
+	_ = app.Listen(":8080")
 }
 
 // chunkReader generates chunked data

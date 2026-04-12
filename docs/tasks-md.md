@@ -470,14 +470,16 @@ Notes from latest benchmark pass:
 - [x] Unit tests: sign/verify, encrypt/decrypt, tamper detection, expiry, cross-name replay, empty secret, key derivation
 
 ### 5.14 Server-Sent Events (SSE) Helper
-- [ ] Implement `c.SSE()` that returns `*SSEWriter`
-- [ ] `SSEWriter.Send(event SSEEvent)` — writes event to response
-- [ ] `SSEEvent` struct: Event (name), Data, ID, Retry
-- [ ] Auto-set headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`
-- [ ] `SSEWriter.Flush()` for immediate send
-- [ ] `SSEWriter.Close()` for graceful shutdown
-- [ ] Handle client disconnect via `context.Done()`
-- [ ] Unit tests: event format, multiple events, client disconnect
+- [x] Implement `c.SSE() (*SSEWriter, error)` returning `ErrResponseAlreadyWritten` if response is committed
+- [x] `SSEWriter.Send(event SSEEvent)` — writes spec-compliant event and auto-flushes
+- [x] `SSEEvent` struct: Event (name), Data, ID, Retry
+- [x] Auto-set headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache` (no `Connection: keep-alive` — hop-by-hop, forbidden on HTTP/2)
+- [x] `SSEWriter.Flush()` for manual flush without event (e.g. after `Comment()`)
+- [x] `SSEWriter.Comment(text)` for keepalive comments (SSE `:` lines)
+- [x] `SSEWriter.Close()` marks writer closed; idempotent; `Send`/`Comment`/`Flush` return `ErrSSEClosed` after close
+- [x] `SSEWriter.Done() <-chan struct{}` for client disconnect in select loops
+- [x] Validate `Event` and `ID` fields reject newlines (`ErrInvalidSSEField`); multi-line `Data` splits to multiple `data:` lines
+- [x] Unit tests: event format, multiple events, client disconnect, close contract, field validation, response-already-written guard
 
 ---
 
