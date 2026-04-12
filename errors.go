@@ -94,6 +94,11 @@ func ErrConflict(msg string) *AppError {
 	return &AppError{status: http.StatusConflict, code: "conflict", message: msg}
 }
 
+// ErrPayloadTooLarge creates a 413 payload too large AppError.
+func ErrPayloadTooLarge(msg string) *AppError {
+	return &AppError{status: http.StatusRequestEntityTooLarge, code: "payload_too_large", message: msg}
+}
+
 // ErrUnprocessable creates a 422 validation failure AppError.
 func ErrUnprocessable(msg string) *AppError {
 	return &AppError{status: http.StatusUnprocessableEntity, code: "validation_failed", message: msg}

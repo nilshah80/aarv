@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"mime/multipart"
 	"net"
+	"os"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -515,10 +515,88 @@ func (c *Context) BindForm(dest any) error {
 	return bindFormValues(c, dest)
 }
 
-// FormFile returns the first file for the given form key.
-func (c *Context) FormFile(name string) (*multipart.FileHeader, error) {
+// parseMultipartIfNeeded ensures the multipart form is parsed exactly once.
+// Uses a fixed 32MB memory threshold (matching http.defaultMaxMemory).
+// This is the in-memory buffering limit before spilling to disk, NOT a
+// request body size limit — use the bodylimit middleware for that.
+func (c *Context) parseMultipartIfNeeded() error {
+	if c.req.MultipartForm != nil {
+		return nil
+	}
+	return c.req.ParseMultipartForm(32 << 20)
+}
+
+// FormFile returns the first uploaded file for the given form key.
+// Returns http.ErrMissingFile if no file is present for the key.
+func (c *Context) FormFile(name string) (*UploadedFile, error) {
+	if err := c.parseMultipartIfNeeded(); err != nil {
+		return nil, err
+	}
 	_, fh, err := c.req.FormFile(name)
-	return fh, err
+	if err != nil {
+		return nil, err
+	}
+	return newUploadedFile(fh), nil
+}
+
+// FormFiles returns all uploaded files for the given form key.
+// Returns nil, http.ErrMissingFile if the key is absent or has no files.
+func (c *Context) FormFiles(name string) ([]*UploadedFile, error) {
+	if err := c.parseMultipartIfNeeded(); err != nil {
+		return nil, err
+	}
+	if c.req.MultipartForm == nil || c.req.MultipartForm.File == nil {
+		return nil, http.ErrMissingFile
+	}
+	fhs, ok := c.req.MultipartForm.File[name]
+	if !ok || len(fhs) == 0 {
+		return nil, http.ErrMissingFile
+	}
+	files := make([]*UploadedFile, len(fhs))
+	for i, fh := range fhs {
+		files[i] = newUploadedFile(fh)
+	}
+	return files, nil
+}
+
+// FileWith returns the first file for the key, validated against cfg.
+func (c *Context) FileWith(name string, cfg FileConfig) (*UploadedFile, error) {
+	f, err := c.FormFile(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateFile(f, cfg); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// FilesWith returns all files for the key, validated against cfg.
+func (c *Context) FilesWith(name string, cfg FileConfig) ([]*UploadedFile, error) {
+	files, err := c.FormFiles(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateFiles(files, cfg); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// SaveFile writes the uploaded file to the given filesystem path.
+func (c *Context) SaveFile(file *UploadedFile, dst string) error {
+	src, err := file.Open()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = out.Close() }()
+	_, err = io.Copy(out, src)
+	return err
 }
 
 // --- Response Helpers ---

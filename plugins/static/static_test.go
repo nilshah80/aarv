@@ -705,6 +705,66 @@ func TestNoBrowseFSOpen(t *testing.T) {
 	}
 }
 
+// --- Additional coverage tests ---
+
+func TestNewPrefixMissNonSPAStdlibPath(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "app.js"), []byte("js"), 0o644)
+
+	nextCalled := 0
+	handler := New(Config{
+		Root:   root,
+		Prefix: "/assets",
+		// SPA: false, Browse: false — the fast non-SPA path
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled++
+		w.WriteHeader(http.StatusTeapot)
+	}))
+
+	// Request does NOT match prefix — should fall through to next
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/other", nil))
+	if rec.Code != http.StatusTeapot || nextCalled != 1 {
+		t.Fatalf("expected next for prefix mismatch, status=%d next=%d", rec.Code, nextCalled)
+	}
+}
+
+func TestNewPrefixMissNonSPANativePath(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "app.js"), []byte("js"), 0o644)
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		Root:   root,
+		Prefix: "/assets",
+	}))
+	app.Get("/other", func(c *aarv.Context) error {
+		return c.Text(http.StatusTeapot, "fallback")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/other", nil))
+	if rec.Code != http.StatusTeapot {
+		t.Fatalf("expected 418 fallback, got %d", rec.Code)
+	}
+}
+
+func TestNoBrowseFSOpenStatError(t *testing.T) {
+	root := t.TempDir()
+
+	// Create a file, open it via noBrowseFS, then remove it between Open and Stat.
+	// This is hard to trigger deterministically, but we can test the path by
+	// creating a symlink to a non-existent target on macOS/Linux.
+	brokenLink := filepath.Join(root, "broken.txt")
+	_ = os.Symlink("/nonexistent/target", brokenLink)
+
+	fs := noBrowseFS{root: root, index: "index.html"}
+	_, err := fs.Open("/broken.txt")
+	if err == nil {
+		t.Fatal("expected error for broken symlink stat")
+	}
+}
+
 // --- Benchmarks ---
 
 func benchStaticRoot(b *testing.B) string {

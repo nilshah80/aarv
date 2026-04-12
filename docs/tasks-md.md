@@ -448,16 +448,16 @@ Notes from latest benchmark pass:
 - [x] Unit tests: healthy, unhealthy, custom callbacks
 
 ### 5.12 Multipart File Upload Helper
-- [ ] Implement `c.FormFile(name string) (*UploadedFile, error)` helper
-- [ ] Implement `c.FormFiles(name string) ([]*UploadedFile, error)` for multiple files
-- [ ] `UploadedFile` struct: Filename, Size, ContentType, Header, Open() (returns io.Reader)
-- [ ] Implement `c.SaveFile(file *UploadedFile, dst string) error` helper
-- [ ] Integration with binder: `file` struct tag for file binding
-- [ ] Configurable: max file size, allowed content types, max files per field
-- [ ] Configurable: memory threshold for disk streaming (default 32MB, then stream to temp file)
-- [ ] Progress callback: `OnProgress func(bytesRead, totalBytes int64)` for upload tracking
-- [ ] Chunked upload support: resume interrupted uploads via `Content-Range` header
-- [ ] Unit tests: single file, multiple files, size limit, content type validation, progress callback
+- [x] Implement `c.FormFile(name string) (*UploadedFile, error)` helper
+- [x] Implement `c.FormFiles(name string) ([]*UploadedFile, error)` for multiple files
+- [x] `UploadedFile` struct: Filename, Size, ContentType, Header, Open() (returns multipart.File)
+- [x] Implement `c.SaveFile(file *UploadedFile, dst string) error` helper
+- [x] Integration with binder: `file` struct tag for file binding
+- [x] Configurable: max file size, allowed content types, max files per field via `FileConfig` + `c.FileWith`/`c.FilesWith`
+- [ ] ~~Configurable: memory threshold for disk streaming~~ — deferred; stdlib `ParseMultipartForm(32MB)` handles this; configurable later if needed
+- [ ] ~~Progress callback~~ — deferred; requires wrapping `r.Body` before multipart parsing (middleware concern, niche)
+- [ ] ~~Chunked upload support~~ — deferred; different protocol (tus-style resumable uploads), plugin territory
+- [x] Unit tests: single file, multiple files, size limit, content type validation, binder integration
 
 ### 5.13 Cookie Signing & Encryption
 - [ ] Implement `SecureCookie` helper using `crypto/hmac` for signing

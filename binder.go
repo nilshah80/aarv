@@ -1,6 +1,7 @@
 package aarv
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -59,13 +60,29 @@ var (
 	formBinderCache  sync.Map
 )
 
+// fileFieldBinding describes how to populate a file-typed struct field.
+type fileFieldBinding struct {
+	name       string // tag value (form field name)
+	fieldIndex []int  // reflect field index path
+	isSlice    bool   // true for []*UploadedFile, false for *UploadedFile
+}
+
+// uploadedFileType and uploadedFileSliceType are used for registration-time
+// type checking of file-tagged fields.
+var (
+	uploadedFileType      = reflect.TypeOf((*UploadedFile)(nil))
+	uploadedFileSliceType = reflect.TypeOf(([]*UploadedFile)(nil))
+)
+
 // structBinder holds pre-computed binding info for a struct type.
 type structBinder struct {
-	fields      []fieldBinding
-	defaults    []fieldBinding
-	hasDefaults bool
-	needBody    bool // true if any field uses json tag (body binding)
-	needForm    bool // true if any field uses form tag
+	fields        []fieldBinding
+	fileFields    []fileFieldBinding
+	defaults      []fieldBinding
+	hasDefaults   bool
+	needBody      bool // true if any field uses json tag (body binding)
+	needForm      bool // true if any field uses form tag
+	needMultipart bool // true if any field uses file tag
 }
 
 // buildStructBinder inspects a struct type at registration time and returns a binder.
@@ -110,6 +127,13 @@ func buildStructBinder(t reflect.Type) *structBinder {
 				}
 				if embedded.needForm {
 					sb.needForm = true
+				}
+				for _, ef := range embedded.fileFields {
+					ef.fieldIndex = append([]int{i}, ef.fieldIndex...)
+					sb.fileFields = append(sb.fileFields, ef)
+				}
+				if embedded.needMultipart {
+					sb.needMultipart = true
 				}
 			}
 			continue
@@ -158,6 +182,22 @@ func buildStructBinder(t reflect.Type) *structBinder {
 			fb.name = tag
 			sb.needForm = true
 			sb.fields = append(sb.fields, fb)
+		} else if tag := f.Tag.Get("file"); tag != "" {
+			isSlice := false
+			switch f.Type {
+			case uploadedFileType:
+				// *UploadedFile — single file
+			case uploadedFileSliceType:
+				isSlice = true
+			default:
+				panic(fmt.Sprintf("aarv: file tag on field %q requires *UploadedFile or []*UploadedFile, got %s", f.Name, f.Type))
+			}
+			sb.fileFields = append(sb.fileFields, fileFieldBinding{
+				name:       tag,
+				fieldIndex: f.Index,
+				isSlice:    isSlice,
+			})
+			sb.needMultipart = true
 		}
 
 		if fb.hasDefault {
@@ -270,6 +310,15 @@ func (sb *structBinder) bind(c *Context, dest any) error {
 		v = v.Elem()
 	}
 
+	// Parse multipart early if any field needs it — this also populates
+	// r.Form with text field values from the multipart body, so form-tagged
+	// fields work correctly alongside file-tagged fields.
+	if sb.needMultipart {
+		if err := c.parseMultipartIfNeeded(); err != nil {
+			return &BindError{Err: err, Source: "file"}
+		}
+	}
+
 	// Parse form once before the loop if any field needs it.
 	// net/http caches the result, but calling it per-field still acquires
 	// an internal mutex each time.
@@ -337,6 +386,33 @@ func (sb *structBinder) bind(c *Context, dest any) error {
 
 		if err := fb.setter(field, raw); err != nil {
 			return fmt.Errorf("field %s: %w", fb.name, err)
+		}
+	}
+
+	// File field binding — separate from string-value fields.
+	// Multipart parsing already happened at the top of bind().
+	if sb.needMultipart {
+		for _, ff := range sb.fileFields {
+			field := v.FieldByIndex(ff.fieldIndex)
+			if ff.isSlice {
+				files, err := c.FormFiles(ff.name)
+				if errors.Is(err, http.ErrMissingFile) {
+					continue // missing non-required — leave nil, let validator handle
+				}
+				if err != nil {
+					return &BindError{Err: err, Source: "file"}
+				}
+				field.Set(reflect.ValueOf(files))
+			} else {
+				f, err := c.FormFile(ff.name)
+				if errors.Is(err, http.ErrMissingFile) {
+					continue // missing non-required — leave nil, let validator handle
+				}
+				if err != nil {
+					return &BindError{Err: err, Source: "file"}
+				}
+				field.Set(reflect.ValueOf(f))
+			}
 		}
 	}
 

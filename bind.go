@@ -16,7 +16,7 @@ func Bind[Req any, Res any](fn func(*Context, Req) (Res, error)) HandlerFunc {
 	binder := buildStructBinder(reqType)
 	validator := buildStructValidator(reqType)
 	needBody := binder != nil && binder.needBody
-	needBinding := binder != nil && len(binder.fields) > 0
+	needBinding := binder != nil && (len(binder.fields) > 0 || len(binder.fileFields) > 0)
 	needDefaults := binder != nil && binder.hasDefaults
 
 	if needBody && !needBinding && !needDefaults {
@@ -130,7 +130,7 @@ func BindReq[Req any](fn func(*Context, Req) error) HandlerFunc {
 	binder := buildStructBinder(reqType)
 	validator := buildStructValidator(reqType)
 	needBody := binder != nil && binder.needBody
-	needBinding := binder != nil && len(binder.fields) > 0
+	needBinding := binder != nil && (len(binder.fields) > 0 || len(binder.fileFields) > 0)
 	needDefaults := binder != nil && binder.hasDefaults
 
 	if needBody && !needBinding && !needDefaults {

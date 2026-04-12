@@ -2,6 +2,7 @@ package aarv
 
 import (
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -1015,4 +1016,455 @@ func TestBindHookAwareCoverage(t *testing.T) {
 		resp := NewTestClient(app).Get("/bindres-pre")
 		resp.AssertStatus(t, http.StatusForbidden)
 	})
+}
+
+func TestBindFileTag(t *testing.T) {
+	t.Run("single file binding", func(t *testing.T) {
+		type req struct {
+			Title string        `form:"title"`
+			Image *UploadedFile `file:"image"`
+		}
+
+		app := New(WithBanner(false))
+		app.Post("/upload", BindReq(func(c *Context, payload req) error {
+			if payload.Image == nil {
+				return ErrBadRequest("no image")
+			}
+			return c.JSON(http.StatusOK, map[string]string{
+				"title":    payload.Title,
+				"filename": payload.Image.Filename,
+			})
+		}))
+
+		body, ct := multipartBodyWithFields(t,
+			map[string]string{"title": "My Photo"},
+			map[string][][2]string{"image": {{"photo.png", "png-bytes"}}},
+		)
+		httpReq := httptest.NewRequest(http.MethodPost, "/upload", body)
+		httpReq.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httpReq)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"filename":"photo.png"`) {
+			t.Fatalf("expected filename in response, got %s", rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"title":"My Photo"`) {
+			t.Fatalf("expected title in response, got %s", rec.Body.String())
+		}
+	})
+
+	t.Run("multi file binding", func(t *testing.T) {
+		type req struct {
+			Docs []*UploadedFile `file:"docs"`
+		}
+
+		app := New(WithBanner(false))
+		app.Post("/multi", BindReq(func(c *Context, payload req) error {
+			names := make([]string, len(payload.Docs))
+			for i, d := range payload.Docs {
+				names[i] = d.Filename
+			}
+			return c.JSON(http.StatusOK, map[string]any{"count": len(payload.Docs), "names": names})
+		}))
+
+		body, ct := multipartBodyWithFields(t, nil,
+			map[string][][2]string{"docs": {{"a.txt", "aaa"}, {"b.txt", "bbb"}}},
+		)
+		httpReq := httptest.NewRequest(http.MethodPost, "/multi", body)
+		httpReq.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httpReq)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"count":2`) {
+			t.Fatalf("expected count 2, got %s", rec.Body.String())
+		}
+	})
+
+	t.Run("missing non-required file leaves nil", func(t *testing.T) {
+		type req struct {
+			Title string        `form:"title"`
+			Image *UploadedFile `file:"image"`
+		}
+
+		app := New(WithBanner(false))
+		app.Post("/optional", BindReq(func(c *Context, payload req) error {
+			hasImage := payload.Image != nil
+			return c.JSON(http.StatusOK, map[string]any{
+				"title":     payload.Title,
+				"has_image": hasImage,
+			})
+		}))
+
+		body, ct := multipartBodyWithFields(t,
+			map[string]string{"title": "No Image"},
+			nil,
+		)
+		httpReq := httptest.NewRequest(http.MethodPost, "/optional", body)
+		httpReq.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httpReq)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"has_image":false`) {
+			t.Fatalf("expected has_image false, got %s", rec.Body.String())
+		}
+	})
+
+	t.Run("missing required file fails validation", func(t *testing.T) {
+		type req struct {
+			Image *UploadedFile `file:"image" validate:"required"`
+		}
+
+		app := New(WithBanner(false))
+		app.Post("/required", BindReq(func(c *Context, payload req) error {
+			return c.NoContent(http.StatusNoContent)
+		}))
+
+		body, ct := multipartBodyWithFields(t, nil, nil)
+		httpReq := httptest.NewRequest(http.MethodPost, "/required", body)
+		httpReq.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httpReq)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("non-multipart request returns bind error", func(t *testing.T) {
+		type req struct {
+			Image *UploadedFile `file:"image"`
+		}
+
+		app := New(WithBanner(false))
+		app.Post("/noform", BindReq(func(c *Context, payload req) error {
+			return c.NoContent(http.StatusNoContent)
+		}))
+
+		httpReq := httptest.NewRequest(http.MethodPost, "/noform", strings.NewReader("not multipart"))
+		httpReq.Header.Set("Content-Type", "text/plain")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httpReq)
+
+		// Should get an error response (not 204 success)
+		if rec.Code == http.StatusNoContent {
+			t.Fatal("expected error, got 204")
+		}
+	})
+
+	t.Run("file tag on wrong type panics at registration", func(t *testing.T) {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("expected panic for file tag on string field")
+			}
+			msg, ok := r.(string)
+			if !ok || !strings.Contains(msg, "requires *UploadedFile or []*UploadedFile") {
+				t.Fatalf("unexpected panic message: %v", r)
+			}
+		}()
+
+		type bad struct {
+			File string `file:"doc"`
+		}
+		// This should panic at registration time
+		buildStructBinder(reflect.TypeOf(bad{}))
+	})
+}
+
+func TestBindFileTagSliceMissing(t *testing.T) {
+	type req struct {
+		Docs []*UploadedFile `file:"docs"`
+	}
+
+	app := New(WithBanner(false))
+	app.Post("/miss", BindReq(func(c *Context, payload req) error {
+		return c.JSON(http.StatusOK, map[string]any{"has_docs": payload.Docs != nil})
+	}))
+
+	// Multipart body with no "docs" field — triggers ErrMissingFile on slice path
+	body, ct := multipartBodyWithFields(t,
+		map[string]string{"other": "value"},
+		nil,
+	)
+	httpReq := httptest.NewRequest(http.MethodPost, "/miss", body)
+	httpReq.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httpReq)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"has_docs":false`) {
+		t.Fatalf("expected nil docs, got %s", rec.Body.String())
+	}
+}
+
+func TestBindFileTagEmbeddedStruct(t *testing.T) {
+	type FileEmbed struct {
+		Avatar *UploadedFile `file:"avatar"`
+	}
+	type req struct {
+		FileEmbed
+		Name string `form:"name"`
+	}
+
+	app := New(WithBanner(false))
+	app.Post("/embed", BindReq(func(c *Context, payload req) error {
+		hasAvatar := payload.Avatar != nil
+		return c.JSON(http.StatusOK, map[string]any{
+			"name":       payload.Name,
+			"has_avatar": hasAvatar,
+		})
+	}))
+
+	body, ct := multipartBodyWithFields(t,
+		map[string]string{"name": "Alice"},
+		map[string][][2]string{"avatar": {{"face.png", "png-data"}}},
+	)
+	httpReq := httptest.NewRequest(http.MethodPost, "/embed", body)
+	httpReq.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httpReq)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"has_avatar":true`) {
+		t.Fatalf("expected has_avatar true, got %s", rec.Body.String())
+	}
+}
+
+func TestBinderQueryAndFormEdgeCases(t *testing.T) {
+	t.Run("buildQueryBinder nil for non-struct", func(t *testing.T) {
+		if b := buildQueryBinder(reflect.TypeOf(42)); b != nil {
+			t.Fatal("expected nil binder for int")
+		}
+	})
+
+	t.Run("buildFormBinder nil for non-struct", func(t *testing.T) {
+		if b := buildFormBinder(reflect.TypeOf("hello")); b != nil {
+			t.Fatal("expected nil binder for string")
+		}
+	})
+
+	t.Run("buildQueryBinder pointer deref", func(t *testing.T) {
+		type Q struct {
+			Name string `query:"name"`
+		}
+		b := buildQueryBinder(reflect.TypeOf((*Q)(nil)))
+		if b == nil || len(b.fields) != 1 {
+			t.Fatal("expected binder with 1 field for *Q")
+		}
+	})
+
+	t.Run("buildFormBinder pointer deref", func(t *testing.T) {
+		type F struct {
+			Val string `form:"val"`
+		}
+		b := buildFormBinder(reflect.TypeOf((*F)(nil)))
+		if b == nil || len(b.fields) != 1 {
+			t.Fatal("expected binder with 1 field for *F")
+		}
+	})
+
+	t.Run("buildFormBinder json tag with comma", func(t *testing.T) {
+		type F struct {
+			Val string `json:"val,omitempty"`
+		}
+		b := buildFormBinder(reflect.TypeOf(F{}))
+		if b == nil || len(b.fields) != 1 || b.fields[0].name != "val" {
+			t.Fatalf("expected form binder to strip ,omitempty, got %+v", b)
+		}
+	})
+
+	t.Run("buildFormBinder json tag dash", func(t *testing.T) {
+		type F struct {
+			Val string `json:"-"`
+		}
+		b := buildFormBinder(reflect.TypeOf(F{}))
+		if b != nil && len(b.fields) > 0 {
+			t.Fatal("expected no fields for json:\"-\"")
+		}
+	})
+
+	t.Run("buildFormBinder json tag empty after comma strip", func(t *testing.T) {
+		type F struct {
+			Val string `json:",omitempty"`
+		}
+		b := buildFormBinder(reflect.TypeOf(F{}))
+		if b != nil && len(b.fields) > 0 {
+			t.Fatal("expected no fields for json:\",omitempty\" with empty name")
+		}
+	})
+
+	t.Run("bindQueryParams nil binder", func(t *testing.T) {
+		app := New(WithBanner(false))
+		req := httptest.NewRequest(http.MethodGet, "/?x=1", nil)
+		ctx, _ := newAppContext(app, req)
+		defer app.ReleaseContext(ctx)
+
+		var dest int
+		if err := bindQueryParams(ctx, &dest); err != nil {
+			t.Fatalf("expected nil for non-struct, got %v", err)
+		}
+	})
+
+	t.Run("bindFormValues nil binder", func(t *testing.T) {
+		app := New(WithBanner(false))
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x=1"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		ctx, _ := newAppContext(app, req)
+		defer app.ReleaseContext(ctx)
+
+		var dest int
+		if err := bindFormValues(ctx, &dest); err != nil {
+			t.Fatalf("expected nil for non-struct, got %v", err)
+		}
+	})
+}
+
+func TestBuildFieldSetterFallback(t *testing.T) {
+	// The fallback setter is used when the fast-path closure doesn't match.
+	// Exercise it via a custom type that resolves to a basic kind at runtime.
+	type MyInt int
+	type MyUint uint
+	type MyFloat float64
+	type MyBool bool
+	type MySlice []string
+
+	type req struct {
+		A MyInt    `query:"a"`
+		B MyUint   `query:"b"`
+		C MyFloat  `query:"c"`
+		D MyBool   `query:"d"`
+		E MySlice  `query:"e"`
+	}
+
+	app := New(WithBanner(false))
+	app.Get("/test", BindReq(func(c *Context, payload req) error {
+		return c.JSON(http.StatusOK, map[string]any{
+			"a": payload.A,
+			"b": payload.B,
+			"c": payload.C,
+			"d": payload.D,
+			"e": payload.E,
+		})
+	}))
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/test?a=42&b=7&c=3.14&d=true&e=x,y,z", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBuildFieldSetterFallbackDirect(t *testing.T) {
+	// The fallback setter is the default: branch in buildFieldSetter.
+	// It's returned for types where Kind() at registration time doesn't match
+	// any fast-path (e.g. []int slice, or any non-string-slice).
+	// Test it directly by calling setFieldValue on fields of various kinds.
+
+	type target struct {
+		S   string
+		I   int
+		U   uint
+		F   float64
+		B   bool
+		Sl  []string
+		Sl2 []int // non-string slice — hits fallthrough/default
+	}
+
+	v := reflect.ValueOf(&target{}).Elem()
+
+	// Get the fallback setter (for a type the fast path doesn't handle)
+	fallback := buildFieldSetter(reflect.TypeOf([]int{}))
+
+	// String
+	if err := setFieldValue(v.Field(0), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if v.Field(0).String() != "hello" {
+		t.Fatal("string setter failed")
+	}
+
+	// Int
+	if err := setFieldValue(v.Field(1), "42"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Uint
+	if err := setFieldValue(v.Field(2), "7"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Float
+	if err := setFieldValue(v.Field(3), "3.14"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bool
+	if err := setFieldValue(v.Field(4), "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	// String slice
+	if err := setFieldValue(v.Field(5), "a,b,c"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-string slice ([]int) — hits the fallthrough to default
+	if err := fallback(v.Field(6), "1,2,3"); err == nil {
+		t.Fatal("expected unsupported error for []int")
+	}
+
+	// Parse errors
+	if err := setFieldValue(v.Field(1), "notint"); err == nil {
+		t.Fatal("expected int parse error")
+	}
+	if err := setFieldValue(v.Field(2), "notuint"); err == nil {
+		t.Fatal("expected uint parse error")
+	}
+	if err := setFieldValue(v.Field(3), "notfloat"); err == nil {
+		t.Fatal("expected float parse error")
+	}
+	if err := setFieldValue(v.Field(4), "notbool"); err == nil {
+		t.Fatal("expected bool parse error")
+	}
+}
+
+// multipartBodyWithFields builds a multipart body with both text fields and file fields.
+func multipartBodyWithFields(t *testing.T, fields map[string]string, files map[string][][2]string) (*strings.Reader, string) {
+	t.Helper()
+	var buf strings.Builder
+	w := multipart.NewWriter(&buf)
+	for name, value := range fields {
+		if err := w.WriteField(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for field, entries := range files {
+		for _, entry := range entries {
+			part, err := w.CreateFormFile(field, entry[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := part.Write([]byte(entry[1])); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return strings.NewReader(buf.String()), w.FormDataContentType()
 }
