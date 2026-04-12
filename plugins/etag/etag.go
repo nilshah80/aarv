@@ -18,12 +18,20 @@ import (
 	"github.com/nilshah80/aarv"
 )
 
+// HashFunc computes a 32-bit hash of the response body for ETag generation.
+// The default is crc32.ChecksumIEEE.
+type HashFunc func(data []byte) uint32
+
 // Config holds configuration for the ETag middleware.
 type Config struct {
 	// Weak generates a weak ETag (prefixed with W/) instead of a strong one.
 	// Weak ETags indicate semantic equivalence rather than byte-for-byte identity.
 	// Default: false.
 	Weak bool
+
+	// Hash is an optional function that computes a 32-bit hash of the
+	// response body. When nil, crc32.ChecksumIEEE is used.
+	Hash HashFunc
 }
 
 // DefaultConfig returns the default ETag configuration.
@@ -92,6 +100,10 @@ func New(config ...Config) aarv.Middleware {
 	if len(config) > 0 {
 		cfg = config[0]
 	}
+	hashFn := cfg.Hash
+	if hashFn == nil {
+		hashFn = crc32.ChecksumIEEE
+	}
 
 	m := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -118,7 +130,7 @@ func New(config ...Config) aarv.Middleware {
 			}
 
 			// Compute CRC32 hash of the response body
-			checksum := crc32.ChecksumIEEE(body)
+			checksum := hashFn(body)
 			var etag string
 			if cfg.Weak {
 				etag = fmt.Sprintf(`W/"%08x"`, checksum)
@@ -167,7 +179,7 @@ func New(config ...Config) aarv.Middleware {
 				return nil
 			}
 
-			checksum := crc32.ChecksumIEEE(body)
+			checksum := hashFn(body)
 			var etag string
 			if cfg.Weak {
 				etag = fmt.Sprintf(`W/"%08x"`, checksum)

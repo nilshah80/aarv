@@ -220,6 +220,57 @@ func TestNewNativeIfNoneMatch(t *testing.T) {
 	}
 }
 
+func TestNewCustomHashFunction(t *testing.T) {
+	// Custom hash that always returns 0xDEADBEEF
+	customHash := func(data []byte) uint32 { return 0xDEADBEEF }
+
+	handler := New(Config{Hash: customHash})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("custom-hash-body"))
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+
+	etag := rec.Header().Get("ETag")
+	if etag != `"deadbeef"` {
+		t.Fatalf("expected etag from custom hash, got %q", etag)
+	}
+}
+
+func TestNewCustomHashFunctionWeakStdlibPath(t *testing.T) {
+	customHash := func(data []byte) uint32 { return 0xCAFEBABE }
+
+	handler := New(Config{Hash: customHash, Weak: true})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("weak-stdlib"))
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+
+	etag := rec.Header().Get("ETag")
+	if etag != `W/"cafebabe"` {
+		t.Fatalf("expected weak etag from custom hash in stdlib path, got %q", etag)
+	}
+}
+
+func TestNewNativeCustomHashFunction(t *testing.T) {
+	customHash := func(data []byte) uint32 { return 0x12345678 }
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{Hash: customHash, Weak: true}))
+	app.Get("/test", func(c *aarv.Context) error {
+		return c.Text(http.StatusOK, "native-custom-hash")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/test", nil))
+
+	etag := rec.Header().Get("ETag")
+	if etag != `W/"12345678"` {
+		t.Fatalf("expected weak etag from custom hash, got %q", etag)
+	}
+}
+
 func TestNewNativeErrorPropagation(t *testing.T) {
 	errMiddleware := aarv.WrapMiddleware(func(next aarv.HandlerFunc) aarv.HandlerFunc {
 		return func(c *aarv.Context) error {

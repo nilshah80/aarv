@@ -359,8 +359,9 @@ Notes from latest benchmark pass:
 - [x] Log stack trace to `slog.Error`
 - [x] Return 500 with generic error response
 - [x] Configurable: stack trace depth, disable stack logging
-- [ ] Configurable: custom panic handler, include stack in response (debug mode)
-- [ ] Unit tests: panic in handler, panic in middleware, nested panic
+- [x] Configurable: custom panic handler
+- [ ] Include stack in response (debug mode) — `DisablePrintStack` only controls logging, not the response body
+- [x] Unit tests: panic in handler, panic in middleware, nested panic
 
 ### 5.2 Request ID Plugin ✅
 - [x] Generate ULID (monotonic, sortable) using `crypto/rand` + `time`
@@ -368,15 +369,15 @@ Notes from latest benchmark pass:
 - [x] Set `X-Request-ID` on response header
 - [x] Store in Context via `c.Set("requestId", id)`
 - [x] Configurable: header name, generator function
-- [ ] Configurable: prefix for generated IDs
-- [ ] Unit tests: generation, propagation, custom generator
+- [x] Configurable: prefix for generated IDs
+- [x] Unit tests: generation, propagation, custom generator
 
 ### 5.3 Logger Plugin ✅
 - [x] Log on request start + completion using `log/slog`
 - [x] Fields: method, path, status, latency, request_id, client_ip, user_agent, bytes_out
 - [x] Skip paths: configurable (e.g., skip /health)
 - [x] Log level: configurable (Info default, Debug for verbose)
-- [ ] Unit tests: log output format, skip paths, latency measurement
+- [x] Unit tests: log output format, skip paths, latency measurement
 
 ### 5.4 CORS Plugin ✅
 - [x] Handle preflight `OPTIONS` requests
@@ -388,26 +389,26 @@ Notes from latest benchmark pass:
 - [x] Set `Access-Control-Max-Age` (preflight cache)
 - [x] Configurable: `AllowOriginFunc` for dynamic origin checking
 - [x] Security: reject wildcard origin with credentials
-- [ ] Unit tests: preflight, simple request, credentials, dynamic origin
+- [x] Unit tests: preflight, simple request, credentials, dynamic origin
 
 ### 5.5 Secure Headers Plugin ✅
 - [x] Set all headers from `SecureConfig` struct
 - [x] Defaults: XSS protection, nosniff, DENY, HSTS 1yr, strict referrer, CSP, Permissions-Policy
 - [x] Configurable per-header
-- [ ] Unit tests: every header set correctly, custom overrides
+- [x] Unit tests: every header set correctly, custom overrides
 
 ### 5.6 Body Limit Plugin ✅
 - [x] Wrap `r.Body` with `http.MaxBytesReader`
 - [x] Configurable max bytes
 - [x] Return 413 Payload Too Large on exceed (via `NewWithResponse`)
-- [ ] Unit tests: under limit, at limit, over limit
+- [x] Unit tests: under limit, at limit, over limit
 
 ### 5.7 Timeout Plugin ✅
 - [x] Wrap handler with `context.WithTimeout`
 - [x] Configurable timeout duration
 - [x] Return 504 Gateway Timeout on exceed
 - [x] Ensure context cancellation propagates
-- [ ] Unit tests: fast handler, slow handler, exact timeout
+- [x] Unit tests: fast handler, slow handler, exact timeout
 
 ### 5.8 Compress Plugin ✅
 - [x] Check `Accept-Encoding` header for gzip/deflate support
@@ -418,7 +419,7 @@ Notes from latest benchmark pass:
 - [x] Skip compression for already-compressed content types (images, video)
 - [x] Configurable: compression level, min size, excluded content types, prefer gzip
 - [x] Pool gzip/deflate writers via `sync.Pool`
-- [ ] Unit tests: compression, skip small, skip images, Content-Encoding header
+- [x] Unit tests: compression, skip small, skip images, Content-Encoding header
 
 ### 5.9 ETag Plugin ✅
 - [x] Compute ETag from response body hash (CRC32)
@@ -426,8 +427,8 @@ Notes from latest benchmark pass:
 - [x] Check `If-None-Match` request header → return 304 Not Modified
 - [x] Weak vs strong ETag support
 - [x] Configurable: weak mode
-- [ ] Configurable: hash function selection
-- [ ] Unit tests: ETag generation, 304 response, weak ETag
+- [x] Configurable: hash function selection
+- [x] Unit tests: ETag generation, 304 response, weak ETag
 
 ### 5.10 Static Files Plugin ✅
 - [x] Wrap `http.FileServer` with configurable root
@@ -436,15 +437,15 @@ Notes from latest benchmark pass:
 - [x] Cache-Control headers (configurable max-age)
 - [x] Directory listing toggle (default: disabled)
 - [x] Configurable: root dir, index file, prefix strip, browse
-- [ ] Unit tests: serve file, index, 404, SPA fallback, cache headers
+- [x] Unit tests: serve file, index, 404, SPA fallback, cache headers
 
 ### 5.11 Health Check Plugin ✅
 - [x] Register `/health` → returns `{"status": "ok"}` with 200
 - [x] Register `/ready` → calls readiness callback, returns 200 or 503
 - [x] Register `/live` → calls liveness callback, returns 200 or 503
 - [x] Configurable: paths, callbacks
-- [ ] Configurable: additional info in response
-- [ ] Unit tests: healthy, unhealthy, custom callbacks
+- [x] Configurable: additional info in response
+- [x] Unit tests: healthy, unhealthy, custom callbacks
 
 ### 5.12 Multipart File Upload Helper
 - [ ] Implement `c.FormFile(name string) (*UploadedFile, error)` helper

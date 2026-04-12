@@ -29,6 +29,11 @@ type Config struct {
 	// Default: "X-Request-ID".
 	Header string
 
+	// Prefix is prepended to every generated ID (e.g. "svc-" → "svc-01HX…").
+	// It is not applied to IDs propagated from an incoming request header.
+	// Default: "" (no prefix).
+	Prefix string
+
 	// Generator is a function that returns a new unique request ID.
 	// Default: ULID generator.
 	Generator func() string
@@ -233,7 +238,7 @@ func New(config ...Config) aarv.Middleware {
 		return func(c *aarv.Context) error {
 			id := c.Header(cfg.Header)
 			if id == "" {
-				id = cfg.Generator()
+				id = cfg.Prefix + cfg.Generator()
 			}
 
 			c.SetHeader(cfg.Header, id)
@@ -249,7 +254,7 @@ func New(config ...Config) aarv.Middleware {
 			// Read existing request ID from header or generate a new one
 			id := r.Header.Get(cfg.Header)
 			if id == "" {
-				id = cfg.Generator()
+				id = cfg.Prefix + cfg.Generator()
 			}
 
 			// Set the request ID on the response header

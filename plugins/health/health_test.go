@@ -79,6 +79,108 @@ func TestNewSupportsCustomPathsAndHealthyChecks(t *testing.T) {
 	}
 }
 
+func TestNewInfoIncludedInResponse(t *testing.T) {
+	handler := New(Config{
+		Info: map[string]any{
+			"version": "1.2.3",
+			"commit":  "abc123",
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"status":"ok"`) {
+		t.Fatalf("expected status ok in body, got %q", body)
+	}
+	if !strings.Contains(body, `"version":"1.2.3"`) {
+		t.Fatalf("expected version in body, got %q", body)
+	}
+	if !strings.Contains(body, `"commit":"abc123"`) {
+		t.Fatalf("expected commit in body, got %q", body)
+	}
+}
+
+func TestNewInfoOnUnavailableStdlibPath(t *testing.T) {
+	handler := New(Config{
+		Info: map[string]any{
+			"version": "3.0.0",
+		},
+		ReadyCheck: func() bool { return false },
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/ready", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"version":"3.0.0"`) || !strings.Contains(body, `"status":"unavailable"`) {
+		t.Fatalf("expected info in unavailable stdlib response, got %q", body)
+	}
+}
+
+func TestNewInfoStatusCannotBeOverridden(t *testing.T) {
+	handler := New(Config{
+		Info: map[string]any{
+			"status": "lying",
+		},
+		ReadyCheck: func() bool { return false },
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/ready", nil))
+	body := rec.Body.String()
+	if strings.Contains(body, `"lying"`) {
+		t.Fatalf("Info[\"status\"] should not override computed status, got %q", body)
+	}
+	if !strings.Contains(body, `"status":"unavailable"`) {
+		t.Fatalf("expected computed status, got %q", body)
+	}
+}
+
+func TestNewNativeInfoIncludedInResponse(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		Info: map[string]any{
+			"version": "2.0.0",
+		},
+		ReadyCheck: func() bool { return false },
+	}))
+	app.Get("/other", func(c *aarv.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	})
+
+	// Health endpoint with info
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, `"version":"2.0.0"`) || !strings.Contains(body, `"status":"ok"`) {
+		t.Fatalf("expected info in health response, got %q", body)
+	}
+
+	// Unavailable endpoint also includes info
+	rec = httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	body = rec.Body.String()
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	if !strings.Contains(body, `"version":"2.0.0"`) || !strings.Contains(body, `"status":"unavailable"`) {
+		t.Fatalf("expected info in unavailable response, got %q", body)
+	}
+}
+
 func TestNewNativeMiddlewarePath(t *testing.T) {
 	app := aarv.New(aarv.WithBanner(false))
 	app.Use(New())

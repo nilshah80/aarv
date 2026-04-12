@@ -35,6 +35,12 @@ type Config struct {
 	// is alive (healthy). Return true for alive, false for unhealthy.
 	// If nil, the liveness endpoint always returns "ok".
 	LiveCheck func() bool
+
+	// Info is optional additional data included in every health-check JSON
+	// response (e.g. version, build commit, uptime). Each key/value pair is
+	// added as a top-level field alongside "status".
+	// Default: nil (no extra fields).
+	Info map[string]any
 }
 
 // DefaultConfig returns the default health check configuration.
@@ -72,29 +78,43 @@ func New(config ...Config) aarv.Middleware {
 		cfg.LivePath = "/live"
 	}
 
+	// buildBody returns the response payload, merging Info when configured.
+	// The computed "status" field always wins — Info cannot override it.
+	buildBody := func(status string) any {
+		if len(cfg.Info) == 0 {
+			return statusResponse{Status: status}
+		}
+		body := make(map[string]any, len(cfg.Info)+1)
+		for k, v := range cfg.Info {
+			body[k] = v
+		}
+		body["status"] = status // set last so Info cannot overwrite
+		return body
+	}
+
 	m := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
 
 			switch path {
 			case cfg.HealthPath:
-				writeJSON(w, http.StatusOK, statusResponse{Status: "ok"})
+				writeJSON(w, http.StatusOK, buildBody("ok"))
 				return
 
 			case cfg.ReadyPath:
 				if cfg.ReadyCheck != nil && !cfg.ReadyCheck() {
-					writeJSON(w, http.StatusServiceUnavailable, statusResponse{Status: "unavailable"})
+					writeJSON(w, http.StatusServiceUnavailable, buildBody("unavailable"))
 					return
 				}
-				writeJSON(w, http.StatusOK, statusResponse{Status: "ok"})
+				writeJSON(w, http.StatusOK, buildBody("ok"))
 				return
 
 			case cfg.LivePath:
 				if cfg.LiveCheck != nil && !cfg.LiveCheck() {
-					writeJSON(w, http.StatusServiceUnavailable, statusResponse{Status: "unavailable"})
+					writeJSON(w, http.StatusServiceUnavailable, buildBody("unavailable"))
 					return
 				}
-				writeJSON(w, http.StatusOK, statusResponse{Status: "ok"})
+				writeJSON(w, http.StatusOK, buildBody("ok"))
 				return
 			}
 
@@ -106,17 +126,17 @@ func New(config ...Config) aarv.Middleware {
 		return func(c *aarv.Context) error {
 			switch c.Path() {
 			case cfg.HealthPath:
-				return c.JSON(http.StatusOK, statusResponse{Status: "ok"})
+				return c.JSON(http.StatusOK, buildBody("ok"))
 			case cfg.ReadyPath:
 				if cfg.ReadyCheck != nil && !cfg.ReadyCheck() {
-					return c.JSON(http.StatusServiceUnavailable, statusResponse{Status: "unavailable"})
+					return c.JSON(http.StatusServiceUnavailable, buildBody("unavailable"))
 				}
-				return c.JSON(http.StatusOK, statusResponse{Status: "ok"})
+				return c.JSON(http.StatusOK, buildBody("ok"))
 			case cfg.LivePath:
 				if cfg.LiveCheck != nil && !cfg.LiveCheck() {
-					return c.JSON(http.StatusServiceUnavailable, statusResponse{Status: "unavailable"})
+					return c.JSON(http.StatusServiceUnavailable, buildBody("unavailable"))
 				}
-				return c.JSON(http.StatusOK, statusResponse{Status: "ok"})
+				return c.JSON(http.StatusOK, buildBody("ok"))
 			default:
 				return next(c)
 			}

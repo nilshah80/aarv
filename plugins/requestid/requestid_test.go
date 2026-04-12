@@ -179,6 +179,90 @@ func TestNewAdditionalBranches(t *testing.T) {
 	})
 }
 
+func TestNewPrefixAppliedToGeneratedIDs(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{
+		Prefix: "svc-",
+		Generator: func() string {
+			return "abc123"
+		},
+	}))
+	app.Get("/id", func(c *aarv.Context) error {
+		return c.Text(http.StatusOK, c.RequestID())
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/id", nil))
+
+	if got := rec.Body.String(); got != "svc-abc123" {
+		t.Fatalf("expected prefixed id, got %q", got)
+	}
+	if got := rec.Header().Get("X-Request-ID"); got != "svc-abc123" {
+		t.Fatalf("expected prefixed header, got %q", got)
+	}
+}
+
+func TestNewPrefixNotAppliedToIncomingIDs(t *testing.T) {
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{Prefix: "svc-"}))
+	app.Get("/id", func(c *aarv.Context) error {
+		return c.Text(http.StatusOK, c.RequestID())
+	})
+
+	req := httptest.NewRequest("GET", "/id", nil)
+	req.Header.Set("X-Request-ID", "incoming-123")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if got := rec.Body.String(); got != "incoming-123" {
+		t.Fatalf("expected unprefixed incoming id, got %q", got)
+	}
+}
+
+func TestNewPrefixStdlibPath(t *testing.T) {
+	handler := New(Config{
+		Prefix: "api-",
+		Generator: func() string {
+			return "gen456"
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(FromContext(r.Context())))
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+
+	if got := rec.Header().Get("X-Request-ID"); got != "api-gen456" {
+		t.Fatalf("expected prefixed header in stdlib path, got %q", got)
+	}
+	if got := rec.Body.String(); got != "api-gen456" {
+		t.Fatalf("expected prefixed body in stdlib path, got %q", got)
+	}
+}
+
+func TestNewPrefixNotAppliedToIncomingIDsStdlibPath(t *testing.T) {
+	handler := New(Config{
+		Prefix: "svc-",
+		Generator: func() string {
+			return "should-not-appear"
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(FromContext(r.Context())))
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Request-ID", "external-999")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("X-Request-ID"); got != "external-999" {
+		t.Fatalf("expected unprefixed incoming header in stdlib path, got %q", got)
+	}
+	if got := rec.Body.String(); got != "external-999" {
+		t.Fatalf("expected unprefixed incoming body in stdlib path, got %q", got)
+	}
+}
+
 func TestFastGeneratorUniqueness(t *testing.T) {
 	ids := make(map[string]struct{}, 10000)
 	for i := 0; i < 10000; i++ {
