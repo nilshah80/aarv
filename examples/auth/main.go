@@ -140,8 +140,16 @@ func APIKeyMiddleware() aarv.Middleware {
 }
 
 // =============================================================================
-// Session-based Authentication (cookie-based)
+// Session-based Authentication (secure signed cookies)
 // =============================================================================
+
+// sessionSecret is the HMAC signing key for session cookies.
+// In production, load from environment or secret manager.
+var sessionSecret = []byte("session-signing-secret-change-me!")
+
+// encryptionKey is the 32-byte master key for encrypted cookies.
+// In production, load from environment or secret manager.
+var encryptionKey = []byte("0123456789abcdef0123456789abcdef")
 
 var (
 	sessions   = make(map[string]*Session)
@@ -189,29 +197,28 @@ func getSession(id string) *Session {
 	return sess
 }
 
-// SessionMiddleware validates session cookies
-func SessionMiddleware() aarv.Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			cookie, err := r.Cookie("session_id")
+// SecureSessionMiddleware validates signed session cookies using aarv's
+// SecureCookie API. The session ID is HMAC-signed so it cannot be forged
+// or tampered with. Server-side expiry is set to 24 hours.
+func SecureSessionMiddleware() aarv.Middleware {
+	return aarv.WrapMiddleware(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+		return func(c *aarv.Context) error {
+			sessionID, err := c.SecureCookie("session_id", sessionSecret, 86400)
 			if err != nil {
-				http.Error(w, `{"error":"no session cookie"}`, http.StatusUnauthorized)
-				return
+				return aarv.ErrUnauthorized("invalid or missing session")
 			}
 
-			sess := getSession(cookie.Value)
+			sess := getSession(sessionID)
 			if sess == nil {
-				http.Error(w, `{"error":"invalid or expired session"}`, http.StatusUnauthorized)
-				return
+				return aarv.ErrUnauthorized("invalid or expired session")
 			}
 
-			// Store session in request context
-			ctx := context.WithValue(r.Context(), "session", sess)
-			ctx = context.WithValue(ctx, "user_id", sess.UserID)
-			ctx = context.WithValue(ctx, "username", sess.Username)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
+			c.Set("session", sess)
+			c.Set("user_id", sess.UserID)
+			c.Set("username", sess.Username)
+			return next(c)
+		}
+	})
 }
 
 // =============================================================================
@@ -292,7 +299,7 @@ func main() {
 		}, nil
 	}))
 
-	// Session authentication
+	// Session authentication — uses signed cookies
 	app.Post("/auth/session/login", aarv.Bind(func(c *aarv.Context, req LoginReq) (LoginRes, error) {
 		user, ok := users[req.Username]
 		if !ok || user.Password != req.Password {
@@ -301,16 +308,13 @@ func main() {
 
 		sess := createSession(user.ID, req.Username)
 
-		// Set session cookie
-		http.SetCookie(c.Response(), &http.Cookie{
-			Name:     "session_id",
-			Value:    sess.ID,
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   false, // Set to true in production with HTTPS
-			SameSite: http.SameSiteLaxMode,
-			Expires:  sess.ExpiresAt,
-		})
+		// Set signed session cookie — HMAC-SHA256 prevents forgery.
+		// HttpOnly=true and SameSite=Lax are applied by default.
+		if err := c.SetSecureCookie("session_id", sess.ID, sessionSecret, aarv.CookieOptions{
+			MaxAge: 86400, // 24 hours
+		}); err != nil {
+			return LoginRes{}, aarv.ErrInternal(err)
+		}
 
 		return LoginRes{
 			SessionID: sess.ID,
@@ -370,11 +374,10 @@ func main() {
 
 	// Session-protected routes
 	app.Group("/api/session", func(g *aarv.RouteGroup) {
-		g.Use(SessionMiddleware())
+		g.Use(SecureSessionMiddleware())
 
 		g.Get("/me", func(c *aarv.Context) error {
-			sess := c.Request().Context().Value("session")
-			session := sess.(*Session)
+			session := c.MustGet("session").(*Session)
 			return c.JSON(http.StatusOK, map[string]any{
 				"message":    "Session-protected endpoint",
 				"user_id":    session.UserID,
@@ -385,21 +388,16 @@ func main() {
 		})
 
 		g.Post("/logout", func(c *aarv.Context) error {
-			sess := c.Request().Context().Value("session")
-			session := sess.(*Session)
+			session := c.MustGet("session").(*Session)
 
 			// Delete session
 			sessionsMu.Lock()
 			delete(sessions, session.ID)
 			sessionsMu.Unlock()
 
-			// Clear cookie
-			http.SetCookie(c.Response(), &http.Cookie{
-				Name:     "session_id",
-				Value:    "",
-				Path:     "/",
-				MaxAge:   -1,
-				HttpOnly: true,
+			// Clear signed cookie using negative MaxAge
+			_ = c.SetSecureCookie("session_id", "", sessionSecret, aarv.CookieOptions{
+				MaxAge: -1,
 			})
 
 			return c.JSON(http.StatusOK, map[string]string{
@@ -408,19 +406,84 @@ func main() {
 		})
 	})
 
-	// Public endpoints (registered after groups to avoid pattern conflicts)
+	// -----------------------------------------------------------------
+	// Encrypted cookie endpoints — store sensitive data in cookies
+	// using AES-256-GCM encryption + HMAC-SHA256 signing.
+	// -----------------------------------------------------------------
+
+	// Save user preferences in an encrypted cookie
+	app.Post("/preferences", func(c *aarv.Context) error {
+		type PrefsReq struct {
+			Theme    string `json:"theme"`
+			Language string `json:"language"`
+			Timezone string `json:"timezone"`
+		}
+		var prefs PrefsReq
+		if err := c.BindJSON(&prefs); err != nil {
+			return aarv.ErrBadRequest("invalid JSON")
+		}
+
+		// Serialize preferences as JSON and encrypt into a cookie
+		data, _ := json.Marshal(prefs)
+		if err := c.SetEncryptedCookie("prefs", string(data), encryptionKey, aarv.CookieOptions{
+			MaxAge: 30 * 86400, // 30 days
+		}); err != nil {
+			return aarv.ErrInternal(err)
+		}
+
+		return c.JSON(http.StatusOK, map[string]any{
+			"message": "Preferences saved in encrypted cookie",
+			"prefs":   prefs,
+		})
+	})
+
+	// Read user preferences from encrypted cookie
+	app.Get("/preferences", func(c *aarv.Context) error {
+		data, err := c.EncryptedCookie("prefs", encryptionKey)
+		if err != nil {
+			return c.JSON(http.StatusOK, map[string]any{
+				"message": "No preferences set",
+				"prefs":   nil,
+			})
+		}
+
+		var prefs map[string]string
+		if err := json.Unmarshal([]byte(data), &prefs); err != nil {
+			return aarv.ErrBadRequest("corrupted preferences")
+		}
+
+		return c.JSON(http.StatusOK, map[string]any{
+			"message": "Preferences loaded from encrypted cookie",
+			"prefs":   prefs,
+		})
+	})
+
+	// Clear preferences cookie
+	app.Delete("/preferences", func(c *aarv.Context) error {
+		_ = c.SetEncryptedCookie("prefs", "", encryptionKey, aarv.CookieOptions{
+			MaxAge: -1,
+		})
+		return c.JSON(http.StatusOK, map[string]string{
+			"message": "Preferences cleared",
+		})
+	})
+
+	// Public endpoints
 	app.Get("/info", func(c *aarv.Context) error {
 		return c.JSON(http.StatusOK, map[string]any{
 			"message": "Authentication Patterns Demo",
 			"endpoints": map[string]string{
 				"GET /info":                 "This endpoint",
 				"POST /auth/jwt/login":      "Get JWT token",
-				"POST /auth/session/login":  "Create session (cookie)",
+				"POST /auth/session/login":  "Create session (signed cookie)",
 				"GET /public":               "Public endpoint",
 				"GET /api/jwt/protected":    "JWT-protected endpoint",
 				"GET /api/key/protected":    "API-key-protected endpoint",
-				"GET /api/session/me":       "Session-protected endpoint",
+				"GET /api/session/me":       "Session-protected (signed cookie)",
 				"GET /api/jwt/admin":        "Admin-only endpoint (JWT + role)",
+				"POST /preferences":         "Save encrypted preferences cookie",
+				"GET /preferences":          "Read encrypted preferences cookie",
+				"DELETE /preferences":       "Clear preferences cookie",
 			},
 		})
 	})
@@ -444,13 +507,20 @@ func main() {
 	fmt.Println("  Access: curl http://localhost:8080/api/key/protected \\")
 	fmt.Println("            -H 'X-API-Key: key_prod_abc123'")
 	fmt.Println()
-	fmt.Println("  === Session Authentication ===")
+	fmt.Println("  === Session Authentication (signed cookies) ===")
 	fmt.Println("  Login:  curl -X POST http://localhost:8080/auth/session/login \\")
 	fmt.Println("            -c cookies.txt -H 'Content-Type: application/json' \\")
 	fmt.Println("            -d '{\"username\":\"user\",\"password\":\"user123\"}'")
 	fmt.Println("  Access: curl http://localhost:8080/api/session/me -b cookies.txt")
 	fmt.Println()
+	fmt.Println("  === Encrypted Cookies ===")
+	fmt.Println("  Save:   curl -X POST http://localhost:8080/preferences \\")
+	fmt.Println("            -c cookies.txt -H 'Content-Type: application/json' \\")
+	fmt.Println("            -d '{\"theme\":\"dark\",\"language\":\"en\",\"timezone\":\"UTC\"}'")
+	fmt.Println("  Read:   curl http://localhost:8080/preferences -b cookies.txt")
+	fmt.Println("  Clear:  curl -X DELETE http://localhost:8080/preferences -b cookies.txt -c cookies.txt")
+	fmt.Println()
 	fmt.Println("  Demo users: admin/admin123 (admin role), user/user123 (user role)")
 
-	app.Listen(":8080")
+	_ = app.Listen(":8080")
 }

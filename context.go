@@ -2,6 +2,7 @@ package aarv
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -435,6 +436,101 @@ func (c *Context) Cookie(name string) (*http.Cookie, error) {
 // SetCookie sets a response cookie.
 func (c *Context) SetCookie(cookie *http.Cookie) {
 	http.SetCookie(c.res, cookie)
+}
+
+// SetSecureCookie signs the value with HMAC-SHA256 and sets it as a cookie.
+// Returns ErrEmptySecret if secret is empty.
+func (c *Context) SetSecureCookie(name, value string, secret []byte, opts ...CookieOptions) error {
+	if len(secret) == 0 {
+		return ErrEmptySecret
+	}
+	payload := base64.RawURLEncoding.EncodeToString([]byte(value))
+	encoded := encodeSigned(name, payload, secret)
+	o := resolveCookieOptions(opts)
+	c.SetCookie(buildHTTPCookie(name, encoded, o))
+	return nil
+}
+
+// SecureCookie reads a signed cookie, verifies the HMAC signature, and
+// returns the original value.
+//
+// The optional serverMaxAge parameter controls server-side expiry in
+// seconds. This is independent of the HTTP Max-Age cookie attribute,
+// which is client-enforced and can be spoofed. When serverMaxAge is 0
+// or omitted, no server-side timestamp check is performed.
+func (c *Context) SecureCookie(name string, secret []byte, serverMaxAge ...int) (string, error) {
+	if len(secret) == 0 {
+		return "", ErrEmptySecret
+	}
+	cookie, err := c.Cookie(name)
+	if err != nil {
+		return "", err
+	}
+	maxAge := 0
+	if len(serverMaxAge) > 0 {
+		maxAge = serverMaxAge[0]
+	}
+	payload, err := decodeSigned(name, cookie.Value, secret, maxAge)
+	if err != nil {
+		return "", err
+	}
+	value, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return "", ErrInvalidCookieFormat
+	}
+	return string(value), nil
+}
+
+// SetEncryptedCookie encrypts the value with AES-256-GCM, signs the
+// encrypted blob with HMAC-SHA256 (encrypt-then-MAC), and sets it as a
+// cookie. The key must be exactly 32 bytes. Encryption and signing use
+// separate subkeys derived from the master key via domain-separated
+// HMAC-SHA256 derivation.
+//
+// Note: encrypted cookies have significant size overhead (base64 encoding +
+// 12-byte nonce + 16-byte GCM tag + MAC + timestamp). Be aware of the
+// ~4KB browser cookie size limit.
+func (c *Context) SetEncryptedCookie(name, value string, key []byte, opts ...CookieOptions) error {
+	encKey, macKey, err := deriveKeys(key)
+	if err != nil {
+		return err
+	}
+	encrypted, err := encryptValue(value, encKey)
+	if err != nil {
+		return err
+	}
+	encoded := encodeSigned(name, encrypted, macKey)
+	o := resolveCookieOptions(opts)
+	c.SetCookie(buildHTTPCookie(name, encoded, o))
+	return nil
+}
+
+// EncryptedCookie reads an encrypted+signed cookie, verifies the HMAC
+// signature, decrypts the value, and returns the plaintext. The key must
+// be exactly 32 bytes. The optional serverMaxAge parameter controls
+// server-side expiry in seconds.
+func (c *Context) EncryptedCookie(name string, key []byte, serverMaxAge ...int) (string, error) {
+	encKey, macKey, err := deriveKeys(key)
+	if err != nil {
+		return "", err
+	}
+	cookie, err := c.Cookie(name)
+	if err != nil {
+		return "", err
+	}
+	maxAge := 0
+	if len(serverMaxAge) > 0 {
+		maxAge = serverMaxAge[0]
+	}
+	encryptedPayload, err := decodeSigned(name, cookie.Value, macKey, maxAge)
+	if err != nil {
+		return "", err
+	}
+	plaintext, err := decryptValue(encryptedPayload, encKey)
+	if err != nil {
+		return "", err
+	}
+	return plaintext, nil
 }
 
 // --- Body ---

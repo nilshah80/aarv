@@ -460,14 +460,14 @@ Notes from latest benchmark pass:
 - [x] Unit tests: single file, multiple files, size limit, content type validation, binder integration
 
 ### 5.13 Cookie Signing & Encryption
-- [ ] Implement `SecureCookie` helper using `crypto/hmac` for signing
-- [ ] Implement `c.SetSecureCookie(name, value, secret)` — signs cookie value
-- [ ] Implement `c.SecureCookie(name, secret)` — verifies and returns unsigned value
-- [ ] Implement optional encryption using `crypto/aes` (AES-GCM)
-- [ ] `c.SetEncryptedCookie(name, value, key)` — encrypt + sign
-- [ ] `c.EncryptedCookie(name, key)` — decrypt + verify
-- [ ] Configurable: expiry, path, domain, secure, httpOnly, sameSite
-- [ ] Unit tests: sign/verify, encrypt/decrypt, tamper detection, expiry
+- [x] Implement `SecureCookie` helper using `crypto/hmac` for signing
+- [x] Implement `c.SetSecureCookie(name, value, secret, opts...)` — signs cookie value with HMAC-SHA256
+- [x] Implement `c.SecureCookie(name, secret, serverMaxAge...)` — verifies and returns unsigned value
+- [x] Implement optional encryption using `crypto/aes` (AES-256-GCM) with encrypt-then-MAC
+- [x] `c.SetEncryptedCookie(name, value, key, opts...)` — encrypt + sign with derived subkeys
+- [x] `c.EncryptedCookie(name, key, serverMaxAge...)` — decrypt + verify
+- [x] Configurable: expiry, path, domain, secure, httpOnly, sameSite via `CookieOptions`
+- [x] Unit tests: sign/verify, encrypt/decrypt, tamper detection, expiry, cross-name replay, empty secret, key derivation
 
 ### 5.14 Server-Sent Events (SSE) Helper
 - [ ] Implement `c.SSE()` that returns `*SSEWriter`
