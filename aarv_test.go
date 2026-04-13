@@ -729,10 +729,10 @@ func TestDirectRoutingAdditionalCoverage(t *testing.T) {
 		app.Get("/exact", func(c *Context) error { return c.NoContent(http.StatusOK) })
 
 		rm := &routingMux{
-			mux:               app.mux,
-			app:               app,
-			routesByKey:        app.routesByKey,
-			routeMethodsExact:  app.routeMethodsExact,
+			mux:                 app.mux,
+			app:                 app,
+			routesByKey:         app.routesByKey,
+			routeMethodsExact:   app.routeMethodsExact,
 			routeMethodsDynamic: app.routeMethodsDynamic,
 		}
 		req := httptest.NewRequest(http.MethodPost, "/exact", nil)
@@ -754,10 +754,10 @@ func TestDirectRoutingAdditionalCoverage(t *testing.T) {
 		app2.Get("/items/{id}", func(c *Context) error { return c.NoContent(http.StatusOK) })
 
 		rm2 := &routingMux{
-			mux:               app2.mux,
-			app:               app2,
-			routesByKey:        app2.routesByKey,
-			routeMethodsExact:  app2.routeMethodsExact,
+			mux:                 app2.mux,
+			app:                 app2,
+			routesByKey:         app2.routesByKey,
+			routeMethodsExact:   app2.routeMethodsExact,
 			routeMethodsDynamic: app2.routeMethodsDynamic,
 		}
 		req2 := httptest.NewRequest(http.MethodPost, "/items/42", nil)

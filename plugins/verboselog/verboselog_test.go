@@ -2,12 +2,12 @@ package verboselog
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"encoding/json"
 	"strings"
 	"testing"
 

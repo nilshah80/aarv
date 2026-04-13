@@ -106,7 +106,6 @@ func JWTMiddleware() aarv.Middleware {
 	}
 }
 
-
 // =============================================================================
 // API Key Authentication
 // =============================================================================
@@ -473,17 +472,17 @@ func main() {
 		return c.JSON(http.StatusOK, map[string]any{
 			"message": "Authentication Patterns Demo",
 			"endpoints": map[string]string{
-				"GET /info":                 "This endpoint",
-				"POST /auth/jwt/login":      "Get JWT token",
-				"POST /auth/session/login":  "Create session (signed cookie)",
-				"GET /public":               "Public endpoint",
-				"GET /api/jwt/protected":    "JWT-protected endpoint",
-				"GET /api/key/protected":    "API-key-protected endpoint",
-				"GET /api/session/me":       "Session-protected (signed cookie)",
-				"GET /api/jwt/admin":        "Admin-only endpoint (JWT + role)",
-				"POST /preferences":         "Save encrypted preferences cookie",
-				"GET /preferences":          "Read encrypted preferences cookie",
-				"DELETE /preferences":       "Clear preferences cookie",
+				"GET /info":                "This endpoint",
+				"POST /auth/jwt/login":     "Get JWT token",
+				"POST /auth/session/login": "Create session (signed cookie)",
+				"GET /public":              "Public endpoint",
+				"GET /api/jwt/protected":   "JWT-protected endpoint",
+				"GET /api/key/protected":   "API-key-protected endpoint",
+				"GET /api/session/me":      "Session-protected (signed cookie)",
+				"GET /api/jwt/admin":       "Admin-only endpoint (JWT + role)",
+				"POST /preferences":        "Save encrypted preferences cookie",
+				"GET /preferences":         "Read encrypted preferences cookie",
+				"DELETE /preferences":      "Clear preferences cookie",
 			},
 		})
 	})

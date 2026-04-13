@@ -24,12 +24,12 @@ import (
 )
 
 type Config struct {
-	AppName     string            `json:"app_name"`
-	Version     string            `json:"version"`
-	Features    []string          `json:"features"`
-	Settings    map[string]any    `json:"settings"`
-	Enabled     bool              `json:"enabled"`
-	LastUpdated time.Time         `json:"last_updated"`
+	AppName     string         `json:"app_name"`
+	Version     string         `json:"version"`
+	Features    []string       `json:"features"`
+	Settings    map[string]any `json:"settings"`
+	Enabled     bool           `json:"enabled"`
+	LastUpdated time.Time      `json:"last_updated"`
 }
 
 type UpdateConfigReq struct {

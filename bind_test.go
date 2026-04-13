@@ -1342,11 +1342,11 @@ func TestBuildFieldSetterFallback(t *testing.T) {
 	type MySlice []string
 
 	type req struct {
-		A MyInt    `query:"a"`
-		B MyUint   `query:"b"`
-		C MyFloat  `query:"c"`
-		D MyBool   `query:"d"`
-		E MySlice  `query:"e"`
+		A MyInt   `query:"a"`
+		B MyUint  `query:"b"`
+		C MyFloat `query:"c"`
+		D MyBool  `query:"d"`
+		E MySlice `query:"e"`
 	}
 
 	app := New(WithBanner(false))

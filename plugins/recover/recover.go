@@ -19,11 +19,11 @@ import (
 // panics mid-response, nothing has been committed to the real ResponseWriter.
 // Call commit() to flush buffered headers, status, and body to the real writer.
 type panicGuardWriter struct {
-	real       http.ResponseWriter
-	header     http.Header
-	buf        bytes.Buffer
-	statusCode int
-	committed  bool
+	real        http.ResponseWriter
+	header      http.Header
+	buf         bytes.Buffer
+	statusCode  int
+	committed   bool
 	wroteHeader bool
 }
 

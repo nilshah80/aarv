@@ -126,9 +126,9 @@ func main() {
 				{"id": 2, "name": "Bob", "tags": []string{"user"}},
 			},
 			"pagination": map[string]int{
-				"page":       1,
-				"page_size":  20,
-				"total":      2,
+				"page":      1,
+				"page_size": 20,
+				"total":     2,
 			},
 		})
 	})
