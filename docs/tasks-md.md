@@ -580,8 +580,8 @@ Notes from latest benchmark pass:
 - [x] Implement `sonic.Pretouch(types ...any)` for JIT warmup
 - [x] Create `codec/jsonv2/go.mod` — separate module
 - [x] Implement `jsonv2.New()` returning `Codec`
-- [ ] Benchmark suite: all codecs, marshal/unmarshal, various payload sizes
-- [ ] README for each sub-package with usage example
+- [x] Benchmark suite: all codecs, marshal/unmarshal, various payload sizes
+- [x] README for each sub-package with usage example
 
 ---
 
