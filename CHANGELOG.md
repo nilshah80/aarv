@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-04-13
+
+### Added
+- Server-Sent Events (SSE) helper: `c.SSE()` returns an `SSEWriter` with `Send`, `Comment`, `Flush`, `Close`, and `Done` for client-disconnect detection. Multi-line `Data` fields are split across multiple `data:` lines per the SSE spec; `Event` and `ID` reject embedded newlines.
+- Secure cookies: HMAC-signed and AES-encrypted cookie helpers in `securecookie.go`, with key rotation support.
+- Multipart file upload: new `UploadedFile` API for multipart form handling with size limits and streamed access to file contents.
+- Configurable panic recovery: the `recover` plugin now accepts a custom recovery handler so applications can return shaped error bodies on panic.
+- Cross-platform graceful shutdown integration test that drives the full drain path via an external `Shutdown(ctx)` call without depending on POSIX signal delivery.
+- Plugin integration tests that assert middleware execution, hook firing, nested plugin route mounting, and bidirectional decorator resolution.
+
+### Changed
+- Plugins now surface previously unchecked error returns instead of dropping them silently.
+- Codebase-wide `gofmt -s` cleanup: struct field alignment, import order, and doc-comment list indentation.
+
+### Codec Submodules
+- `codec/jsonv2`, `codec/segmentio`, and `codec/sonic` are re-tagged at `v0.4.4` for version alignment. No source changes in this release.
+
+## [0.4.3] - 2026-04-05
+
+### Changed
+- Lock-free ULID generation in the request ID path; reduced contention under high concurrency.
+- Buffered header handling in the timeout middleware to avoid duplicate flushes.
+- Stack-allocated log attribute slices in hot logging paths.
+- Context reset logic and path matching streamlined for fewer allocations.
+
+### Added
+- Native middleware path tests covering additional built-in plugins.
+- Inlined benchmark writer helper to remove an indirection in the request hot path.
+
 ## [0.4.0] - 2026-03-22
 
 ### Added
@@ -62,6 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 4. Push: `git push origin vX.Y.Z`
 5. Create GitHub Release with notes from this file
 
-[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/nilshah80/aarv/compare/v0.4.3...v0.4.4
+[0.4.3]: https://github.com/nilshah80/aarv/compare/v0.4.0...v0.4.3
 [0.4.0]: https://github.com/nilshah80/aarv/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/nilshah80/aarv/compare/v0.1.0...v0.3.0
