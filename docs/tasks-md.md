@@ -538,6 +538,22 @@ Notes from latest benchmark pass:
 - [ ] Content-Type: `application/problem+json`
 - [ ] Unit tests: RFC 7807 compliance, extension fields
 
+### 6.7 Session Plugin
+**Why**: Aarv already has the hard half via `securecookie.go` (HMAC-signed + AES-encrypted cookies). A thin session layer on top rounds out the auth story for cookie-based apps and pairs naturally with the CSRF plugin (10.3) and Basic/Bearer auth plugins.
+- [ ] Create `plugins/session` package
+- [ ] Define `Store` interface: `Get(id) (Session, error)`, `Save(Session) error`, `Delete(id) error`
+- [ ] Implement `CookieStore` — serializes session into a signed/encrypted cookie via `securecookie`, no server state
+- [ ] Implement `MemoryStore` — in-process map with TTL eviction (zero-dep, default for dev/single-node)
+- [ ] `Session` type: `Get/Set/Delete(key)`, `Flash(key, value)` for one-shot messages, `Regenerate()` for fixation prevention, `Destroy()`
+- [ ] Middleware: loads session at request start, persists on response if dirty
+- [ ] Helper: `session.From(c)` to retrieve current session from Context
+- [ ] Configurable: cookie name, max age, secure, httponly, samesite, domain, path
+- [ ] CSRF token integration: expose `Session.CSRFToken()` for the CSRF plugin (10.3)
+- [ ] Optional: `plugins/session-redis/go.mod` for distributed sessions
+- [ ] Optional: `plugins/session-sql/go.mod` for SQL-backed sessions
+- [ ] Unit tests: CookieStore round-trip, MemoryStore eviction, regeneration, flash messages, concurrent access
+- [ ] Security tests: tampered cookie rejected, expired session rejected, regenerate clears old ID
+
 ---
 
 ## Phase 7: Plugin System (M7) ✅ COMPLETE
@@ -550,8 +566,8 @@ Notes from latest benchmark pass:
 - [x] Nested `Register(plugin)` within PluginContext
 - [x] Plugin-scoped logger (includes plugin name)
 - [x] Plugin config passing via `PluginOption`
-- [ ] Integration test: plugin registers routes + hooks + middleware in isolation
-- [ ] Integration test: nested plugins, decorator resolution
+- [x] Integration test: plugin registers routes + hooks + middleware in isolation
+- [x] Integration test: nested plugins, decorator resolution
 
 ---
 
@@ -625,6 +641,21 @@ Notes from latest benchmark pass:
 - [ ] Configurable: fields to sanitize, custom sanitizer functions
 - [ ] Unit tests: HTML stripping, Unicode normalization
 
+### 10.6 Idempotency Plugin
+**Why**: Required for payment, order-creation, and other write APIs where retries from clients, proxies, or load balancers must not double-execute the handler. The middleware stores the response by `Idempotency-Key` header and replays it on retry.
+- [ ] Create `plugins/idempotency` package
+- [ ] Read `Idempotency-Key` header (configurable name); pass through if absent
+- [ ] Define `Store` interface: `Lock(key) (acquired bool, err)`, `Get(key) (*Response, err)`, `Save(key, *Response, ttl) err`
+- [ ] Implement `MemoryStore` — sync.Map + TTL eviction (zero-dep, default)
+- [ ] First request: lock, execute handler, capture status + headers + body, persist, return
+- [ ] Subsequent requests with same key: return cached response (status + headers + body) verbatim
+- [ ] Concurrent requests with same key: second waits or returns 409 Conflict (configurable)
+- [ ] TTL configuration (default: 24h)
+- [ ] Skip safe methods (GET, HEAD, OPTIONS) by default
+- [ ] Hash request body and reject reuse of key with different payload (per RFC draft) — optional, configurable
+- [ ] Optional: `plugins/idempotency-redis/go.mod` for distributed setups
+- [ ] Unit tests: first/replay, concurrent same-key, payload mismatch, TTL expiry, safe-method bypass
+
 ---
 
 ## Phase 11: Observability Plugins (M11)
@@ -655,6 +686,19 @@ Notes from latest benchmark pass:
 - [ ] Mount `net/http/pprof` at configurable prefix (stdlib, no external deps)
 - [ ] Optional: authentication middleware for pprof endpoints
 - [ ] Unit tests: endpoint availability
+
+### 11.4 Body Dump Sink (verboselog enhancement)
+**Why**: `verboselog` already tees request and response bodies but hardcodes the destination to `slog`. Users who need to deliver captured bytes to an audit database, object store, message queue, or fixture recorder currently have to fork the plugin. Adding a sink callback to verboselog avoids duplicating ~90 lines of body-capture machinery in a separate plugin.
+- [ ] Add `DumpMeta` struct exposing already-computed metadata: status, latency, request ID, method, path, client IP, user-agent, content type, redacted request/response header maps, query params
+- [ ] Add `Sink func(c *aarv.Context, reqBody, respBody []byte, meta DumpMeta)` field to `Config`
+- [ ] Add `LogToSlog bool` field (default `true`) to allow suppressing slog output when only sink delivery is wanted
+- [ ] Sink receives bytes *after* truncation and redaction (consistent with what slog sees) — document this; users wanting raw bytes should set `RedactSensitive: false` and `MaxBodySize` high
+- [ ] Sink invocation must be panic-safe: recover and log via slog, never crash the request
+- [ ] Sink is invoked synchronously after handler completes; document that long-running sinks should hand off to a goroutine/queue themselves
+- [ ] Wire sink into both the `net/http` middleware path and the native `aarv.HandlerFunc` path
+- [ ] Update package doc comment to describe audit/archive use case alongside the existing logging use case
+- [ ] Unit tests: sink receives correct bytes, sink receives correct meta, sink panic is recovered, `LogToSlog: false` suppresses slog output, sink + slog both fire when both enabled, sink not invoked for skipped paths
+- [ ] Example: `examples/verboselog-audit` showing a sink that appends to an in-memory audit log
 
 ---
 
@@ -703,8 +747,6 @@ Notes from latest benchmark pass:
 - [ ] docs/tls-http2.md
 - [ ] docs/testing.md
 - [ ] docs/auth.md
-- [ ] docs/migration-from-gin.md
-- [ ] docs/migration-from-echo.md
 - [ ] docs/architecture.md
 
 ### Benchmarks ✅
@@ -743,7 +785,22 @@ Notes from latest benchmark pass:
 - [ ] Configurable: read/write buffer sizes, handshake timeout, compression
 - [ ] Unit tests: upgrade, message exchange, close handling
 
-### 14.2 GraphQL Adapter
+### 14.2 Reverse Proxy Plugin
+**Why**: Useful for BFF (Backend-For-Frontend) and lightweight gateway patterns where Aarv fronts one or more upstream services. Built on `net/http/httputil`, zero new dependencies, ~150 lines.
+- [ ] Create `plugins/proxy` package
+- [ ] Wrap `httputil.ReverseProxy` with aarv-friendly configuration
+- [ ] `Balancer` interface: `Next(*Context) *url.URL` — picks an upstream
+- [ ] Built-in balancers: `RoundRobin([]*url.URL)`, `Random([]*url.URL)`, `IPHash([]*url.URL)` (sticky by client IP)
+- [ ] Per-target health tracking: mark target unhealthy on N consecutive failures, periodic recheck
+- [ ] Path rewrite: configurable prefix strip / replacement before forwarding
+- [ ] Header manipulation: add/remove request and response headers, preserve `X-Forwarded-For`/`X-Forwarded-Proto`/`X-Forwarded-Host`
+- [ ] Configurable: dial timeout, response header timeout, idle conns, max idle conns per host, TLS config
+- [ ] Error handler for upstream failures (502/504 with custom body)
+- [ ] Optional WebSocket passthrough via `httputil.ReverseProxy`'s built-in upgrade support
+- [ ] Helper: `app.Proxy("/api/*", "http://upstream:8080")` route option for trivial cases
+- [ ] Unit tests: round-trip, header forwarding, balancer rotation, unhealthy target failover, path rewrite, error response
+
+### 14.3 GraphQL Adapter
 - [ ] Create `plugins/graphql/go.mod` as separate module
 - [ ] Adapter for `graphql-go/graphql` library
 - [ ] Adapter for `99designs/gqlgen` generated handlers

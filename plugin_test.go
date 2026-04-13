@@ -53,6 +53,124 @@ func (p *dummyPlugin) Register(pc *PluginContext) error {
 	return nil
 }
 
+// TestPluginIntegrationInIsolation verifies that a single plugin's registered
+// routes, middleware, and hooks all actually execute end-to-end on a real
+// request — not merely that registration calls returned without error.
+func TestPluginIntegrationInIsolation(t *testing.T) {
+	app := New(WithBanner(false))
+
+	var (
+		mwRan       bool
+		hookRan     bool
+		handlerRan  bool
+		hookContext string
+	)
+
+	plugin := PluginFunc(func(pc *PluginContext) error {
+		pc.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mwRan = true
+				w.Header().Set("X-Plugin-MW", "1")
+				next.ServeHTTP(w, r)
+			})
+		})
+		pc.AddHook(OnRequest, func(c *Context) error {
+			hookRan = true
+			hookContext = c.Path()
+			return nil
+		})
+		pc.Get("/iso", func(c *Context) error {
+			handlerRan = true
+			return c.Text(http.StatusOK, "ok")
+		})
+		return nil
+	})
+
+	app.Register(plugin, WithPrefix("/p"))
+
+	resp := NewTestClient(app).Get("/p/iso")
+	resp.AssertStatus(t, http.StatusOK)
+
+	if !mwRan {
+		t.Fatal("plugin middleware did not execute on plugin route")
+	}
+	if !hookRan {
+		t.Fatal("plugin hook did not fire on plugin route")
+	}
+	if !handlerRan {
+		t.Fatal("plugin handler did not execute")
+	}
+	if hookContext != "/p/iso" {
+		t.Fatalf("hook saw wrong path: %q", hookContext)
+	}
+	if got := resp.Headers.Get("X-Plugin-MW"); got != "1" {
+		t.Fatalf("middleware header missing: %q", got)
+	}
+	if got := resp.Text(); got != "ok" {
+		t.Fatalf("unexpected body: %q", got)
+	}
+}
+
+// TestPluginNestedAndDecoratorResolution verifies that a plugin can register
+// a nested plugin, that the nested plugin's routes mount, and that decorators
+// set by either layer resolve from both layers.
+func TestPluginNestedAndDecoratorResolution(t *testing.T) {
+	app := New(WithBanner(false))
+
+	var (
+		nestedRouteHit  bool
+		nestedSawParent bool
+		parentSawNested bool
+	)
+
+	nested := PluginFunc(func(pc *PluginContext) error {
+		// Resolve a value the parent decorated before registering us.
+		if v, ok := pc.Resolve("parent-key"); ok && v.(string) == "parent-value" {
+			nestedSawParent = true
+		}
+		// Decorate our own value for the parent to read after Register returns.
+		pc.Decorate("nested-key", "nested-value")
+		pc.Get("/nested", func(c *Context) error {
+			nestedRouteHit = true
+			return c.NoContent(http.StatusOK)
+		})
+		return nil
+	})
+
+	parent := PluginFunc(func(pc *PluginContext) error {
+		pc.Decorate("parent-key", "parent-value")
+		if err := pc.Register(nested); err != nil {
+			return err
+		}
+		if v, ok := pc.Resolve("nested-key"); ok && v.(string) == "nested-value" {
+			parentSawNested = true
+		}
+		return nil
+	})
+
+	app.Register(parent, WithPrefix("/api"))
+
+	NewTestClient(app).Get("/api/nested").AssertStatus(t, http.StatusOK)
+
+	if !nestedRouteHit {
+		t.Fatal("nested plugin route was not reachable")
+	}
+	if !nestedSawParent {
+		t.Fatal("nested plugin could not resolve parent's decorated value")
+	}
+	if !parentSawNested {
+		t.Fatal("parent plugin could not resolve nested plugin's decorated value")
+	}
+
+	// Decorations must also be resolvable from outside the registration callback.
+	if v, ok := app.decorators["parent-key"]; !ok || v.(string) != "parent-value" {
+		t.Fatal("parent decoration not retained on app after registration")
+	}
+	if v, ok := app.decorators["nested-key"]; !ok || v.(string) != "nested-value" {
+		t.Fatal("nested decoration not retained on app after registration")
+	}
+}
+
 func TestPluginAndTestClientAdditionalCoverage(t *testing.T) {
 	t.Run("plugin helpers", func(t *testing.T) {
 		app := New(WithBanner(false))

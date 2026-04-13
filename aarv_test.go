@@ -63,6 +63,9 @@ func TestAppOptions(t *testing.T) {
 }
 
 func TestListenShutdownGraceful(t *testing.T) {
+	if !canRaiseSelfSignal {
+		t.Skip("self-signal not supported on this platform")
+	}
 	app := New(WithBanner(false))
 
 	app.Get("/hc", func(c *Context) error {
@@ -78,8 +81,7 @@ func TestListenShutdownGraceful(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Send an interrupt signal to gracefully shut down
-	p := syscall.Getpid()
-	_ = syscall.Kill(p, syscall.SIGINT)
+	_ = raiseSelfSignal(syscall.SIGINT)
 
 	// The app.Listen() should return cleanly after graceful shutdown
 
@@ -90,7 +92,161 @@ func TestListenShutdownGraceful(t *testing.T) {
 	}
 }
 
+// TestGracefulShutdownViaExternalCall exercises the full graceful-shutdown
+// path without relying on POSIX signal delivery, so it runs on Windows too.
+// It binds a real listener, serves a real request, then triggers shutdown
+// via app.Shutdown(ctx) and verifies that the serve goroutine drains cleanly,
+// OnShutdown hooks fire, and the in-flight request is allowed to complete.
+func TestGracefulShutdownViaExternalCall(t *testing.T) {
+	app := New(WithBanner(false), WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+
+	var (
+		hookRan        atomic.Bool
+		legacyRan      atomic.Bool
+		handlerEntry   = make(chan struct{})
+		releaseHandler = make(chan struct{})
+	)
+
+	app.AddHook(OnShutdown, func(*Context) error {
+		hookRan.Store(true)
+		return nil
+	})
+	app.OnShutdown(func(interface{ Done() <-chan struct{} }) error {
+		legacyRan.Store(true)
+		return nil
+	})
+
+	app.Get("/healthz", func(c *Context) error {
+		return c.Text(http.StatusOK, "ok")
+	})
+	// In-flight handler used to verify the drain path: the test holds the
+	// handler open until after Shutdown is called, then releases it.
+	app.Get("/slow", func(c *Context) error {
+		close(handlerEntry)
+		<-releaseHandler
+		return c.Text(http.StatusOK, "drained")
+	})
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := listener.Addr().String()
+
+	server := &http.Server{Handler: app}
+	app.setServer(server)
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- app.listenAndShutdown(server, func() error {
+			return server.Serve(listener)
+		})
+	}()
+
+	// First request: simple round-trip while server is healthy.
+	resp, err := http.Get("http://" + addr + "/healthz")
+	if err != nil {
+		t.Fatalf("healthz request: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close healthz body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != "ok" {
+		t.Fatalf("unexpected healthz response: status=%d body=%q", resp.StatusCode, string(body))
+	}
+
+	// Kick off an in-flight slow request that will not return until we release it.
+	slowResp := make(chan *http.Response, 1)
+	slowErr := make(chan error, 1)
+	go func() {
+		r, err := http.Get("http://" + addr + "/slow")
+		if err != nil {
+			slowErr <- err
+			return
+		}
+		slowResp <- r
+	}()
+
+	// Wait for the slow handler to actually start before shutting down,
+	// so we know the drain path has something to drain.
+	select {
+	case <-handlerEntry:
+	case <-time.After(2 * time.Second):
+		t.Fatal("slow handler never started")
+	}
+
+	// Trigger graceful shutdown from outside the signal path.
+	// shutdownStarting is signalled *immediately before* app.Shutdown is
+	// invoked, so the test can guarantee Shutdown is running before it
+	// releases the in-flight handler. Without this, scheduling could let
+	// the slow handler return before Shutdown is called, and the test
+	// would no longer prove that Shutdown actually waited on a drain.
+	shutdownStarting := make(chan struct{})
+	shutdownDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		close(shutdownStarting)
+		shutdownDone <- app.Shutdown(ctx)
+	}()
+
+	// Wait for the shutdown goroutine to be on the cusp of calling Shutdown.
+	<-shutdownStarting
+
+	// Give Shutdown a brief moment to actually enter server.Shutdown and
+	// start blocking on the in-flight request. Then verify it has NOT
+	// completed yet — proving the drain path is engaged and waiting.
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned before in-flight handler was released (err=%v) — drain path not engaged", err)
+	default:
+	}
+
+	// Release the in-flight handler so the drain can complete.
+	close(releaseHandler)
+
+	select {
+	case r := <-slowResp:
+		body, _ := io.ReadAll(r.Body)
+		if err := r.Body.Close(); err != nil {
+			t.Fatalf("close slow body: %v", err)
+		}
+		if r.StatusCode != http.StatusOK || string(body) != "drained" {
+			t.Fatalf("slow request did not drain cleanly: status=%d body=%q", r.StatusCode, string(body))
+		}
+	case err := <-slowErr:
+		t.Fatalf("slow request failed before drain: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("slow request never returned after release")
+	}
+
+	if err := <-shutdownDone; err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatalf("listenAndShutdown returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("listenAndShutdown goroutine did not return")
+	}
+
+	if !hookRan.Load() {
+		t.Error("OnShutdown hook did not run")
+	}
+	if !legacyRan.Load() {
+		t.Error("legacy OnShutdown hook did not run")
+	}
+}
+
 func TestListenWithBanner(t *testing.T) {
+	if !canRaiseSelfSignal {
+		t.Skip("self-signal not supported on this platform")
+	}
 	app := New(WithBanner(true))
 	app.Get("/hc", func(c *Context) error { return c.Text(http.StatusOK, "ok") })
 
@@ -98,7 +254,7 @@ func TestListenWithBanner(t *testing.T) {
 		_ = app.Listen("127.0.0.1:0")
 	}()
 	time.Sleep(50 * time.Millisecond)
-	_ = syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+	_ = raiseSelfSignal(syscall.SIGINT)
 }
 
 func TestAppAdditionalCoverage(t *testing.T) {
@@ -1495,13 +1651,16 @@ func TestAdditionalCoreCoverage(t *testing.T) {
 	})
 
 	t.Run("listenAndShutdown signal path", func(t *testing.T) {
+		if !canRaiseSelfSignal {
+			t.Skip("self-signal not supported on this platform")
+		}
 		app := New(WithBanner(false), WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 		server := &http.Server{Addr: "127.0.0.1:0"}
 		done := make(chan struct{})
 
 		go func() {
 			time.Sleep(50 * time.Millisecond)
-			_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+			_ = raiseSelfSignal(syscall.SIGTERM)
 			time.Sleep(25 * time.Millisecond)
 			close(done)
 		}()
