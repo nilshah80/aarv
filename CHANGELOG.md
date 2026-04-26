@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- API key authentication plugin (`plugins/apikey`): header- and query-based key lookup (query opt-in), pluggable `Validator`, `StaticKeys` helper using `crypto/subtle.ConstantTimeCompare`, identity retrieval via `From(c)` / `FromContext(ctx)`. Registers both stdlib and native middleware paths. Validator must return a non-nil identity on success — `(nil, nil)` is rejected as auth failure because `context.Context` cannot distinguish a stored nil from a missing value.
+
+### Notes
+- The `plugins/apikey` `Validator` signature is `func(key string) (identity any, err error)`. This is an accepted scope deviation from the original `(bool, error)` shape sketched in `docs/tasks-md.md` §6.2; the identity-returning shape matches the planned §6.4 Bearer Token validator and lets a single auth pass produce the caller identity without a second lookup.
+
 ## [0.4.4] - 2026-04-13
 
 ### Added

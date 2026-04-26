@@ -506,10 +506,15 @@ Notes from latest benchmark pass:
 - [ ] Security tests: algorithm confusion attack, none algorithm rejection
 
 ### 6.2 API Key Plugin
-- [ ] Lookup from header (configurable name) or query param
-- [ ] Validator callback: `func(key string) (bool, error)`
-- [ ] Configurable: header name, query param name, error message
-- [ ] Unit tests: valid key, invalid key, missing key
+- [x] Lookup from header (configurable name) or query param
+- [x] Validator callback: `func(key string) (any, error)` — returns identity
+- [x] Configurable: header name, query param name, error message
+- [x] Unit tests: valid key, invalid key, missing key
+
+**Scope changes accepted during implementation:**
+- Validator signature: `func(key string) (any, error)` instead of `func(key string) (bool, error)`. Reason: matches the planned §6.4 Bearer Token validator and avoids forcing a second lookup to retrieve caller identity. Recorded under `[Unreleased]` in `CHANGELOG.md`.
+- Storage location: identity is stored under a hardcoded internal key, not a configurable one. The public access path is `apikey.From(c)` / `apikey.FromContext(ctx)`. A configurable `ContextKey` would have created a way for the helpers to silently miss; removed in favor of a single canonical access path.
+- Validator contract: returning `(nil, nil)` is treated as authentication failure (401), not authenticated-as-nil. Reason: `context.Context.Value` cannot distinguish a stored nil from a missing value, so allowing nil identity would make `FromContext` lie.
 
 ### 6.3 Basic Auth Plugin
 - [ ] Parse `Authorization: Basic base64(user:pass)` header

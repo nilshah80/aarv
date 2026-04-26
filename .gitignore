@@ -46,3 +46,4 @@ Thumbs.db
 .claude/settings.local.json
 mach_style_bench/
 tests/benchmark/
+CLAUDE.md
