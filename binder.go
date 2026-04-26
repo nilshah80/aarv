@@ -506,44 +506,11 @@ func buildFieldSetter(t reflect.Type) fieldSetter {
 		}
 	}
 
-	return func(field reflect.Value, raw string) error {
-		switch field.Kind() {
-		case reflect.String:
-			field.SetString(raw)
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			n, err := strconv.ParseInt(raw, 10, 64)
-			if err != nil {
-				return fmt.Errorf("cannot parse %q as int: %w", raw, err)
-			}
-			field.SetInt(n)
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			n, err := strconv.ParseUint(raw, 10, 64)
-			if err != nil {
-				return fmt.Errorf("cannot parse %q as uint: %w", raw, err)
-			}
-			field.SetUint(n)
-		case reflect.Float32, reflect.Float64:
-			f, err := strconv.ParseFloat(raw, 64)
-			if err != nil {
-				return fmt.Errorf("cannot parse %q as float: %w", raw, err)
-			}
-			field.SetFloat(f)
-		case reflect.Bool:
-			b, err := strconv.ParseBool(raw)
-			if err != nil {
-				return fmt.Errorf("cannot parse %q as bool: %w", raw, err)
-			}
-			field.SetBool(b)
-		case reflect.Slice:
-			if field.Type().Elem().Kind() == reflect.String {
-				field.Set(reflect.ValueOf(strings.Split(raw, ",")))
-				return nil
-			}
-			fallthrough
-		default:
-			return fmt.Errorf("unsupported field kind: %s", field.Kind())
-		}
-		return nil
+	// Unsupported field type — return a setter that always errors with the
+	// kind known at registration time.
+	kind := t.Kind()
+	return func(_ reflect.Value, _ string) error {
+		return fmt.Errorf("unsupported field kind: %s", kind)
 	}
 }
 

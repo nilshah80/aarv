@@ -515,12 +515,24 @@ Notes from latest benchmark pass:
 - Validator signature: `func(key string) (any, error)` instead of `func(key string) (bool, error)`. Reason: matches the planned §6.4 Bearer Token validator and avoids forcing a second lookup to retrieve caller identity. Recorded under `[Unreleased]` in `CHANGELOG.md`.
 - Storage location: identity is stored under a hardcoded internal key, not a configurable one. The public access path is `apikey.From(c)` / `apikey.FromContext(ctx)`. A configurable `ContextKey` would have created a way for the helpers to silently miss; removed in favor of a single canonical access path.
 - Validator contract: returning `(nil, nil)` is treated as authentication failure (401), not authenticated-as-nil. Reason: `context.Context.Value` cannot distinguish a stored nil from a missing value, so allowing nil identity would make `FromContext` lie.
+- `StaticKeys` helper hashes stored and presented keys to fixed-length 32-byte SHA-256 digests at snapshot/lookup time so the key-length side channel exposed by byte-by-byte constant-time compares is closed. The map lookup itself remains a small "is this hash known" timing channel; SHA-256 here is for in-memory side-channel resistance, not at-rest key protection.
 
 ### 6.3 Basic Auth Plugin
-- [ ] Parse `Authorization: Basic base64(user:pass)` header
-- [ ] Validator callback: `func(user, pass string) (bool, error)`
-- [ ] Realm configuration
-- [ ] Unit tests: valid credentials, invalid, missing header
+- [x] Parse `Authorization: Basic base64(user:pass)` header
+- [x] Validator callback: `func(user, pass string) (any, error)` — returns identity
+- [x] Realm configuration
+- [x] Unit tests: valid credentials, invalid, missing header
+
+**Scope changes accepted during implementation:**
+- Validator signature: `func(user, pass string) (any, error)` instead of `func(user, pass string) (bool, error)`. Reason: matches §6.2 API Key and planned §6.4 Bearer Token; lets the validator return a user record so handlers don't need a second lookup. Recorded under `[Unreleased]` in `CHANGELOG.md`.
+- Storage location: identity stored under a hardcoded internal key. Public access is `basicauth.From(c)` / `basicauth.FromContext(ctx)`. Same rationale as §6.2.
+- Validator contract: `(nil, nil)` is treated as authentication failure. Same rationale as §6.2.
+
+**Additions on top of spec (correctness, not scope creep):**
+- `WWW-Authenticate: Basic` challenge emitted on 401, including configured `realm` and optional `charset` parameters. Required by RFC 7235 for browsers to prompt for credentials. Suppressed for non-401 statuses (e.g. validator-returned `ErrForbidden` → 403 with no challenge).
+- `Realm` is validated at `New()` for characters that would produce a malformed header (`"`, `\`, control chars). `Charset`, when non-empty, must be `"UTF-8"` (matched case-insensitively) per RFC 7617 §2.1; any other value panics at `New()`. Misconfiguration panics at startup rather than corrupting responses at runtime.
+- Scheme matching is case-insensitive (`Basic`, `basic`, `BASIC`) per RFC 7235 §2.1.
+- `StaticCreds` helper provided, mirroring §6.2's `StaticKeys`. Stored passwords are hashed to fixed-length 32-byte SHA-256 digests at snapshot time; per-request comparison hashes the attempted password and uses `crypto/subtle.ConstantTimeCompare` on the equal-length digests so the password-length side channel exposed by `ConstantTimeCompare`'s length-mismatch fast-exit is closed. The map lookup itself remains a small "is this username known" timing channel; SHA-256 here is for in-memory side-channel resistance, not at-rest password protection (use bcrypt/argon2 for that).
 
 ### 6.4 Bearer Token Plugin
 - [ ] Extract `Authorization: Bearer <token>` from header

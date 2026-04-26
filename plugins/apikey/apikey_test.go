@@ -289,6 +289,44 @@ func TestStaticKeys_EmptyKey(t *testing.T) {
 	}
 }
 
+func TestStaticKeys_LengthVariations(t *testing.T) {
+	// Stored keys span a wide range of lengths. After the SHA-256 fix, all
+	// comparisons go through fixed-length 32-byte digests, so length
+	// variation must not affect correctness.
+	v := StaticKeys(map[string]any{
+		"k":          "short",
+		"medium-key": "med",
+		"a-much-longer-api-key-value-with-many-bytes": "long",
+	})
+
+	for _, tc := range []struct{ key, want string }{
+		{"k", "short"},
+		{"medium-key", "med"},
+		{"a-much-longer-api-key-value-with-many-bytes", "long"},
+	} {
+		got, err := v(tc.key)
+		if err != nil {
+			t.Errorf("key %q: unexpected error %v", tc.key, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("key %q: want %q, got %v", tc.key, tc.want, got)
+		}
+	}
+
+	// Wildly mismatched lengths must reject without crashing or matching.
+	if _, err := v(""); err == nil {
+		t.Error("empty key must fail")
+	}
+	long := make([]byte, 4096)
+	for i := range long {
+		long[i] = 'x'
+	}
+	if _, err := v(string(long)); err == nil {
+		t.Error("oversized unknown key must fail")
+	}
+}
+
 func TestStaticKeys_SnapshotIndependence(t *testing.T) {
 	src := map[string]any{"k": "original"}
 	v := StaticKeys(src)
@@ -381,6 +419,114 @@ func TestNew_StdlibPath(t *testing.T) {
 	}
 	if body.Error != "unauthorized" || body.Message == "" {
 		t.Fatalf("stdlib-path failure: unexpected body %+v", body)
+	}
+}
+
+func TestNew_FillsDefaultErrorMessage(t *testing.T) {
+	cfg := Config{
+		Header:    "X-API-Key",
+		Validator: validator(nil),
+	}
+	app := newApp(t, New(cfg))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Set("X-API-Key", "bad")
+	app.ServeHTTP(rec, req)
+
+	var body errorBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Message != "missing or invalid API key" {
+		t.Fatalf("default error message must be applied when Config.ErrorMessage is empty, got %q", body.Message)
+	}
+}
+
+func TestNew_StdlibPath_MissingKey(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Validator = validator(nil)
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(nonNativeMiddleware(), New(cfg))
+	app.Get("/p", func(c *aarv.Context) error { return c.NoContent(http.StatusOK) })
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/p", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("stdlib-path missing key: want 401, got %d", rec.Code)
+	}
+}
+
+func TestNew_StdlibPath_ValidatorAppError(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Validator = func(string) (any, error) {
+		return nil, aarv.ErrForbidden("revoked")
+	}
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(nonNativeMiddleware(), New(cfg))
+	app.Get("/p", func(c *aarv.Context) error { return c.NoContent(http.StatusOK) })
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/p", nil)
+	req.Header.Set("X-API-Key", "anything")
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("stdlib-path AppError: want 403, got %d", rec.Code)
+	}
+	var body errorBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Message != "revoked" {
+		t.Fatalf("want message 'revoked', got %q", body.Message)
+	}
+}
+
+func TestNew_StdlibPath_NoAarvContext(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Validator = func(key string) (any, error) {
+		if key == "good" {
+			return "client-x", nil
+		}
+		return nil, errInvalidKey
+	}
+
+	var seenIdentity any
+	var seenOK bool
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenIdentity, seenOK = FromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	// Mount the middleware on plain net/http — no aarv.App means
+	// aarv.FromRequest(r) returns false, exercising the else branch.
+	h := New(cfg)(next)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/anything", nil)
+	req.Header.Set("X-API-Key", "good")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("plain net/http path: want 200, got %d", rec.Code)
+	}
+	if !seenOK || seenIdentity != "client-x" {
+		t.Fatalf("identity must reach handler via r.Context(); got %v ok=%v", seenIdentity, seenOK)
+	}
+}
+
+func TestCodeForStatus(t *testing.T) {
+	if got := codeForStatus(http.StatusUnauthorized); got != "unauthorized" {
+		t.Fatalf("want unauthorized, got %q", got)
+	}
+	if got := codeForStatus(http.StatusForbidden); got != "forbidden" {
+		t.Fatalf("want forbidden, got %q", got)
+	}
+	// Default branch: any other status falls through to http.StatusText.
+	if got := codeForStatus(http.StatusInternalServerError); got != http.StatusText(http.StatusInternalServerError) {
+		t.Fatalf("default branch must fall through to http.StatusText, got %q", got)
 	}
 }
 

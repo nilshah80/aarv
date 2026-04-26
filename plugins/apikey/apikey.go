@@ -14,7 +14,7 @@ package apikey
 
 import (
 	"context"
-	"crypto/subtle"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -164,37 +164,34 @@ func extractKey(cfg Config, header, query func(string) string) string {
 	return ""
 }
 
-// StaticKeys returns a Validator that authenticates against an in-memory map of
-// key→identity, comparing keys with crypto/subtle.ConstantTimeCompare to avoid
-// leaking key contents through timing differences in caller-written code.
+// StaticKeys returns a Validator that authenticates against an in-memory map
+// of key→identity. Keys are hashed to fixed-length 32-byte SHA-256 digests at
+// snapshot time, and per-request lookup hashes the presented key the same way
+// before doing the lookup. This closes the key-length side channel that a
+// naïve byte-by-byte compare exposes when stored and presented keys have
+// different lengths.
+//
+// SHA-256 is used here for in-memory side-channel resistance, not at-rest key
+// protection — for that, store key digests externally and write a custom
+// validator that hits a credential store. The map lookup itself remains a
+// small "is this hash known" timing channel.
 //
 // An empty input key always fails, regardless of whether "" is present in the
-// map.
+// input map.
 func StaticKeys(keys map[string]any) Validator {
-	// Snapshot so later mutation by the caller does not affect auth.
-	snapshot := make(map[string]any, len(keys))
+	snapshot := make(map[[32]byte]any, len(keys))
 	for k, v := range keys {
-		snapshot[k] = v
+		snapshot[sha256.Sum256([]byte(k))] = v
 	}
 	return func(presented string) (any, error) {
 		if presented == "" {
 			return nil, errInvalidKey
 		}
-		presentedBytes := []byte(presented)
-		var match any
-		var found bool
-		for k, v := range snapshot {
-			if subtle.ConstantTimeCompare(presentedBytes, []byte(k)) == 1 {
-				match = v
-				found = true
-				// Don't break — keep iterating so timing is independent of
-				// the matched key's position in the map.
-			}
+		digest := sha256.Sum256([]byte(presented))
+		if v, ok := snapshot[digest]; ok {
+			return v, nil
 		}
-		if !found {
-			return nil, errInvalidKey
-		}
-		return match, nil
+		return nil, errInvalidKey
 	}
 }
 
