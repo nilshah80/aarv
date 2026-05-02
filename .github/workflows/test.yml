@@ -7,6 +7,9 @@ on:
     branches: [main]
 
 jobs:
+  # Root module tests run on the framework's declared Go floor (1.22) and
+  # the next stable release (1.23). The root module is zero-dep and must
+  # build cleanly on both.
   test:
     name: Test Go ${{ matrix.go }}
     runs-on: ubuntu-latest
@@ -24,7 +27,7 @@ jobs:
           go-version: ${{ matrix.go }}
           cache: false
 
-      - name: Run tests
+      - name: Run tests (root)
         run: |
           go test -race -coverprofile=coverage.txt -covermode=atomic $(go list ./... | grep -v /examples/ | grep -v /tests/benchmark/)
 
@@ -34,3 +37,36 @@ jobs:
         with:
           files: ./coverage.txt
           fail_ci_if_error: false
+
+  # Plugin-submodule tests run on Go 1.25 explicitly. plugins/otel's
+  # transitive deps declare go 1.25.0 in their go.mod files, so the
+  # toolchain version must satisfy that floor at test time. plugins/prometheus
+  # needs only go 1.23.0 but is tested under the same job for simplicity —
+  # both submodules share the runner. The codec submodules are intentionally
+  # not included — they require Go 1.25/1.26 and are tested manually before
+  # each tag.
+  test-plugin-submodules:
+    name: Test plugin submodules (Go 1.25)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Run tests (plugin submodules)
+        run: |
+          set -e
+          # Auto-discover plugin submodules with their own go.mod (e.g.
+          # plugins/prometheus, plugins/otel).
+          for mod in $(find plugins -name go.mod -not -path '*/.*' 2>/dev/null); do
+            dir=$(dirname "$mod")
+            echo "::group::Testing $dir"
+            (cd "$dir" && go test -race ./...)
+            echo "::endgroup::"
+          done

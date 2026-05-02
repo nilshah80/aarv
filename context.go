@@ -34,6 +34,7 @@ type Context struct {
 	written           bool
 	statusCode        int // pending status code for chaining
 	cachedLogger      *slog.Logger
+	routePattern      string // set by dispatch on successful aarv route match; empty for 404/405/Mount
 	pathParamNames    [16]string
 	pathParamValues   [16]string
 	pathParamCount    int
@@ -104,6 +105,7 @@ func (c *Context) reset(w http.ResponseWriter, r *http.Request) {
 	c.pathParamCount = 0
 	c.pathParamsApplied = false
 	c.hookErr = nil
+	c.routePattern = ""
 	// Lazy cleanup for infrequently-used fields
 	if c.cachedLogger != nil {
 		c.cachedLogger = nil
@@ -940,6 +942,41 @@ func (c *Context) Logger() *slog.Logger {
 	}
 	c.cachedLogger = l
 	return l
+}
+
+// SetLogger replaces the request-scoped logger for the remainder of this
+// request. Pass nil to clear any previous override; the next Logger() call
+// will then rebuild from app.logger. The override is also cleared on pool
+// return regardless.
+//
+// Intended for plugins that need to enrich the request logger with
+// per-request attributes (e.g. trace_id and span_id from an active OpenTelemetry
+// span). The canonical pattern is:
+//
+//	prev := c.Logger()
+//	c.SetLogger(prev.With("trace_id", ..., "span_id", ...))
+//	defer c.SetLogger(prev)
+func (c *Context) SetLogger(l *slog.Logger) {
+	c.cachedLogger = l
+}
+
+// RoutePattern returns the registered aarv route pattern that matched this
+// request, in path-only form (e.g. "/users/{id}", not "GET /users/{id}").
+// Returns the empty string when there is no matched aarv route, including:
+//
+//   - 404 unmatched
+//   - 405 method-not-allowed (the path matched but no aarv-registered method did)
+//   - Requests served by a handler installed via App.Mount
+//   - Any request outside the registered aarv route table
+//
+// Useful for cardinality-controlled metrics labels and span names: collapsing
+// "/users/123" / "/users/456" / "/users/789" to a single "/users/{id}" label
+// keeps Prometheus label cardinality bounded and OpenTelemetry span-name
+// cardinality manageable. RoutePattern is set by the dispatcher before the
+// matched handler runs, so route-level middleware sees it pre-next and global
+// middleware sees it post-next.
+func (c *Context) RoutePattern() string {
+	return c.routePattern
 }
 
 // Error is a shortcut to return an AppError from a handler.

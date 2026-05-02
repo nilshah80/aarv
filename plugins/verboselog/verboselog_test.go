@@ -1249,3 +1249,275 @@ func BenchmarkDumpLogger_Stdlib_LargeBody(b *testing.B) {
 		handler.ServeHTTP(rec, req)
 	}
 }
+
+// --- Sink delivery tests ---
+
+// captureCalls accumulates Sink invocations for assertion. The atomic int
+// avoids any data race even though the tests below are sequential.
+type sinkCapture struct {
+	calls    int
+	reqBody  []byte
+	respBody []byte
+	meta     DumpMeta
+}
+
+func TestSink_ReceivesPostRedactionBytes(t *testing.T) {
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+
+	cap := &sinkCapture{}
+	cfg := DefaultConfig()
+	cfg.Sink = func(c *aarv.Context, reqBody, respBody []byte, meta DumpMeta) {
+		cap.calls++
+		cap.reqBody = append([]byte(nil), reqBody...)
+		cap.respBody = append([]byte(nil), respBody...)
+		cap.meta = meta
+	}
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(cfg))
+	app.Post("/echo", func(c *aarv.Context) error {
+		body, _ := io.ReadAll(c.Request().Body)
+		return c.JSON(200, map[string]string{"echoed": string(body), "password": "supersecret"})
+	})
+
+	body := []byte(`{"name":"alice","password":"badnews"}`)
+	req := httptest.NewRequest("POST", "/echo", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if cap.calls != 1 {
+		t.Fatalf("sink calls: want 1, got %d", cap.calls)
+	}
+	if !strings.Contains(string(cap.reqBody), "[REDACTED]") {
+		t.Fatalf("sink reqBody not redacted: %q", cap.reqBody)
+	}
+	if !strings.Contains(string(cap.respBody), "[REDACTED]") {
+		t.Fatalf("sink respBody not redacted: %q", cap.respBody)
+	}
+	// Slog should have seen the same redacted bytes — proving the sink got
+	// what slog got.
+	out := logBuf.String()
+	if !strings.Contains(out, "[REDACTED]") {
+		t.Fatalf("slog output missing redaction marker: %s", out)
+	}
+	if cap.meta.Status != 200 {
+		t.Fatalf("meta.Status: want 200, got %d", cap.meta.Status)
+	}
+	if cap.meta.Method != "POST" || cap.meta.Path != "/echo" {
+		t.Fatalf("meta method/path: got %q %q", cap.meta.Method, cap.meta.Path)
+	}
+}
+
+func TestSink_PanicRecoveredAndLogged(t *testing.T) {
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+
+	cfg := DefaultConfig()
+	cfg.Sink = func(c *aarv.Context, reqBody, respBody []byte, meta DumpMeta) {
+		panic("sink-on-fire")
+	}
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(cfg))
+	app.Get("/x", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/x", nil)
+	app.ServeHTTP(rec, req) // must not panic
+
+	if rec.Code != 200 {
+		t.Fatalf("status after sink panic: want 200, got %d", rec.Code)
+	}
+	out := logBuf.String()
+	if !strings.Contains(out, "verboselog: sink panicked") {
+		t.Fatalf("expected sink panic log, got: %s", out)
+	}
+	if !strings.Contains(out, "sink-on-fire") {
+		t.Fatalf("expected panic value in log, got: %s", out)
+	}
+}
+
+func TestSink_SuppressSlog_OnlySinkFires(t *testing.T) {
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+
+	cap := &sinkCapture{}
+	cfg := DefaultConfig()
+	cfg.SuppressSlog = true
+	cfg.Sink = func(c *aarv.Context, reqBody, respBody []byte, meta DumpMeta) {
+		cap.calls++
+	}
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(cfg))
+	app.Get("/x", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/x", nil)
+	app.ServeHTTP(rec, req)
+
+	if cap.calls != 1 {
+		t.Fatalf("sink calls: want 1, got %d", cap.calls)
+	}
+	if strings.Contains(logBuf.String(), "http_dump") {
+		t.Fatalf("expected slog to be suppressed, got: %s", logBuf.String())
+	}
+}
+
+func TestSink_BothSinkAndSlogFire(t *testing.T) {
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+
+	cap := &sinkCapture{}
+	cfg := DefaultConfig()
+	cfg.Sink = func(c *aarv.Context, reqBody, respBody []byte, meta DumpMeta) {
+		cap.calls++
+	}
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(cfg))
+	app.Get("/x", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/x", nil)
+	app.ServeHTTP(rec, req)
+
+	if cap.calls != 1 {
+		t.Fatalf("sink calls: want 1, got %d", cap.calls)
+	}
+	if !strings.Contains(logBuf.String(), "http_dump") {
+		t.Fatalf("expected slog to fire alongside sink, got: %s", logBuf.String())
+	}
+}
+
+func TestSink_SkipPathExcludesBoth(t *testing.T) {
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+
+	cap := &sinkCapture{}
+	cfg := DefaultConfig()
+	cfg.SkipPaths = []string{"/skipme"}
+	cfg.Sink = func(c *aarv.Context, reqBody, respBody []byte, meta DumpMeta) {
+		cap.calls++
+	}
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(cfg))
+	app.Get("/skipme", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/skipme", nil)
+	app.ServeHTTP(rec, req)
+
+	if cap.calls != 0 {
+		t.Fatalf("sink should be skipped: got %d calls", cap.calls)
+	}
+	if strings.Contains(logBuf.String(), "http_dump") {
+		t.Fatalf("slog should be skipped for skip path: %s", logBuf.String())
+	}
+}
+
+func TestNew_PanicsOnSuppressSlogWithoutSink(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("New did not panic on misconfiguration")
+		}
+	}()
+	cfg := DefaultConfig()
+	cfg.SuppressSlog = true
+	cfg.Sink = nil
+	_ = New(cfg)
+}
+
+// TestSink_PoolReuseIndependence verifies that bytes the sink stores from
+// request N do not get aliased by the pooled buffer that request N+1 reuses.
+// Mutating the saved slice on one side and verifying the next request's
+// captured bytes are unaffected proves we copy out of the pool correctly.
+func TestSink_PoolReuseIndependence(t *testing.T) {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+
+	var first, second []byte
+	calls := 0
+	cfg := DefaultConfig()
+	cfg.RedactSensitive = false
+	cfg.Sink = func(c *aarv.Context, reqBody, respBody []byte, meta DumpMeta) {
+		calls++
+		switch calls {
+		case 1:
+			first = reqBody // retain
+		case 2:
+			second = reqBody
+		}
+	}
+
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(cfg))
+	app.Post("/x", func(c *aarv.Context) error {
+		_, _ = io.ReadAll(c.Request().Body)
+		return c.Text(200, "ok")
+	})
+
+	send := func(body string) {
+		req := httptest.NewRequest("POST", "/x", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+	}
+
+	send(`{"first":"abc"}`)
+	// Mutate the saved slice — if the sink received an aliased pool buffer,
+	// the next request reuses the same memory and we'd see contamination.
+	for i := range first {
+		first[i] = 'Z'
+	}
+	send(`{"second":"xyz"}`)
+
+	if !strings.Contains(string(second), `"second":"xyz"`) {
+		t.Fatalf("pool reuse leaked: second request body corrupted: %q", second)
+	}
+}
+
+// TestSink_StdlibPath verifies the stdlib middleware path delivers to the
+// sink (the previous tests primarily exercise the native fast path via
+// app.Use). We force the stdlib path by registering a non-aarv handler
+// chain through a route group with stdlib-only middleware.
+func TestSink_StdlibPath(t *testing.T) {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+
+	cap := &sinkCapture{}
+	cfg := DefaultConfig()
+	cfg.Sink = func(c *aarv.Context, reqBody, respBody []byte, meta DumpMeta) {
+		cap.calls++
+		cap.meta = meta
+	}
+
+	mw := New(cfg)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/from-stdlib", nil)
+	handler.ServeHTTP(rec, req)
+
+	if cap.calls != 1 {
+		t.Fatalf("stdlib sink calls: want 1, got %d", cap.calls)
+	}
+	if cap.meta.Path != "/from-stdlib" {
+		t.Fatalf("meta.Path: want /from-stdlib, got %q", cap.meta.Path)
+	}
+	if cap.meta.Status != 200 {
+		t.Fatalf("meta.Status: want 200, got %d", cap.meta.Status)
+	}
+}

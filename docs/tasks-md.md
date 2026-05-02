@@ -683,47 +683,69 @@ Notes from latest benchmark pass:
 
 ---
 
-## Phase 11: Observability Plugins (M11)
+## Phase 11: Observability Plugins (M11) ✅ COMPLETE
 
-### 11.1 Prometheus Plugin
-- [ ] Create `plugins/prometheus/go.mod` — separate module
-- [ ] Request counter (method, path, status)
-- [ ] Request duration histogram
-- [ ] In-flight requests gauge
-- [ ] Response size histogram
-- [ ] Configurable: buckets, path grouping/normalization (collapse path params)
-- [ ] Custom collectors registration
-- [ ] Unit tests: metric collection, path grouping
+### 11.0 Core enablement (PR0) ✅
+Prerequisite work in the root module to unblock cardinality control on metrics labels and span names.
+- [x] `(*Context).RoutePattern() string` — returns the matched aarv route pattern (path-only, e.g. `/users/{id}`); empty for 404, 405, `App.Mount` handlers, and any path outside the registered aarv route table. Set by the dispatcher at every successful match site (direct and grouped, exact and dynamic, fast path and `routingMux` fallback).
+- [x] `(*Context).SetLogger(*slog.Logger)` — swaps the request-scoped logger for the request lifetime; `nil` clears any previous override.
+- [x] `patternStr` field added to `directDynamicRoute` / `directDynamicHTTPRoute`; `stripMethodPattern` helper for `mux.Handler(r)` results.
+- [x] CI workflow split into root job (Go 1.22/1.23 matrix) and dedicated `test-plugin-submodules` job pinned to Go 1.25.
+- [x] Unit tests: exact, dynamic, grouped dynamic, catch-all, route-level middleware pre-`next`, global middleware post-`next`, 404/405/Mount produce empty, pool-reuse independence, `SetLogger` override / nil-clear / no-leak across requests.
 
-### 11.2 OpenTelemetry Plugin
-- [ ] Create `plugins/otel/go.mod` — separate module
-- [ ] Span creation per request with configurable span naming
-- [ ] W3C Trace Context propagation (traceparent, tracestate headers)
-- [ ] Attribute injection: method, path, status, user_agent, request_id
-- [ ] Error recording: span.RecordError on handler errors
-- [ ] Metrics export: request count, duration, size via OTLP
-- [ ] Log correlation: inject trace_id, span_id into slog logger
-- [ ] Baggage propagation support
-- [ ] Configurable: exporter (OTLP, Jaeger, Zipkin), sampling rate
-- [ ] Unit tests: span creation, context propagation, attribute injection
+### 11.1 Prometheus Plugin ✅
+- [x] Create `plugins/prometheus/go.mod` — separate module (`go 1.23.0` — forced by `client_golang` dep tree)
+- [x] Request counter (method, path, status)
+- [x] Request duration histogram
+- [x] In-flight requests gauge
+- [x] Response size histogram
+- [x] Configurable: buckets, path grouping/normalization via `GroupPath func(c *aarv.Context) string` (default consults `RoutePattern()` — no heuristic ID collapsing)
+- [x] Custom collectors registration
+- [x] Unit tests: metric collection, path grouping, cardinality bound under concurrent load
+- [x] **Scope changes from original spec**:
+  - `Handler` is registered as a regular `app.Get("/metrics", …)` route, not via `App.Mount` (which adds a trailing slash and 307-redirects). The original spec mentioned a `Plugin()` auto-mounter — dropped because cardinality / auth / rate-limit gating decisions belong on the user side.
+  - `recordingWriter` implements `Unwrap` so `http.ResponseController` can reach the underlying writer for streaming, hijacking, or HTTP/2 push.
 
-### 11.3 Pprof Plugin
-- [ ] Mount `net/http/pprof` at configurable prefix (stdlib, no external deps)
-- [ ] Optional: authentication middleware for pprof endpoints
-- [ ] Unit tests: endpoint availability
+### 11.2 OpenTelemetry Plugin ✅
+- [x] Create `plugins/otel/go.mod` — separate module (`go 1.25.0` — forced by `go.opentelemetry.io/otel/sdk` dep tree)
+- [x] Span creation per request with configurable span naming
+- [x] W3C Trace Context **extraction** (traceparent, tracestate headers). Outbound injection is the application's responsibility (e.g. via `otelhttp.NewTransport`) — the plugin does not call `Propagator.Inject`.
+- [x] Attribute injection: method, target (route pattern when known, else path), status, user_agent, request_id, net.peer.ip
+- [x] Error recording via 5xx → span Status Error mapping (matches OTel HTTP semconv recommendation; aarv's framework swallows handler errors before middleware sees them, so explicit `span.RecordError(handlerErr)` from the public middleware path is not possible)
+- [x] Metrics: `http.server.request.count`, `http.server.request.duration_seconds`, `http.server.request.size_bytes`, `http.server.response.size_bytes` via the user-supplied MeterProvider
+- [x] Log correlation: replaces `aarv.Context.Logger()` for the request lifetime with one carrying `trace_id` and `span_id`; original logger restored on handler return
+- [x] Baggage propagation support (default Propagator is the global one, typically `TraceContext + Baggage` composite)
+- [x] **Bring-your-own Provider** instead of bundled exporters/sampling. Original spec called for "exporter (OTLP, Jaeger, Zipkin), sampling rate" knobs — these belong on the user's `TracerProvider` Resource, so we don't pull exporter deps and don't expose redundant Config fields.
+- [x] Unit tests: span creation, context propagation, attribute injection, custom SpanNameFunc honored verbatim (not overwritten by route-pattern rename), 5xx → span Error, metrics emitted, log correlation, baggage extracted
+- [x] **Scope changes from original spec**:
+  - Inverted booleans (`SuppressErrorStatus`, `SuppressMetrics`, `SuppressLogAttrs`) so zero-value `Config{}` produces all default behaviors.
+  - `recordingWriter` implements `Unwrap` for `http.ResponseController` compatibility.
+  - The default `defaultSpanName` produces `<METHOD> <Path>` at dispatch time; `finalizeSpan` upgrades it to `<METHOD> <RoutePattern>` only when the default namer was used. A caller-supplied `SpanNameFunc` is honored verbatim.
 
-### 11.4 Body Dump Sink (verboselog enhancement)
-**Why**: `verboselog` already tees request and response bodies but hardcodes the destination to `slog`. Users who need to deliver captured bytes to an audit database, object store, message queue, or fixture recorder currently have to fork the plugin. Adding a sink callback to verboselog avoids duplicating ~90 lines of body-capture machinery in a separate plugin.
-- [ ] Add `DumpMeta` struct exposing already-computed metadata: status, latency, request ID, method, path, client IP, user-agent, content type, redacted request/response header maps, query params
-- [ ] Add `Sink func(c *aarv.Context, reqBody, respBody []byte, meta DumpMeta)` field to `Config`
-- [ ] Add `LogToSlog bool` field (default `true`) to allow suppressing slog output when only sink delivery is wanted
-- [ ] Sink receives bytes *after* truncation and redaction (consistent with what slog sees) — document this; users wanting raw bytes should set `RedactSensitive: false` and `MaxBodySize` high
-- [ ] Sink invocation must be panic-safe: recover and log via slog, never crash the request
-- [ ] Sink is invoked synchronously after handler completes; document that long-running sinks should hand off to a goroutine/queue themselves
-- [ ] Wire sink into both the `net/http` middleware path and the native `aarv.HandlerFunc` path
-- [ ] Update package doc comment to describe audit/archive use case alongside the existing logging use case
-- [ ] Unit tests: sink receives correct bytes, sink receives correct meta, sink panic is recovered, `LogToSlog: false` suppresses slog output, sink + slog both fire when both enabled, sink not invoked for skipped paths
-- [ ] Example: `examples/verboselog-audit` showing a sink that appends to an in-memory audit log
+### 11.3 Pprof Plugin ✅
+- [x] Mount `net/http/pprof` at configurable prefix (stdlib, no external deps; lives in root module under `plugins/pprof`)
+- [x] Optional: `Config.AuthMiddleware` for pprof endpoints
+- [x] Unit tests: endpoint availability for all five canonical sub-routes (cmdline, profile, symbol, trace, index), `App.Mount` integration with prefix-restoration, custom prefix support, `AuthMiddleware` blocks unauthenticated, `SkipPaths` exclusion
+- [x] **Scope additions**:
+  - `Handler(cfg) http.Handler` (canonical, mountable via `App.Mount`) and `New(cfg) aarv.Middleware` (chain-style) both exposed. `New` registers a native middleware pair via `aarv.RegisterNativeMiddleware`; `Handler` returns a plain `http.Handler` (no native pair — debugging endpoints don't need the fast path).
+  - `Handler` restores `cfg.Prefix` on `App.Mount`-stripped paths so the inner mux's registered routes match and `pprof.Index`'s hardcoded `/debug/pprof/` prefix check sees the expected URL shape.
+
+### 11.4 Body Dump Sink (verboselog enhancement) ✅
+**Why**: `verboselog` already tees request and response bodies but hardcoded the destination to `slog`. Users who need to deliver captured bytes to an audit database, object store, message queue, or fixture recorder no longer have to fork the plugin.
+- [x] Add `DumpMeta` struct exposing already-computed metadata: status, latency, request ID, method, path, client IP, user-agent, content type, redacted request/response header maps, query params
+- [x] Add `Sink func(c *aarv.Context, reqBody, respBody []byte, meta DumpMeta)` field to `Config`
+- [x] Add `SuppressSlog bool` field (default `false` = log to slog) — inverted from the original `LogToSlog bool (default true)` plan so existing zero-value `Config{...}` constructions keep their pre-Sink behavior unchanged. Setting `SuppressSlog: true` with `Sink: nil` panics in `New` (no-op middleware misconfig).
+- [x] Sink receives bytes *after* truncation and redaction (consistent with what slog sees) — documented; users wanting raw bytes should set `RedactSensitive: false` and `MaxBodySize` high
+- [x] Sink invocation is panic-safe via `defer recover()`; panics are logged through slog at error level
+- [x] Sink is invoked synchronously after handler completes; documented that long-running sinks should hand off to a goroutine/queue themselves
+- [x] Wired into both the `net/http` middleware path and the native `aarv.HandlerFunc` path
+- [x] Updated package doc comment to describe audit/archive use case alongside the existing logging use case
+- [x] Unit tests: sink receives correct bytes, sink receives correct meta, sink panic is recovered, `SuppressSlog: true` suppresses slog output, sink + slog both fire when both enabled, sink not invoked for skipped paths, pool-reuse independence (mutate sink-received slice → next request unaffected)
+- [x] Example: `examples/verboselog-audit` showing a sink that appends to an in-memory audit log
+
+### Phase 11 release status
+- All Phase 11 work landed in the `[Unreleased]` section of `CHANGELOG.md`. To be rolled into a `v0.6.0` minor release.
+- At release time, lift the `replace github.com/nilshah80/aarv => ../..` directives in `plugins/prometheus/go.mod` and `plugins/otel/go.mod`, bump their `require` lines to the published `v0.6.0`, run `go mod tidy` inside each, verify tests pass without the replace, then tag `v0.6.0` (root) + `plugins/prometheus/v0.6.0` + `plugins/otel/v0.6.0`.
 
 ---
 

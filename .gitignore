@@ -47,3 +47,6 @@ Thumbs.db
 mach_style_bench/
 tests/benchmark/
 CLAUDE.md
+coverage.txt
+# Top-level compiled binaries from `go build ./examples/...` runs.
+/verboselog-audit

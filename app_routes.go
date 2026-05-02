@@ -92,8 +92,9 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 	if len(rc.middleware) == 0 {
 		if isDynamic {
 			a.directDynamicRoutes[method] = append(a.directDynamicRoutes[method], directDynamicRoute{
-				handler: internalHandler,
-				pattern: directPattern,
+				handler:    internalHandler,
+				pattern:    directPattern,
+				patternStr: pattern,
 			})
 		} else {
 			if a.routeHandlerFast[method] == nil {

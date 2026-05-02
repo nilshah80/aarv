@@ -12,6 +12,24 @@
 // a bounded-buffer middleware — avoid applying it to routes that serve very large responses
 // unless body logging is disabled via Config.
 //
+// # Audit / archive sink
+//
+// In addition to logging via slog, verboselog can deliver every captured
+// request/response to a Sink callback (see [Config.Sink] and [Sink]). This
+// is useful when bytes need to land in an audit database, object store,
+// message queue, or fixture recorder rather than (or in addition to) slog.
+//
+// The sink receives bytes after the same truncation and redaction that slog
+// sees, so callers wanting raw bytes must set [Config.RedactSensitive] to
+// false and [Config.MaxBodySize] high. Sink invocation is panic-safe: a
+// panicking sink is recovered and logged via slog without crashing the
+// request. Sinks run synchronously after the handler completes; long-running
+// sinks should hand off to a goroutine or queue themselves.
+//
+// To deliver bytes only to a sink and suppress slog output, set
+// [Config.SuppressSlog] to true. Setting both Sink to nil and SuppressSlog
+// to true is a misconfiguration and panics in [New].
+//
 // Usage:
 //
 //	// Enable JSON output for slog first
@@ -23,6 +41,7 @@ package verboselog
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log/slog"
 	"net"
@@ -116,11 +135,72 @@ type Config struct {
 	// Use this to selectively redact only specific surfaces, for example:
 	// []RedactionSurface{RedactRequestBody, RedactResponseBody}.
 	RedactSurfaces []RedactionSurface
+
+	// Sink, when non-nil, is invoked synchronously after the handler completes
+	// with the captured request/response bytes and metadata. Useful for audit
+	// pipelines that need the bytes delivered somewhere other than slog —
+	// audit databases, object stores, message queues, fixture recorders.
+	//
+	// Sink receives bytes after truncation and redaction (consistent with what
+	// slog sees). Callers wanting raw bytes should set RedactSensitive to false
+	// and MaxBodySize high. Sink invocation is panic-safe: a panic is recovered
+	// and logged via slog without crashing the request. Sinks run synchronously;
+	// long-running sinks should hand off to a goroutine or queue themselves.
+	//
+	// Sink is not invoked for paths in SkipPaths.
+	Sink Sink
+
+	// SuppressSlog disables the slog "http_dump" emission, leaving Sink as the
+	// sole delivery path for captured bytes. The zero value is false — slog
+	// output remains on by default for backward compatibility. Setting
+	// SuppressSlog to true with no Sink configured is a misconfiguration; New
+	// panics in that case.
+	SuppressSlog bool
+}
+
+// Sink is a callback invoked once per request after the handler completes,
+// with the captured request and response bodies (already truncated and
+// redacted to match what slog would see) and the request/response metadata.
+//
+// The reqBody and respBody slices are owned by the caller and are safe to
+// retain past the call: verboselog copies bytes out of its pooled buffers
+// before invoking the sink so subsequent requests cannot mutate them.
+//
+// A panic inside Sink is recovered by verboselog and logged via slog at
+// error level; the request itself is unaffected. Sinks must complete
+// promptly — they run on the request goroutine synchronously after the
+// handler returns; long-running work should be handed off to a goroutine
+// or external queue inside the sink.
+type Sink func(c *aarv.Context, reqBody, respBody []byte, meta DumpMeta)
+
+// DumpMeta carries the same metadata that slog would log for a request,
+// available to Sink for audit-style delivery. All maps are post-redaction:
+// sensitive header values appear as "[REDACTED]" when redaction is enabled.
+type DumpMeta struct {
+	Status        int
+	Latency       time.Duration
+	RequestID     string
+	Method        string
+	Path          string
+	ClientIP      string
+	UserAgent     string
+	ContentType   string
+	ContentLength int64
+	BytesOut      int
+	// RequestHeaders is post-redaction; nil when LogRequestHeaders is false.
+	RequestHeaders map[string]string
+	// ResponseHeaders is post-redaction; nil when LogResponseHeaders is false.
+	ResponseHeaders map[string]string
+	// QueryParams is post-redaction; nil when LogQueryParams is false or the
+	// request URL has no query string.
+	QueryParams map[string]string
 }
 
 // RedactionSurface identifies a log surface where sensitive data can be redacted.
 type RedactionSurface string
 
+// Surface identifiers for Config.RedactSurfaces. When the surface set is
+// empty and RedactSensitive is true, redaction applies to all five.
 const (
 	RedactRequestHeaders  RedactionSurface = "request_headers"
 	RedactResponseHeaders RedactionSurface = "response_headers"
@@ -355,7 +435,106 @@ func formatRespBodyForLog(buf *bytes.Buffer, maxSize int, redact bool, patterns 
 	return s
 }
 
+// invokeSink calls fn(c, reqBody, respBody, meta) inside a recover so that a
+// panicking sink cannot crash the request. A panic is logged via slog at error
+// level with the request_id and path attached for correlation.
+//
+// The reqBody/respBody slices passed in are short-lived []byte conversions of
+// the post-redaction strings (Go's []byte(string) conversion always copies),
+// so the sink can retain them past the call without aliasing the next
+// request's pooled buffer.
+func invokeSink(c *aarv.Context, fn Sink, reqBody, respBody []byte, meta DumpMeta) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("verboselog: sink panicked",
+				"error", r,
+				"request_id", meta.RequestID,
+				"path", meta.Path,
+			)
+		}
+	}()
+	fn(c, reqBody, respBody, meta)
+}
+
+// dumpInputs carries the per-request data that deliverDump folds into a
+// DumpMeta and forwards to slog and/or Sink. The struct keeps deliverDump's
+// argument list short and makes the field-collection at each call site
+// explicit.
+type dumpInputs struct {
+	slogCtx       context.Context
+	level         slog.Level
+	attrs         []any
+	status        int
+	latency       time.Duration
+	requestID     string
+	method        string
+	path          string
+	clientIP      string
+	userAgent     string
+	contentType   string
+	contentLength int64
+	bytesOut      int
+	reqHeaders    map[string]string
+	respHeaders   map[string]string
+	queryParams   map[string]string
+	reqBody       []byte
+	respBody      []byte
+}
+
+// validateDumpConfig enforces the SuppressSlog/Sink misconfiguration
+// invariant. Extracted from New so the cyclomatic complexity of New does
+// not grow for the panic-on-misconfig branch.
+func validateDumpConfig(cfg Config) {
+	if cfg.SuppressSlog && cfg.Sink == nil {
+		panic("verboselog: New called with SuppressSlog=true and Sink=nil; nothing would be delivered")
+	}
+}
+
+// deliverDump dispatches the captured request/response to slog (unless
+// suppressed) and/or to cfg.Sink (when configured). Extracted from the
+// stdlib and native middleware paths in New so the per-config gate ifs
+// for the meta-building live here rather than duplicated across both
+// paths inside New.
+func deliverDump(c *aarv.Context, cfg Config, in dumpInputs) {
+	if !cfg.SuppressSlog {
+		slog.Log(in.slogCtx, in.level, "http_dump", in.attrs...)
+	}
+	if cfg.Sink == nil {
+		return
+	}
+	meta := DumpMeta{
+		Status:        in.status,
+		Latency:       in.latency,
+		RequestID:     in.requestID,
+		Method:        in.method,
+		Path:          in.path,
+		ContentType:   in.contentType,
+		ContentLength: in.contentLength,
+		BytesOut:      in.bytesOut,
+	}
+	if cfg.LogClientIP {
+		meta.ClientIP = in.clientIP
+	}
+	if cfg.LogUserAgent {
+		meta.UserAgent = in.userAgent
+	}
+	if cfg.LogRequestHeaders {
+		meta.RequestHeaders = in.reqHeaders
+	}
+	if cfg.LogResponseHeaders {
+		meta.ResponseHeaders = in.respHeaders
+	}
+	if cfg.LogQueryParams {
+		meta.QueryParams = in.queryParams
+	}
+	invokeSink(c, cfg.Sink, in.reqBody, in.respBody, meta)
+}
+
 // New creates a full request/response dump logger middleware.
+//
+// Panics if the resulting Config has SuppressSlog=true and Sink=nil — that
+// combination is a no-op middleware and almost certainly a configuration
+// mistake.
 func New(config ...Config) aarv.Middleware {
 	cfg := DefaultConfig()
 	if len(config) > 0 {
@@ -365,6 +544,8 @@ func New(config ...Config) aarv.Middleware {
 	if cfg.MaxBodySize < 0 {
 		cfg.MaxBodySize = 0
 	}
+
+	validateDumpConfig(cfg)
 
 	// Build skip paths set
 	skipPaths := make(map[string]struct{}, len(cfg.SkipPaths))
@@ -522,8 +703,27 @@ func New(config ...Config) aarv.Middleware {
 			}
 			attrs = append(attrs, "bytes_out", respWriter.bytesWritten)
 
-			// Log the request/response dump
-			slog.Log(r.Context(), cfg.Level, "http_dump", attrs...)
+			ctxForSink, _ := aarv.FromRequest(r)
+			deliverDump(ctxForSink, cfg, dumpInputs{
+				slogCtx:       r.Context(),
+				level:         cfg.Level,
+				attrs:         attrs,
+				status:        respWriter.statusCode,
+				latency:       latency,
+				requestID:     requestID,
+				method:        r.Method,
+				path:          path,
+				clientIP:      clientIP(r),
+				userAgent:     r.UserAgent(),
+				contentType:   r.Header.Get("Content-Type"),
+				contentLength: r.ContentLength,
+				bytesOut:      int(respWriter.bytesWritten),
+				reqHeaders:    reqHeaders,
+				respHeaders:   respHeaders,
+				queryParams:   queryParams,
+				reqBody:       []byte(reqBodyStr),
+				respBody:      []byte(respBodyStr),
+			})
 
 			// Release respBodyBuf on the normal path; nil prevents
 			// double-release by the deferred cleanup.
@@ -662,7 +862,26 @@ func New(config ...Config) aarv.Middleware {
 			}
 			attrs = append(attrs, "bytes_out", respWriter.bytesWritten)
 
-			slog.Log(c.Context(), cfg.Level, "http_dump", attrs...)
+			deliverDump(c, cfg, dumpInputs{
+				slogCtx:       c.Context(),
+				level:         cfg.Level,
+				attrs:         attrs,
+				status:        respWriter.statusCode,
+				latency:       latency,
+				requestID:     requestID,
+				method:        method,
+				path:          path,
+				clientIP:      clientIPValue,
+				userAgent:     userAgent,
+				contentType:   req.Header.Get("Content-Type"),
+				contentLength: req.ContentLength,
+				bytesOut:      int(respWriter.bytesWritten),
+				reqHeaders:    reqHeaders,
+				respHeaders:   respHeaders,
+				queryParams:   queryParams,
+				reqBody:       []byte(reqBodyStr),
+				respBody:      []byte(respBodyStr),
+			})
 
 			logged = true
 			// reqBodyBuf already released above after formatting

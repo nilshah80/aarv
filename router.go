@@ -193,13 +193,15 @@ func (g *RouteGroup) addRoute(method, pattern string, handler any, opts ...Route
 		}
 	} else {
 		g.app.groupDynamicHandlers[method] = append(g.app.groupDynamicHandlers[method], directDynamicHTTPRoute{
-			handler: httpHandler,
-			pattern: directPattern,
+			handler:    httpHandler,
+			pattern:    directPattern,
+			patternStr: fullPattern,
 		})
 		if nativeHandler != nil {
 			g.app.groupDynamicNative[method] = append(g.app.groupDynamicNative[method], directDynamicRoute{
-				handler: nativeHandler,
-				pattern: directPattern,
+				handler:    nativeHandler,
+				pattern:    directPattern,
+				patternStr: fullPattern,
 			})
 		}
 	}

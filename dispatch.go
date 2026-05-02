@@ -125,8 +125,9 @@ func (a *App) buildRouteChainFast() {
 		out := make([]directDynamicHTTPRoute, 0, len(routes))
 		for _, route := range routes {
 			out = append(out, directDynamicHTTPRoute{
-				pattern: route.pattern,
-				handler: buildChain(route.handler, a.globalMiddleware),
+				pattern:    route.pattern,
+				patternStr: route.patternStr,
+				handler:    buildChain(route.handler, a.globalMiddleware),
 			})
 		}
 		a.groupDynamicChainFast[method] = out
@@ -146,12 +147,14 @@ func (a *App) buildRouteChainFast() {
 		out := make([]directDynamicRoute, 0, len(routes))
 		for _, route := range routes {
 			rh := route.handler
+			patternStr := route.patternStr
 			nativeHandler, _ := buildNativeChain(func(ctx *Context) error {
 				rh(ctx, ctx.res, ctx.req)
 				return nil
 			}, a.globalMiddleware)
 			out = append(out, directDynamicRoute{
-				pattern: route.pattern,
+				pattern:    route.pattern,
+				patternStr: patternStr,
 				handler: func(ctx *Context, w http.ResponseWriter, r *http.Request) {
 					if err := nativeHandler(ctx); err != nil {
 						ctx.app.handleError(ctx, err)
@@ -188,12 +191,14 @@ func (m *routingMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if c, ok := contextFromRequest(r); ok {
 		if methods := m.routeHandlerFast[r.Method]; methods != nil {
 			if rh, ok := methods[r.URL.Path]; ok {
+				c.routePattern = r.URL.Path
 				rh(c, w, r)
 				return
 			}
 		}
 		for _, route := range m.directDynamicRoutes[r.Method] {
 			if route.pattern.match(r.URL.Path, c) {
+				c.routePattern = route.patternStr
 				route.handler(c, w, r)
 				return
 			}
@@ -202,6 +207,7 @@ func (m *routingMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if h, pattern := m.mux.Handler(r); pattern != "" {
 		if _, ok := m.routesByKey[pattern]; ok {
+			setPatternFromMux(r, pattern)
 			if !strings.Contains(pattern, "{") {
 				h.ServeHTTP(w, r)
 				return
@@ -401,6 +407,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if methods := a.routeChainFastNative[r.Method]; methods != nil {
 		if rh, ok := methods[r.URL.Path]; ok {
+			c.routePattern = r.URL.Path
 			rh(c, w, r)
 			if a.hasOnResponse {
 				_ = a.hooks.run(OnResponse, c)
@@ -410,6 +417,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if methods := a.groupRouteChainNative[r.Method]; methods != nil {
 		if rh, ok := methods[r.URL.Path]; ok {
+			c.routePattern = r.URL.Path
 			rh(c, w, r)
 			if a.hasOnResponse {
 				_ = a.hooks.run(OnResponse, c)
@@ -419,6 +427,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, route := range a.groupDynamicChainNative[r.Method] {
 		if route.pattern.match(r.URL.Path, c) {
+			c.routePattern = route.patternStr
 			route.handler(c, w, r)
 			if a.hasOnResponse {
 				_ = a.hooks.run(OnResponse, c)
@@ -440,6 +449,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Execute pre-built handler chain (middleware + routing mux)
 	if methods := a.routeChainFast[r.Method]; methods != nil {
 		if h, ok := methods[r.URL.Path]; ok {
+			c.routePattern = r.URL.Path
 			h.ServeHTTP(w, r)
 			if a.hasOnResponse {
 				_ = a.hooks.run(OnResponse, c)
@@ -449,6 +459,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if methods := a.groupRouteChainFast[r.Method]; methods != nil {
 		if h, ok := methods[r.URL.Path]; ok {
+			c.routePattern = r.URL.Path
 			h.ServeHTTP(w, r)
 			if a.hasOnResponse {
 				_ = a.hooks.run(OnResponse, c)
@@ -458,6 +469,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, route := range a.groupDynamicChainFast[r.Method] {
 		if route.pattern.match(r.URL.Path, c) {
+			c.routePattern = route.patternStr
 			route.handler.ServeHTTP(w, r)
 			if a.hasOnResponse {
 				_ = a.hooks.run(OnResponse, c)
@@ -476,24 +488,28 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (a *App) serveDirect(c *Context, w http.ResponseWriter, r *http.Request) bool {
 	if methods := a.routeHandlerFast[r.Method]; methods != nil {
 		if rt, ok := methods[r.URL.Path]; ok {
+			c.routePattern = r.URL.Path
 			rt(c, w, r)
 			return true
 		}
 	}
 	if methods := a.groupRouteChainNative[r.Method]; methods != nil {
 		if rt, ok := methods[r.URL.Path]; ok {
+			c.routePattern = r.URL.Path
 			rt(c, w, r)
 			return true
 		}
 	}
 	for _, route := range a.groupDynamicChainNative[r.Method] {
 		if route.pattern.match(r.URL.Path, c) {
+			c.routePattern = route.patternStr
 			route.handler(c, w, r)
 			return true
 		}
 	}
 	for _, route := range a.directDynamicRoutes[r.Method] {
 		if route.pattern.match(r.URL.Path, c) {
+			c.routePattern = route.patternStr
 			route.handler(c, w, r)
 			return true
 		}
@@ -506,6 +522,7 @@ func (a *App) serveDirect(c *Context, w http.ResponseWriter, r *http.Request) bo
 		return false
 	}
 	if !strings.Contains(pattern, "{") {
+		c.routePattern = stripMethodPattern(pattern)
 		req := withFrameworkContext(r, c)
 		c.req = req
 		h.ServeHTTP(w, req)
@@ -515,6 +532,7 @@ func (a *App) serveDirect(c *Context, w http.ResponseWriter, r *http.Request) bo
 	// Dynamic routes still need a request-to-context association so the mux-served
 	// handler can resolve the aarv Context, but they do not need request cloning
 	// for middleware compatibility on this path.
+	c.routePattern = stripMethodPattern(pattern)
 	storeRequestContext(r, c)
 	defer deleteRequestContext(r)
 	a.mux.ServeHTTP(w, r)
@@ -522,13 +540,42 @@ func (a *App) serveDirect(c *Context, w http.ResponseWriter, r *http.Request) bo
 }
 
 type directDynamicRoute struct {
-	handler routeRuntimeHandler
-	pattern directPattern
+	handler    routeRuntimeHandler
+	pattern    directPattern
+	patternStr string // source pattern (e.g. "/users/{id}") for Context.RoutePattern()
 }
 
 type directDynamicHTTPRoute struct {
-	handler http.Handler
-	pattern directPattern
+	handler    http.Handler
+	pattern    directPattern
+	patternStr string // source pattern (e.g. "/users/{id}") for Context.RoutePattern()
+}
+
+// setPatternFromMux records the route pattern returned by mux.Handler(r)
+// onto the request's *Context, when one is reachable. Extracted so the
+// routingMux fallback path keeps a flat shape (no nested if for the
+// context-presence check inline).
+func setPatternFromMux(r *http.Request, pattern string) {
+	if c, ok := contextFromRequest(r); ok {
+		c.routePattern = stripMethodPattern(pattern)
+	}
+}
+
+// stripMethodPattern removes the leading "METHOD " from a stdlib ServeMux
+// pattern (e.g. "GET /users/{id}" -> "/users/{id}"). Returns the input
+// unchanged if no method prefix is present. Used by routingMux when the
+// matched pattern came from mux.Handler(r), which carries the method.
+func stripMethodPattern(p string) string {
+	if p == "" {
+		return ""
+	}
+	if i := strings.IndexByte(p, ' '); i >= 0 && i+1 < len(p) {
+		// Sanity-check: "METHOD " always starts with an uppercase ASCII letter.
+		if p[0] >= 'A' && p[0] <= 'Z' {
+			return p[i+1:]
+		}
+	}
+	return p
 }
 
 type directPattern struct {
