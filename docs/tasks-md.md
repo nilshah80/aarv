@@ -625,61 +625,66 @@ Notes from latest benchmark pass:
 
 ---
 
-## Phase 10: Security Plugins (M10)
+## Phase 10: Security Plugins (M10) ✅ COMPLETE
 
-### 10.1 Rate Limiter
-- [ ] Token bucket algorithm, zero-dep, `sync.Mutex` based
-- [ ] Sliding window variant for smoother rate limiting
-- [ ] Per-IP keying via `c.RealIP()`
-- [ ] Custom key function: `KeyFunc func(*Context) string` (e.g., user ID, API key)
-- [ ] `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` headers
-- [ ] Configurable response on limit: custom status code, message, handler
-- [ ] Skip paths configuration (e.g., health checks)
-- [ ] Burst allowance configuration
-- [ ] Optional: `plugins/ratelimit-redis/go.mod` for distributed rate limiting via Redis
-- [ ] Unit tests: within limit, exceed limit, custom key, headers
+### 10.1 Rate Limiter ✅
+- [x] Token bucket algorithm, zero-dep, sharded mutex (`plugins/ratelimit/store.go`)
+- [x] Sliding window variant for smoother rate limiting (`plugins/ratelimit/algo_sliding_window.go`)
+- [x] Per-IP keying via `c.RealIP()` (default `KeyFunc`)
+- [x] Custom key function: `KeyFunc func(*aarv.Context) string`
+- [x] `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` headers, plus `Retry-After` on 429
+- [x] Configurable response on limit: `StatusCode`, `Message`, custom `LimitHandler`
+- [x] Skip paths configuration: `SkipPaths []string` + `Skipper func(*aarv.Context) bool` (OR-combined)
+- [x] Burst allowance configuration (`Config.Burst`, default = `Limit`)
+- [ ] **Deferred to a future release**: `plugins/ratelimit-redis/go.mod` for distributed rate limiting via Redis
+- [x] Unit tests: within limit, exceed limit, custom key, headers, skip paths, skipper, burst, sliding-window rollover, lazy sweep eviction, `NewWithCleanup` goroutine lifecycle, race
+- [x] **Scope additions**: `New(cfg)` starts no goroutines; cleanup is in-line via deterministic `atomic.Uint64` sweep counter. `NewWithCleanup(cfg) (aarv.Middleware, func() error)` starts a periodic janitor and returns a stop function for `app.OnShutdown` wiring.
 
-### 10.2 Throttle
-- [ ] Max concurrent in-flight requests via `chan struct{}`
-- [ ] Configurable: max concurrent, queue size, timeout
-- [ ] Return 503 Service Unavailable when queue full
-- [ ] Unit tests: under limit, at limit, queue timeout
+### 10.2 Throttle ✅
+- [x] Max concurrent in-flight requests via `chan struct{}`
+- [x] Configurable: `MaxConcurrent`, `QueueSize`, `QueueTimeout`
+- [x] Return 503 Service Unavailable when queue full or queue timeout (configurable status/message/handler)
+- [x] Unit tests: under limit, at limit, queue timeout, queue full, slot release on handler error and on panic, skip paths, skipper, race
+- [x] **Scope addition**: queue token release decoupled from slot release — queue depth bounded at exactly `QueueSize` regardless of handler latency.
 
-### 10.3 CSRF Protection
-- [ ] Double-submit cookie pattern
-- [ ] Token generation via `crypto/rand`
-- [ ] `X-CSRF-Token` header validation
-- [ ] Skip safe methods (GET, HEAD, OPTIONS)
-- [ ] Configurable: cookie name, header name, token length
-- [ ] Unit tests: valid token, invalid token, missing token, safe methods
+### 10.3 CSRF Protection ✅
+- [x] Double-submit cookie pattern
+- [x] Token generation via `crypto/rand`, base64-RawURL encoded; `crypto/subtle.ConstantTimeCompare` over decoded bytes
+- [x] `X-CSRF-Token` header validation; optional `FormField` fallback for non-AJAX form posts
+- [x] Skip safe methods (GET, HEAD, OPTIONS, TRACE by default; nil-vs-empty contract)
+- [x] Configurable: `CookieName`, `HeaderName`, `TokenLength` (panics on < 16 bytes), cookie path/domain/MaxAge/Secure/HttpOnly/SameSite
+- [x] `Token(c)` helper for server-rendered template injection
+- [x] Unit tests: valid token, invalid token, missing token, safe methods, custom names, FormField, custom ErrorHandler, HttpOnly+Token(c), `SafeMethods` nil/empty/custom, race
+- [x] **Scope addition**: `SafeMethods` nil-vs-empty semantics; `[]string{}` makes every method require a token.
 
-### 10.4 IP Filter
-- [ ] Whitelist mode — only allow listed CIDRs
-- [ ] Blacklist mode — block listed CIDRs
-- [ ] `net.ParseCIDR` based matching
-- [ ] Configurable: custom block response
-- [ ] Unit tests: allow, block, CIDR ranges
+### 10.4 IP Filter ✅
+- [x] Allowlist mode — only allow listed CIDRs (`ModeAllowlist`)
+- [x] Denylist mode — block listed CIDRs (`ModeDenylist`)
+- [x] `net.ParseCIDR` based matching; bare IPs auto-converted to /32 or /128
+- [x] Configurable: custom `ErrorHandler`, `Skipper`, `SkipPaths`, `IPFunc` for proxy fronts
+- [x] Unit tests: allow exact / CIDR (IPv4 + IPv6), block, custom IPFunc, Skipper, SkipPaths, panic on invalid CIDR, panic on empty allowlist, fail-closed/fail-open on unparseable source, defensive copy of CIDRs
+- [x] **Scope addition**: invalid CIDRs panic in `New` (parity with jwt). Empty allowlist panics. Unparseable source IP fails closed in allowlist mode and fails open in denylist mode.
 
-### 10.5 Request Sanitizer
-- [ ] Strip HTML tags from string fields
-- [ ] Normalize Unicode (NFC)
-- [ ] Configurable: fields to sanitize, custom sanitizer functions
-- [ ] Unit tests: HTML stripping, Unicode normalization
+### 10.5 Request Sanitizer ✅
+- [x] Strip HTML tags from string fields (stdlib state-machine; decodes `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#39;`, `&apos;`, `&nbsp;`)
+- [x] Normalize Unicode (NFC) via `golang.org/x/text/unicode/norm`
+- [x] Configurable: `Fields` allowlist, `SkipFields` blocklist, `Custom []SanitizerFunc`, `MaxBodyBytes`, `ContentTypes`, `Skipper`, `SkipPaths`
+- [x] Unit tests: HTML stripping, nested objects/arrays, allowlist, blocklist, custom ordering, NFC normalization, invalid JSON passthrough, MaxBodyBytes 413, content-type filter, skipper, pool reuse independence
+- [x] **Scope decision**: separate submodule (`plugins/sanitize/go.mod`) because NFC requires `golang.org/x/text` and the root module is strict zero-dep. Joins the prometheus/otel release dance.
 
-### 10.6 Idempotency Plugin
-**Why**: Required for payment, order-creation, and other write APIs where retries from clients, proxies, or load balancers must not double-execute the handler. The middleware stores the response by `Idempotency-Key` header and replays it on retry.
-- [ ] Create `plugins/idempotency` package
-- [ ] Read `Idempotency-Key` header (configurable name); pass through if absent
-- [ ] Define `Store` interface: `Lock(key) (acquired bool, err)`, `Get(key) (*Response, err)`, `Save(key, *Response, ttl) err`
-- [ ] Implement `MemoryStore` — sync.Map + TTL eviction (zero-dep, default)
-- [ ] First request: lock, execute handler, capture status + headers + body, persist, return
-- [ ] Subsequent requests with same key: return cached response (status + headers + body) verbatim
-- [ ] Concurrent requests with same key: second waits or returns 409 Conflict (configurable)
-- [ ] TTL configuration (default: 24h)
-- [ ] Skip safe methods (GET, HEAD, OPTIONS) by default
-- [ ] Hash request body and reject reuse of key with different payload (per RFC draft) — optional, configurable
-- [ ] Optional: `plugins/idempotency-redis/go.mod` for distributed setups
-- [ ] Unit tests: first/replay, concurrent same-key, payload mismatch, TTL expiry, safe-method bypass
+### 10.6 Idempotency Plugin ✅
+- [x] Read `Idempotency-Key` header (configurable name); pass through if absent (`RequireKey: true` returns 400 instead)
+- [x] Define `Store` interface: `Lock`, `Unlock`, `Get`, `Save`. Plus optional `WaitableStore` extension with `Wait(ctx, key) (*Response, error)`.
+- [x] Implement `MemoryStore` (zero-dep, default). Lazy TTL eviction by default; `NewMemoryStoreWithJanitor(sweep)` for explicit goroutine + stop function.
+- [x] First request: lock, execute handler, capture status + headers + body via overflow-aware `captureWriter`, persist, return
+- [x] Subsequent requests with same key: return cached response verbatim with `Idempotency-Replayed: true` header; hop-by-hop headers stripped on persistence
+- [x] Concurrent requests with same key: 409 (`ConflictReject`, default) or replay after wait (`ConflictWait`, requires `WaitableStore`; non-waitable stores fall back to immediate 409 — no polling)
+- [x] TTL configuration (default 24h); MaxResponseBytes cap (default 4 MiB) with overflow state machine that streams over-cap responses through unchanged
+- [x] `SafeMethods` (default GET, HEAD, OPTIONS via nil); nil-vs-empty contract documented
+- [x] `CacheStatuses` (default 2xx + 3xx via nil); nil-vs-empty contract documented
+- [x] Hash request body and reject reuse of key with different payload (`HashRequestBody: true` → 422 on mismatch, per IETF draft)
+- [ ] **Deferred to a future release**: `plugins/idempotency-redis/go.mod` for distributed setups
+- [x] Unit tests: first/replay, concurrent same-key (50-goroutine race), `ConflictWait` with `MemoryStore`, `ConflictWait` with non-waitable store falls back to 409, payload mismatch → 422, TTL expiry, safe-method bypass (nil/empty/custom), `CacheStatuses` (nil/empty/custom), absent key, `RequireKey`, over-cap response, native/stdlib parity, custom ErrorHandler, ctx cancellation in `Wait`
 
 ---
 
