@@ -180,6 +180,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 }
 
 func (a *App) listenAndShutdown(server *http.Server, serve func() error) error {
+	// Finalize hooks and build dispatch chains before serving begins. This
+	// gives sync.Once happens-before edges to both the request goroutines
+	// (which call ensureReady themselves) and to the OnShutdown read below,
+	// closing the race that fires when Shutdown is triggered while a request
+	// is in flight.
+	a.ensureReady()
+
 	errCh := make(chan error, 1)
 	go func() {
 		a.logger.Info("server started", "addr", server.Addr)

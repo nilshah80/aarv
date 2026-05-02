@@ -299,9 +299,15 @@ func (p *probeResponseWriter) Write(b []byte) (int, error) {
 	return p.ResponseWriter.Write(b)
 }
 
-// ServeHTTP implements http.Handler for the application.
-func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Pre-build middleware chain once (thread-safe)
+// ensureReady finalizes the hook registry and builds the dispatch handler.
+// Idempotent via sync.Once: callers from any goroutine synchronize-with the
+// completion of the action, so post-ensureReady reads of hooks/handler state
+// from any goroutine are safe.
+//
+// Called eagerly from listenAndShutdown so OnShutdown reads cannot race with
+// the lazy ServeHTTP path; also called from ServeHTTP itself for direct
+// callers (e.g. httptest) that bypass the listen loop.
+func (a *App) ensureReady() {
 	a.handlerOnce.Do(func() {
 		a.hooks.finalize()
 		a.handler = a.buildHandler()
@@ -315,6 +321,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.hasOnResponse = len(a.hooks.hooks[OnResponse]) > 0
 		a.hasOnSend = len(a.hooks.hooks[OnSend]) > 0
 	})
+}
+
+// ServeHTTP implements http.Handler for the application.
+func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.ensureReady()
 
 	// Handle trailing slash redirect if enabled
 	if a.config.RedirectTrailingSlash && len(r.URL.Path) > 1 {
