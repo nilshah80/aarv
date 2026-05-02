@@ -7,4 +7,9 @@ require (
 	golang.org/x/net v0.34.0
 )
 
+// Local development: resolve aarv from the working tree rather than the
+// proxy. Lifted at release time so the tagged module bytes can be fetched
+// via the Go proxy with a published aarv version.
+replace github.com/nilshah80/aarv => ../..
+
 require golang.org/x/text v0.21.0 // indirect

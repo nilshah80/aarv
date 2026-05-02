@@ -8,3 +8,8 @@ require (
 )
 
 require go.yaml.in/yaml/v2 v2.4.2 // indirect
+
+// Local development: resolve aarv from the working tree rather than the
+// proxy. Lifted at release time so the tagged module bytes can be fetched
+// via the Go proxy with a published aarv version.
+replace github.com/nilshah80/aarv => ../..
