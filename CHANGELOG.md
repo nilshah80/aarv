@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-29
+
+### Fixed
+- Data race between `hookRegistry.finalize` (called lazily via `sync.Once` on the first request through `ServeHTTP`) and `hookRegistry.run` for `OnShutdown` (called from `listenAndShutdown` on a separate goroutine). The race was latent in production whenever `Shutdown` was triggered after at least one request had been served, and surfaced under `-race` on Go 1.23 via `TestGracefulShutdownViaExternalCall`. Finalization is now performed eagerly at the top of `listenAndShutdown` via the new internal `App.ensureReady` helper; `ServeHTTP` continues to call the same helper for direct callers (e.g. `httptest`) that bypass the listen loop.
+
+### Codec Submodules
+- No codec source changes in this release. Continue to use `codec/jsonv2/v0.5.0`, `codec/segmentio/v0.5.0`, and `codec/sonic/v0.5.0`.
+
 ## [0.5.0] - 2026-04-29
 
 ### Added
@@ -118,7 +126,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 4. Push: `git push origin vX.Y.Z`
 5. Create GitHub Release with notes from this file
 
-[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/nilshah80/aarv/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/nilshah80/aarv/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/nilshah80/aarv/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/nilshah80/aarv/compare/v0.4.0...v0.4.3
