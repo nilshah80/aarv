@@ -63,7 +63,7 @@ jobs:
         run: |
           set -e
           # Auto-discover plugin submodules with their own go.mod (e.g.
-          # plugins/prometheus, plugins/otel).
+          # plugins/prometheus, plugins/otel, plugins/autocert).
           for mod in $(find plugins -name go.mod -not -path '*/.*' 2>/dev/null); do
             dir=$(dirname "$mod")
             echo "::group::Testing $dir"

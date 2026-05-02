@@ -15,7 +15,10 @@ import (
 	"github.com/nilshah80/aarv/internal/headerbuffer"
 )
 
-var filepathAbs = filepath.Abs
+var (
+	filepathAbs = filepath.Abs
+	fileStat    = func(f http.File) (os.FileInfo, error) { return f.Stat() }
+)
 
 // Config holds configuration for the static file middleware.
 type Config struct {
@@ -197,8 +200,6 @@ func New(config Config) aarv.Middleware {
 						serveIndex(w, r, root, config.Index, cacheControl)
 						return
 					}
-					next.ServeHTTP(w, r)
-					return
 				}
 			}
 
@@ -267,7 +268,6 @@ func New(config Config) aarv.Middleware {
 						serveIndex(c.Response(), req, root, config.Index, cacheControl)
 						return nil
 					}
-					return next(c)
 				}
 			}
 
@@ -318,7 +318,7 @@ func (fs noBrowseFS) Open(name string) (http.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, err := f.Stat()
+	info, err := fileStat(f)
 	if err != nil {
 		_ = f.Close()
 		return nil, err

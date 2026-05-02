@@ -113,10 +113,10 @@ type rateLimiter struct {
 	store   *store
 	keyFunc KeyFunc
 
-	burst     int
+	burst      int
 	statusCode int
 	message    string
-	skipPaths map[string]struct{}
+	skipPaths  map[string]struct{}
 }
 
 // New constructs ratelimit middleware. Panics on Limit <= 0 or

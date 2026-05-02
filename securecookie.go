@@ -42,6 +42,11 @@ var (
 
 const gcmNonceSize = 12
 
+var (
+	secureCookieRandRead = rand.Read
+	secureCookieNewGCM   = cipher.NewGCM
+)
+
 // CookieOptions configures the HTTP attributes of a secure cookie.
 // When provided to SetSecureCookie or SetEncryptedCookie, unset fields
 // inherit secure defaults: Path="/", HttpOnly=true, SameSite=Lax.
@@ -203,13 +208,13 @@ func encryptValue(plaintext string, encKey []byte) (string, error) {
 	if err != nil {
 		return "", ErrCookieDecryptFailed
 	}
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := secureCookieNewGCM(block)
 	if err != nil {
 		return "", ErrCookieDecryptFailed
 	}
 
 	nonce := make([]byte, gcmNonceSize)
-	if _, err := rand.Read(nonce); err != nil {
+	if _, err := secureCookieRandRead(nonce); err != nil {
 		return "", ErrCookieDecryptFailed
 	}
 
@@ -236,7 +241,7 @@ func decryptValue(encoded string, encKey []byte) (string, error) {
 	if err != nil {
 		return "", ErrCookieDecryptFailed
 	}
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := secureCookieNewGCM(block)
 	if err != nil {
 		return "", ErrCookieDecryptFailed
 	}

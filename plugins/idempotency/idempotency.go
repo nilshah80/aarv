@@ -67,11 +67,11 @@ type ErrorHandler func(c *aarv.Context, status int, message string) error
 
 // Config holds the middleware configuration.
 type Config struct {
-	HeaderName       string
-	Store            Store
-	TTL              time.Duration
-	SafeMethods      []string // nil-vs-empty contract above
-	RequireKey       bool
+	HeaderName      string
+	Store           Store
+	TTL             time.Duration
+	SafeMethods     []string // nil-vs-empty contract above
+	RequireKey      bool
 	HashRequestBody bool
 
 	// MaxRequestBodyBytes caps the request body read for hashing when
@@ -109,12 +109,12 @@ func DefaultConfig() Config {
 }
 
 type normalized struct {
-	headerName       string
-	store            Store
-	waitable         WaitableStore // nil when store is not WaitableStore
-	ttl              time.Duration
-	safeMethods      map[string]struct{}
-	requireKey       bool
+	headerName          string
+	store               Store
+	waitable            WaitableStore // nil when store is not WaitableStore
+	ttl                 time.Duration
+	safeMethods         map[string]struct{}
+	requireKey          bool
 	hashRequestBody     bool
 	maxRequestBodyBytes int64
 	conflictBehavior    ConflictBehavior
@@ -122,9 +122,9 @@ type normalized struct {
 	cacheStatuses       map[int]struct{} // nil = cache 2xx/3xx; empty map = cache nothing
 	cacheNothing        bool
 	maxResponseBytes    int64
-	skipper          Skipper
-	skipPaths        map[string]struct{}
-	errFn            ErrorHandler
+	skipper             Skipper
+	skipPaths           map[string]struct{}
+	errFn               ErrorHandler
 }
 
 // New constructs idempotency middleware. Panics on invalid configuration.

@@ -754,33 +754,47 @@ Prerequisite work in the root module to unblock cardinality control on metrics l
 
 ---
 
-## Phase 12: TLS Helpers (M12)
+## Phase 12: TLS Helpers (M12) ✅ COMPLETE
 
-- [ ] Create `plugins/autocert/go.mod` — separate module
-- [ ] Implement `ListenAutoTLS` via `autocert.Manager`
-- [ ] HTTP→HTTPS redirect handler
-- [ ] Certificate cache directory configuration
-- [ ] Implement cert file watcher for hot-reload (fsnotify-free, `os.Stat` polling)
-- [ ] h2c plugin for HTTP/2 cleartext (internal mesh)
-- [ ] Document recommended TLS config for financial services
+- [x] Create `plugins/autocert/go.mod` — separate module
+- [x] Implement Let's-Encrypt-style TLS via `autocert.Manager` (`autocert.Listen` + `autocert.ListenWithManager` for shared-manager flows; runs through `app.ListenServer` so the lifecycle stays uniform)
+- [x] HTTP→HTTPS redirect handler (`autocert.RedirectHandler` / `RedirectServer` / `ListenRedirect`; `ACMEChallengeHandler` interface for HTTP-01; conservative slowloris-resistant defaults; bare-IPv6 bracketing; control-char rejection; default port stripping)
+- [x] Certificate cache directory configuration (`Config.CacheDir` with `os.UserCacheDir` fallback to `os.TempDir`; created with `0700` best-effort)
+- [x] Implement cert file watcher for hot-reload (root-module `WithCertReload` + `CertReloader`; fsnotify-free, `os.Stat (ModTime, Size)` polling; one-shot lifecycle; conflict detection with caller `TLSConfig.GetCertificate`; malformed-reload preservation)
+- [x] h2c plugin for HTTP/2 cleartext (internal mesh) — `plugins/h2c` with `Wrap` / `Listen`; `MaxFirstRequestBytes` bound on the upstream library's first-request memory exposure; RFC 7540 frame-size validation
+- [x] Document recommended TLS config — `docs/tls.md` (deliberately scoped to "hardened defaults" rather than regulatory-compliance claims; covers `WithCertReload` / mTLS / HSTS placement / autocert / h2c threat model / OCSP non-claim / lifecycle order)
+
+### Phase 12 release status
+- All Phase 12 work landed in the `[Unreleased]` → `[0.7.5]` block of `CHANGELOG.md`. Same release dance as Phase 11: lift `replace github.com/nilshah80/aarv => ../..` directives in `plugins/autocert/go.mod` and `plugins/h2c/go.mod`, bump their `require` lines to the published `v0.7.5`, run `go mod tidy` inside each, verify tests pass without the replace, then tag `v0.7.5` (root) + `plugins/autocert/v0.7.5` + `plugins/h2c/v0.7.5`.
 
 ---
 
-## Phase 12.5: OpenAPI / Swagger Generator (M12.5)
+## Phase 12.5: OpenAPI / Swagger Generator (M12.5) ✅ COMPLETE
 
 ### 12.5.1 OpenAPI Core
-- [ ] Define `OpenAPIConfig` struct: title, version, description, servers, contact, license
-- [ ] Implement route introspection: collect all registered routes with metadata
-- [ ] Auto-generate path parameters from `{param}` patterns
-- [ ] Auto-generate request body schema from `Bind[Req, Res]` type parameters
-- [ ] Auto-generate response schema from handler return types
-- [ ] Extract validation rules from `validate:""` tags → OpenAPI constraints (min, max, required, enum)
-- [ ] Implement `/openapi.json` endpoint handler
-- [ ] Implement `/openapi.yaml` endpoint handler
-- [ ] Optional: Swagger UI integration via embedded static files
-- [ ] Optional: ReDoc integration
-- [ ] Configurable: paths to include/exclude, security schemes
-- [ ] Unit tests: schema generation, constraint mapping, endpoint output
+- [x] Define `OpenAPIConfig` struct: title, version, description, servers, contact, license — implemented as `openapi.Config` with `Title`, `Version`, `Description`, `Servers`, `Contact`, `License`, plus `Include` / `Exclude` filtering, `JSONPath` / `YAMLPath`, `DisableJSONEndpoint` / `DisableYAMLEndpoint`, `SecuritySchemes`
+- [x] Implement route introspection: collect all registered routes with metadata — extends `RouteInfo` with `Summary`, `OperationID`, `RequestType`, `ResponseType`, `Responses`, `RequestContentType`; `App.Routes()` deep-copies for safety
+- [x] Auto-generate path parameters from `{param}` patterns (and catch-all `{name...}` normalized to `{name}`)
+- [x] Auto-generate request body schema from `Bind[Req, Res]` type parameters — via new `aarv.BindRoute` / `aarv.BindGroupRoute` generic helpers + `WithSchema` / `WithSchemaTypes`
+- [x] Auto-generate response schema from handler return types — same path
+- [x] Extract validation rules from `validate:""` tags → OpenAPI constraints — `required`, `min`/`max`/`gte`/`lte`/`gt`/`lt`/`len` (numeric/string/container-aware), `oneof` → enum, `email` / `url` / `uuid` → format, `regex` → pattern, `unique` → uniqueItems; unknown rules ignored with `slog.Debug`. `validate:"required"` overrides JSON `omitempty`.
+- [x] Implement `/openapi.json` endpoint handler
+- [x] Implement `/openapi.yaml` endpoint handler — via `sigs.k8s.io/yaml.JSONToYAML`
+- [x] Swagger UI integration via embedded static files — `plugins/openapi-ui` ships real upstream Swagger UI v5.17.14 (Apache 2.0)
+- [x] ReDoc integration — same plugin, ships real upstream ReDoc v2.1.5 (MIT)
+- [x] Configurable: paths to include/exclude, security schemes — `Config.Include` / `Exclude` (Include is sole filter when set; default `Exclude` plus auto-added custom `JSONPath` / `YAMLPath` so the spec does not document its own endpoints), `Config.SecuritySchemes` populates `components.securitySchemes`
+- [x] Unit tests: schema generation, constraint mapping, endpoint output — 100% coverage on `plugins/openapi` and `plugins/openapi-ui`
+
+### Beyond the original spec
+- OpenAPI 3.1 / JSON Schema 2020-12 nullable encoding (`type: ["X","null"]` union, `oneOf` for `$ref`); the deprecated 3.0 `nullable: true` keyword is never emitted
+- Component dedup keyed by `reflect.Type` identity; recursive types terminate via component-placeholder pattern
+- Component naming with sanitized `pkgpath_TypeName` collision handling and numeric-suffix tiebreak
+- `App.CodecContentType()` flows into request and response media types so a non-JSON codec (e.g. YAML) is reflected in the spec without per-route overrides
+- `docs/openapi.md` reference (metadata sources, validate-tag mapping, required-field precedence, components, nullable encoding, catch-all, security schemes, non-goals)
+- `examples/openapi-spec` runnable end-to-end demo (smoke-tested)
+
+### Phase 12.5 release status
+- Bundled with Phase 12 in `[0.7.5]`. Tag `plugins/openapi/v0.7.5` and `plugins/openapi-ui/v0.7.5` after the root tag, following the same `replace`-lift-then-tag dance.
 
 ---
 

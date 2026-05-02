@@ -170,6 +170,28 @@ app.Register(aarv.PluginFunc(func(p *aarv.PluginContext) error {
 }))
 ```
 
+### Plugin catalogue
+
+Plugins fall into three groups depending on their dependency footprint:
+
+| Layer | What lives here | Module path |
+|---|---|---|
+| **Root features** (built into the root module) | Lifecycle (`ListenServer`, `TLSConfig`, `MutualTLSConfig`, `Shutdown`), hooks, codec, route binding (`Bind`, `BindRoute`, `WithSchema`, …), cert hot-reload (`WithCertReload`) | `github.com/nilshah80/aarv` |
+| **Root plugins** (stdlib-only, in the root module) | `apikey`, `basicauth`, `bodylimit`, `compress`, `cors`, `csrf`, `encrypt`, `etag`, `health`, `idempotency`, `ipfilter`, `jwt`, `logger`, `pprof`, `ratelimit`, `recover`, `requestid`, `sanitize`, `secure`, `static`, `throttle`, `timeout`, `verboselog` | `github.com/nilshah80/aarv/plugins/<name>` |
+| **Submodule plugins** (separate `go get`, third-party deps) | `prometheus`, `otel`, `autocert`, `h2c`, `openapi`, `openapi-ui` | `github.com/nilshah80/aarv/plugins/<name>` (own `go.mod`) |
+
+Submodule plugins each carry their own `go.mod` so the root module can
+remain stdlib-only. Add them à la carte:
+
+```bash
+go get github.com/nilshah80/aarv/plugins/autocert@latest
+go get github.com/nilshah80/aarv/plugins/openapi@latest
+```
+
+See [`docs/tls.md`](docs/tls.md) for the autocert / cert-reload / h2c
+operational notes and [`docs/openapi.md`](docs/openapi.md) for the
+OpenAPI plugin reference.
+
 ## Pluggable JSON Codec
 
 ```go

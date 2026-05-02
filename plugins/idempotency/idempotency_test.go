@@ -198,10 +198,12 @@ func TestConflictWait_TimeoutReturns409(t *testing.T) {
 // the ConflictWait fallback path.
 type storeOnly struct{ inner *MemoryStore }
 
-func (s *storeOnly) Lock(key string) (bool, error)                       { return s.inner.Lock(key) }
-func (s *storeOnly) Unlock(key string) error                             { return s.inner.Unlock(key) }
-func (s *storeOnly) Get(key string) (*Response, error)                   { return s.inner.Get(key) }
-func (s *storeOnly) Save(key string, r *Response, ttl time.Duration) error { return s.inner.Save(key, r, ttl) }
+func (s *storeOnly) Lock(key string) (bool, error)     { return s.inner.Lock(key) }
+func (s *storeOnly) Unlock(key string) error           { return s.inner.Unlock(key) }
+func (s *storeOnly) Get(key string) (*Response, error) { return s.inner.Get(key) }
+func (s *storeOnly) Save(key string, r *Response, ttl time.Duration) error {
+	return s.inner.Save(key, r, ttl)
+}
 
 // Compile-time guarantee: NOT WaitableStore.
 var _ Store = (*storeOnly)(nil)
@@ -599,10 +601,10 @@ type failingStore struct {
 	lockErr error
 }
 
-func (f *failingStore) Lock(string) (bool, error)                       { return false, f.lockErr }
-func (f *failingStore) Unlock(string) error                             { return nil }
-func (f *failingStore) Get(string) (*Response, error)                   { return nil, f.getErr }
-func (f *failingStore) Save(string, *Response, time.Duration) error    { return nil }
+func (f *failingStore) Lock(string) (bool, error)                   { return false, f.lockErr }
+func (f *failingStore) Unlock(string) error                         { return nil }
+func (f *failingStore) Get(string) (*Response, error)               { return nil, f.getErr }
+func (f *failingStore) Save(string, *Response, time.Duration) error { return nil }
 
 func TestStoreGetError_Returns500(t *testing.T) {
 	store := &failingStore{getErr: errors.New("backend down")}
@@ -1119,11 +1121,11 @@ func TestReadCapped_Error(t *testing.T) {
 
 func TestCodeForStatus_AllBranches(t *testing.T) {
 	cases := map[int]string{
-		http.StatusBadRequest:           "bad_request",
-		http.StatusConflict:             "conflict",
-		http.StatusUnprocessableEntity:  "unprocessable_entity",
-		http.StatusInternalServerError:  "internal_error",
-		http.StatusTeapot:               http.StatusText(http.StatusTeapot),
+		http.StatusBadRequest:          "bad_request",
+		http.StatusConflict:            "conflict",
+		http.StatusUnprocessableEntity: "unprocessable_entity",
+		http.StatusInternalServerError: "internal_error",
+		http.StatusTeapot:              http.StatusText(http.StatusTeapot),
 	}
 	for s, want := range cases {
 		if got := codeForStatus(s); got != want {
@@ -1412,9 +1414,9 @@ func TestWriteJSONError_Format(t *testing.T) {
 // failSaveStore lets Lock/Get succeed but Save fail.
 type failSaveStore struct{ inner *MemoryStore }
 
-func (f *failSaveStore) Lock(k string) (bool, error)                  { return f.inner.Lock(k) }
-func (f *failSaveStore) Unlock(k string) error                        { return f.inner.Unlock(k) }
-func (f *failSaveStore) Get(k string) (*Response, error)              { return f.inner.Get(k) }
+func (f *failSaveStore) Lock(k string) (bool, error)                 { return f.inner.Lock(k) }
+func (f *failSaveStore) Unlock(k string) error                       { return f.inner.Unlock(k) }
+func (f *failSaveStore) Get(k string) (*Response, error)             { return f.inner.Get(k) }
 func (f *failSaveStore) Save(string, *Response, time.Duration) error { return errors.New("save boom") }
 
 func TestNativePath_SaveError_FlushesAnyway(t *testing.T) {

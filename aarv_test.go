@@ -138,9 +138,9 @@ func TestGracefulShutdownViaExternalCall(t *testing.T) {
 
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- app.listenAndShutdown(server, func() error {
+		serveErr <- app.listenServerWithCleanup(server, func() error {
 			return server.Serve(listener)
-		})
+		}, "test", nil)
 	}()
 
 	// First request: simple round-trip while server is healthy.
@@ -553,7 +553,7 @@ func TestServerLifecycleAdditionalCoverage(t *testing.T) {
 			return errors.New("legacy failed")
 		})
 
-		err := app.listenAndShutdown(server, func() error { return http.ErrServerClosed })
+		err := app.listenServerWithCleanup(server, func() error { return http.ErrServerClosed }, "test", nil)
 		if err != nil && err.Error() != "http: Server closed" {
 			t.Fatalf("expected nil or closed error, got %v", err)
 		}
@@ -561,7 +561,7 @@ func TestServerLifecycleAdditionalCoverage(t *testing.T) {
 			t.Fatal("expected shutdown hooks to run")
 		}
 
-		if err := app.listenAndShutdown(server, func() error { return errors.New("serve failed") }); err == nil || !strings.Contains(err.Error(), "server error") {
+		if err := app.listenServerWithCleanup(server, func() error { return errors.New("serve failed") }, "test", nil); err == nil || !strings.Contains(err.Error(), "server error") {
 			t.Fatalf("expected wrapped server error, got %v", err)
 		}
 	})
@@ -1665,10 +1665,10 @@ func TestAdditionalCoreCoverage(t *testing.T) {
 			close(done)
 		}()
 
-		err := app.listenAndShutdown(server, func() error {
+		err := app.listenServerWithCleanup(server, func() error {
 			<-done
 			return http.ErrServerClosed
-		})
+		}, "test", nil)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			t.Fatalf("expected clean shutdown or server closed error, got %v", err)
 		}

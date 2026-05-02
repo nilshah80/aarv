@@ -107,14 +107,7 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 	// Track route for 405 detection
 	a.routesByKey[muxPattern] = struct{}{}
 
-	a.routes = append(a.routes, RouteInfo{
-		Method:      method,
-		Pattern:     pattern,
-		Name:        rc.name,
-		Tags:        rc.tags,
-		Description: rc.description,
-		Deprecated:  rc.deprecated,
-	})
+	a.routes = append(a.routes, a.routeInfoFromConfig(method, pattern, rc))
 	a.trackMethodPattern(method, pattern, isDynamic, directPattern)
 
 	return a
@@ -191,8 +184,28 @@ func (a *App) Mount(prefix string, handler http.Handler) *App {
 }
 
 // Routes returns the registered route metadata in registration order.
+//
+// The returned slice is a deep copy: the slice itself, each RouteInfo's
+// Tags slice, and each RouteInfo's Responses map are independent of the
+// framework's internal state. Mutating the result is safe and will not
+// affect dispatch, hooks, or future Routes() calls. RequestType and
+// ResponseType (reflect.Type) are immutable and shared.
 func (a *App) Routes() []RouteInfo {
-	return a.routes
+	out := make([]RouteInfo, len(a.routes))
+	for i, r := range a.routes {
+		copy := r
+		if r.Tags != nil {
+			copy.Tags = append([]string(nil), r.Tags...)
+		}
+		if r.Responses != nil {
+			copy.Responses = make(map[int]string, len(r.Responses))
+			for k, v := range r.Responses {
+				copy.Responses[k] = v
+			}
+		}
+		out[i] = copy
+	}
+	return out
 }
 
 // AddHook registers a lifecycle hook.

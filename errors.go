@@ -11,6 +11,33 @@ var (
 	// ErrResponseAlreadyWritten is returned when attempting to write to a response
 	// that has already been written to.
 	ErrResponseAlreadyWritten = errors.New("aarv: response already written")
+
+	// ErrNilServer is returned by ListenServer when the *http.Server argument is nil.
+	ErrNilServer = errors.New("aarv: ListenServer requires non-nil *http.Server")
+
+	// ErrNilServeFunc is returned by ListenServer when the serve func argument is nil.
+	ErrNilServeFunc = errors.New("aarv: ListenServer requires non-nil serve func")
+
+	// ErrReloaderStarted is returned by (*CertReloader).Start when the
+	// reloader is already running.
+	ErrReloaderStarted = errors.New("aarv: CertReloader is already started")
+
+	// ErrReloaderStopped is returned by (*CertReloader).Start when the
+	// reloader has previously been stopped. CertReloader is one-shot;
+	// construct a new one to reload again.
+	ErrReloaderStopped = errors.New("aarv: CertReloader is stopped; construct a new one")
+
+	// ErrCertReloadConflict is returned by ListenTLS / ListenMutualTLS when
+	// WithCertReload is combined with a caller-provided
+	// TLSConfig.GetCertificate. Choose one mechanism.
+	ErrCertReloadConflict = errors.New("aarv: WithCertReload conflicts with TLSConfig.GetCertificate; choose one")
+
+	// ErrCertReloaderEmpty is returned by (*CertReloader).GetCertificate
+	// when no certificate has been loaded. In normal use, NewCertReloader's
+	// initial load populates the certificate before any handshake; this
+	// error fires only if GetCertificate is called on a zero-value
+	// CertReloader (e.g., a struct constructed without NewCertReloader).
+	ErrCertReloaderEmpty = errors.New("aarv: cert reloader has no certificate loaded")
 )
 
 // AppError is a structured HTTP error with status code, machine-readable code, and message.

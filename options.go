@@ -95,6 +95,30 @@ func WithDisableHTTP2(disabled bool) Option {
 	return func(a *App) { a.config.DisableHTTP2 = disabled }
 }
 
+// WithCertReload enables periodic re-loading of the cert/key files passed to
+// ListenTLS or ListenMutualTLS. The reloader polls each file's (ModTime,
+// Size); when either changes on either file, the cert is re-loaded and
+// served to subsequent TLS handshakes via tls.Config.GetCertificate.
+//
+// interval is the poll cadence. Zero means use the default (30s). The
+// minimum is 1s, applied after the default substitution.
+//
+// For ListenMutualTLS this reloads server cert/key only — the client CA
+// file is loaded once at startup.
+//
+// Combining WithCertReload with a caller-supplied
+// TLSConfig.GetCertificate causes ListenTLS / ListenMutualTLS to return
+// ErrCertReloadConflict before serving.
+//
+// On plain Listen (HTTP), WithCertReload logs one warning and is otherwise
+// a no-op.
+func WithCertReload(interval time.Duration) Option {
+	return func(a *App) {
+		a.config.CertReloadEnabled = true
+		a.config.CertReloadInterval = interval
+	}
+}
+
 // WithBanner enables or disables the startup banner.
 func WithBanner(enabled bool) Option {
 	return func(a *App) { a.config.Banner = enabled }
@@ -150,6 +174,12 @@ type Config struct {
 	// raw r.WithContext(...) middleware chains. Disable only for fully opt-in
 	// performance-sensitive stacks that do not need that compatibility.
 	RequestContextBridge bool
+	// CertReloadEnabled toggles cert/key file hot-reload for ListenTLS and
+	// ListenMutualTLS. Set via WithCertReload.
+	CertReloadEnabled bool
+	// CertReloadInterval is the poll cadence for cert hot-reload. Zero means
+	// use the default (30s); the minimum 1s is applied after the default.
+	CertReloadInterval time.Duration
 }
 
 func defaultConfig() *Config {

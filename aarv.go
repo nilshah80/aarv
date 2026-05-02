@@ -185,6 +185,14 @@ func (a *App) ReleaseContext(c *Context) {
 	a.ctxPool.Put(c)
 }
 
+// CodecContentType returns the content type advertised by the active codec
+// (set via WithCodec; defaults to "application/json"). Used by the OpenAPI
+// plugin so generated request bodies declare the correct media type when
+// the App swaps in a non-JSON codec.
+func (a *App) CodecContentType() string {
+	return a.codecContentType
+}
+
 func (a *App) setServer(server *http.Server) {
 	a.serverMu.Lock()
 	a.server = server
@@ -214,9 +222,40 @@ func (a *App) effectiveTLSConfig(mutualTLS bool) *tls.Config {
 		tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 
+	// WithDisableHTTP2 disables "h2" specifically. Forcing the slice to exactly
+	// ["http/1.1"] (rather than filtering "h2" out of NextProtos) is required:
+	// a nil or empty NextProtos lets the stdlib auto-configure HTTP/2.
+	// Plugins that need to negotiate other ALPN tokens (e.g. autocert appending
+	// "acme-tls/1" for ACME TLS-ALPN-01) may extend this slice without
+	// re-enabling "h2".
 	if a.config.DisableHTTP2 {
 		tlsCfg.NextProtos = []string{"http/1.1"}
 	}
 
 	return tlsCfg
+}
+
+// TLSConfig returns a hardened *tls.Config suitable for server-auth HTTPS
+// listeners. It is a clone of the configured TLS settings with:
+//   - MinVersion floored at TLS 1.2.
+//   - When WithDisableHTTP2 is set, NextProtos forced to exactly
+//     []string{"http/1.1"}. Filtering "h2" alone is insufficient because nil
+//     or empty NextProtos allows the stdlib to negotiate HTTP/2 implicitly.
+//
+// Plugin packages that build their own *http.Server (e.g. autocert) should
+// start from TLSConfig (or MutualTLSConfig) so framework-wide TLS hardening
+// applies. The returned value is a tls.Config.Clone(): top-level fields are
+// independent, but pointer fields (ClientCAs, Certificates slice elements)
+// follow stdlib clone semantics — treat nested objects as shared.
+func (a *App) TLSConfig() *tls.Config {
+	return a.effectiveTLSConfig(false)
+}
+
+// MutualTLSConfig returns a *tls.Config like TLSConfig but additionally sets
+// ClientAuth = tls.RequireAndVerifyClientCert for mutual TLS authentication.
+// The caller is still responsible for populating ClientCAs.
+//
+// Same clone semantics as TLSConfig.
+func (a *App) MutualTLSConfig() *tls.Config {
+	return a.effectiveTLSConfig(true)
 }

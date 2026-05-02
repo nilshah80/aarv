@@ -57,12 +57,19 @@ func (hr *hookRegistry) addWithPriority(phase HookPhase, priority int, fn HookFu
 // finalize sorts all hooks by priority. Call once before serving requests.
 func (hr *hookRegistry) finalize() {
 	for phase := range hr.hooks {
-		entries := hr.hooks[phase]
-		sort.SliceStable(entries, func(i, j int) bool {
-			return entries[i].priority < entries[j].priority
-		})
-		hr.hooks[phase] = entries
+		hr.sortPhase(HookPhase(phase))
 	}
+}
+
+// sortPhase sorts a single phase's hooks by priority. Used by phases that
+// must fire before finalize() runs (e.g. OnStartup, which fires before
+// ensureReady).
+func (hr *hookRegistry) sortPhase(phase HookPhase) {
+	entries := hr.hooks[phase]
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].priority < entries[j].priority
+	})
+	hr.hooks[phase] = entries
 }
 
 func (hr *hookRegistry) run(phase HookPhase, c *Context) error {

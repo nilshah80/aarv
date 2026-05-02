@@ -3,12 +3,16 @@ package aarv
 import (
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"unsafe"
 )
 
-// RouteInfo describes a registered route for introspection.
+// RouteInfo describes a registered route for introspection. It is the
+// authoritative metadata surface that introspection consumers (e.g. the
+// OpenAPI plugin) read; App.Routes() returns a deep copy so callers can
+// freely mutate slices and maps without corrupting framework state.
 type RouteInfo struct {
 	// Method is the HTTP method registered for the route.
 	Method string `json:"method"`
@@ -18,24 +22,46 @@ type RouteInfo struct {
 	Name string `json:"name,omitempty"`
 	// Tags contains optional route classification tags.
 	Tags []string `json:"tags,omitempty"`
+	// Summary is the optional short summary for the route.
+	Summary string `json:"summary,omitempty"`
 	// Description is the optional long-form route description.
 	Description string `json:"description,omitempty"`
+	// OperationID is the optional machine-readable identifier for the route.
+	OperationID string `json:"operationId,omitempty"`
 	// Deprecated reports whether the route is marked deprecated.
 	Deprecated bool `json:"deprecated,omitempty"`
+	// RequestType, when non-nil, is the value type of the request body.
+	// Set via WithSchema, WithSchemaTypes, or implicitly by BindRoute /
+	// BindGroupRoute. Always represents the value type (T), not *T.
+	RequestType reflect.Type `json:"-"`
+	// ResponseType, when non-nil, is the value type of the response body.
+	// Same conventions as RequestType.
+	ResponseType reflect.Type `json:"-"`
+	// Responses maps HTTP status code → human description for documented
+	// responses set via WithResponse. nil when no WithResponse was used.
+	Responses map[int]string `json:"responses,omitempty"`
+	// RequestContentType is the request body content type (default
+	// "application/json", or as overridden by WithRequestContentType).
+	// Empty when no body schema is declared.
+	RequestContentType string `json:"requestContentType,omitempty"`
 }
 
 // RouteOption configures per-route metadata and behavior.
 type RouteOption func(*routeConfig)
 
 type routeConfig struct {
-	name        string
-	tags        []string
-	description string
-	deprecated  bool
-	maxBodySize int64
-	middleware  []Middleware
-	summary     string
-	operationID string
+	name               string
+	tags               []string
+	description        string
+	deprecated         bool
+	maxBodySize        int64
+	middleware         []Middleware
+	summary            string
+	operationID        string
+	schemaReq          reflect.Type
+	schemaRes          reflect.Type
+	responses          map[int]string
+	requestContentType string
 }
 
 // WithName sets a stable human-readable name for the route.
@@ -76,6 +102,107 @@ func WithOperationID(id string) RouteOption {
 // WithSummary sets a short summary for the route.
 func WithSummary(s string) RouteOption {
 	return func(rc *routeConfig) { rc.summary = s }
+}
+
+// WithSchema attaches request and response value types to the route's
+// metadata, so introspection consumers (e.g. the OpenAPI plugin) can
+// generate body and response schemas without re-deriving them from the
+// handler closure.
+//
+// Pointer arguments are unwrapped: WithSchema(&Foo{}) and WithSchema(Foo{})
+// both store reflect.TypeOf(Foo{}). Schemas always represent the value type
+// T, never *T. A nil argument records "no schema this side"; passing nil
+// for both panics at construction time because that is meaningless (omit
+// the option instead).
+//
+// Use WithSchemaTypes when you already have reflect.Type values in hand
+// (typed-nil pointer ergonomics around reflect.TypeOf are subtle; the
+// generic BindRoute / BindGroupRoute helpers bypass this entirely).
+func WithSchema(req, res any) RouteOption {
+	if req == nil && res == nil {
+		panic("aarv: WithSchema(nil, nil) is meaningless; omit the option")
+	}
+	return WithSchemaTypes(schemaTypeOf(req), schemaTypeOf(res))
+}
+
+// WithSchemaTypes is the precise form of WithSchema that takes pre-built
+// reflect.Type values. nil on either side means "no schema this side".
+// Pointer types are unwrapped to their element type.
+func WithSchemaTypes(req, res reflect.Type) RouteOption {
+	req = unwrapPtr(req)
+	res = unwrapPtr(res)
+	return func(rc *routeConfig) {
+		rc.schemaReq = req
+		rc.schemaRes = res
+	}
+}
+
+// WithResponse documents an additional response status with a description.
+// Multiple WithResponse calls accumulate; calling WithResponse(200, "...")
+// overrides any prior 200 description. Status codes outside 100..599 are
+// rejected at construction time.
+func WithResponse(status int, description string) RouteOption {
+	if status < 100 || status > 599 {
+		panic("aarv: WithResponse status must be in [100, 599]")
+	}
+	return func(rc *routeConfig) {
+		if rc.responses == nil {
+			rc.responses = make(map[int]string)
+		}
+		rc.responses[status] = description
+	}
+}
+
+// WithRequestContentType overrides the request body content type for this
+// route (default is "application/json" once a request schema is set).
+// Useful when a route accepts a non-JSON body (form, multipart, octet
+// stream).
+func WithRequestContentType(ct string) RouteOption {
+	return func(rc *routeConfig) { rc.requestContentType = ct }
+}
+
+func schemaTypeOf(v any) reflect.Type {
+	if v == nil {
+		return nil
+	}
+	return unwrapPtr(reflect.TypeOf(v))
+}
+
+func unwrapPtr(t reflect.Type) reflect.Type {
+	for t != nil && t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	return t
+}
+
+// routeInfoFromConfig converts an in-progress routeConfig into the RouteInfo
+// snapshot stored on App.routes. The default RequestContentType, when a
+// request schema is declared but the user did not call
+// WithRequestContentType, is the App's active codec content type — so an
+// App configured with WithCodec(NonJSONCodec{}) generates a spec that
+// declares the right media type without per-route overrides.
+//
+// codecContentType is always populated by setCodec, which runs as part of
+// App.New, so we can read it unconditionally here.
+func (a *App) routeInfoFromConfig(method, pattern string, rc *routeConfig) RouteInfo {
+	requestCT := rc.requestContentType
+	if requestCT == "" && rc.schemaReq != nil {
+		requestCT = a.codecContentType
+	}
+	return RouteInfo{
+		Method:             method,
+		Pattern:            pattern,
+		Name:               rc.name,
+		Tags:               rc.tags,
+		Summary:            rc.summary,
+		Description:        rc.description,
+		OperationID:        rc.operationID,
+		Deprecated:         rc.deprecated,
+		RequestType:        rc.schemaReq,
+		ResponseType:       rc.schemaRes,
+		Responses:          rc.responses,
+		RequestContentType: requestCT,
+	}
 }
 
 // RouteGroup represents a group of routes with a common prefix and middleware.
@@ -170,14 +297,7 @@ func (g *RouteGroup) addRoute(method, pattern string, handler any, opts ...Route
 	g.app.trackRedirectSlashPattern(fullPattern, isDynamic, directPattern)
 	g.app.mux.Handle(muxPattern, httpHandler)
 	g.app.routesByKey[muxPattern] = struct{}{}
-	g.app.routes = append(g.app.routes, RouteInfo{
-		Method:      method,
-		Pattern:     fullPattern,
-		Name:        rc.name,
-		Tags:        rc.tags,
-		Description: rc.description,
-		Deprecated:  rc.deprecated,
-	})
+	g.app.routes = append(g.app.routes, g.app.routeInfoFromConfig(method, fullPattern, rc))
 	g.app.trackMethodPattern(method, fullPattern, isDynamic, directPattern)
 
 	if !isDynamic {

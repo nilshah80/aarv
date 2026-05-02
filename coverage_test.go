@@ -2,6 +2,7 @@ package aarv
 
 import (
 	"context"
+	"crypto/cipher"
 	"errors"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -65,6 +67,30 @@ func TestBindFileSingleBindingError(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("malformed multipart should bind-error → 400, got %d body=%s",
 			rec.Code, rec.Body.String())
+	}
+}
+
+func TestStructBinderSingleFileOpenError(t *testing.T) {
+	type reqPayload struct {
+		Image *UploadedFile `file:"image"`
+	}
+
+	sb := buildStructBinder(reflect.TypeOf(reqPayload{}))
+	payload := reqPayload{}
+	httpReq := httptest.NewRequest(http.MethodPost, "/upload", nil)
+	httpReq.MultipartForm = &multipart.Form{
+		File: map[string][]*multipart.FileHeader{
+			"image": {{Filename: "missing-backing-data"}},
+		},
+	}
+	app := New(WithBanner(false))
+	ctx, _ := newAppContext(app, httpReq)
+	defer app.ReleaseContext(ctx)
+
+	err := sb.bind(ctx, &payload)
+	var bindErr *BindError
+	if !errors.As(err, &bindErr) || bindErr.Source != "file" {
+		t.Fatalf("expected file BindError from FileHeader.Open failure, got %v", err)
 	}
 }
 
@@ -280,6 +306,43 @@ func TestDecryptValueBadKeyLength(t *testing.T) {
 	encoded := "AAAAAAAAAAAAAAAA" // valid base64url, decodes to 12 bytes
 	if _, err := decryptValue(encoded, []byte{1, 2, 3}); !errors.Is(err, ErrCookieDecryptFailed) {
 		t.Fatalf("decryptValue with 3-byte key must fail with ErrCookieDecryptFailed, got %v", err)
+	}
+}
+
+func TestSetEncryptedCookiePropagatesEncryptError(t *testing.T) {
+	orig := secureCookieRandRead
+	t.Cleanup(func() { secureCookieRandRead = orig })
+	secureCookieRandRead = func([]byte) (int, error) {
+		return 0, errors.New("forced rand failure")
+	}
+
+	app := New(WithBanner(false), WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	ctx, _ := newAppContext(app, req)
+	defer app.ReleaseContext(ctx)
+	ctx.res = rec
+
+	if err := ctx.SetEncryptedCookie("secret", "value", []byte(strings.Repeat("k", 32))); !errors.Is(err, ErrCookieDecryptFailed) {
+		t.Fatalf("expected encryption failure to surface, got %v", err)
+	}
+}
+
+func TestEncryptDecryptValueNewGCMErrors(t *testing.T) {
+	orig := secureCookieNewGCM
+	t.Cleanup(func() { secureCookieNewGCM = orig })
+	secureCookieNewGCM = func(cipher.Block) (cipher.AEAD, error) {
+		return nil, errors.New("forced gcm failure")
+	}
+
+	key := []byte(strings.Repeat("k", 32))
+	if _, err := encryptValue("plaintext", key); !errors.Is(err, ErrCookieDecryptFailed) {
+		t.Fatalf("encryptValue must wrap NewGCM failure as ErrCookieDecryptFailed, got %v", err)
+	}
+
+	encoded := "AAAAAAAAAAAAAAAA" // valid base64url, decodes to 12-byte nonce
+	if _, err := decryptValue(encoded, key); !errors.Is(err, ErrCookieDecryptFailed) {
+		t.Fatalf("decryptValue must wrap NewGCM failure as ErrCookieDecryptFailed, got %v", err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package static
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -42,6 +43,64 @@ func TestNewPanicsWhenAbsolutePathResolutionFails(t *testing.T) {
 	}()
 
 	_ = New(Config{Root: "relative"})
+}
+
+func TestDirectoryWithoutIndexFallsThroughHTTPAndNative(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "empty"), 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	t.Run("http middleware", func(t *testing.T) {
+		called := false
+		handler := New(Config{Root: root})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusAccepted)
+		}))
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/empty/", nil)
+		handler.ServeHTTP(rec, req)
+		if !called || rec.Code != http.StatusAccepted {
+			t.Fatalf("expected fallthrough to next handler, called=%v status=%d", called, rec.Code)
+		}
+	})
+
+	t.Run("native middleware", func(t *testing.T) {
+		app := aarv.New(aarv.WithBanner(false))
+		app.Use(New(Config{Root: root}))
+		app.Get("/empty/", func(c *aarv.Context) error {
+			return c.NoContent(http.StatusAccepted)
+		})
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/empty/", nil)
+		app.ServeHTTP(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected native fallthrough to route, got %d", rec.Code)
+		}
+	})
+}
+
+func TestNoBrowseFSOpenForcedStatError(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("x"), 0600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	orig := fileStat
+	t.Cleanup(func() { fileStat = orig })
+	fileStat = func(http.File) (os.FileInfo, error) {
+		return nil, errors.New("forced stat failure")
+	}
+
+	f, err := (noBrowseFS{root: root, index: "index.html"}).Open("/file.txt")
+	if err == nil {
+		if f != nil {
+			_ = f.Close()
+		}
+		t.Fatal("expected forced stat failure")
+	}
 }
 
 func TestNewServesFilesAndPassesThroughUnsupportedMethods(t *testing.T) {
