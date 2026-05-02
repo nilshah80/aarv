@@ -8,6 +8,11 @@ require (
 	github.com/prometheus/client_model v0.6.2
 )
 
+// Local development: resolve aarv from the working tree rather than the
+// proxy. Lifted at release time so the tagged module bytes can be fetched
+// via the Go proxy with a published aarv version.
+replace github.com/nilshah80/aarv => ../..
+
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

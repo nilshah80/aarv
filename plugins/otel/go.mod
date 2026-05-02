@@ -19,3 +19,8 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 )
+
+// Local development: resolve aarv from the working tree rather than the
+// proxy. Lifted at release time so the tagged module bytes can be fetched
+// via the Go proxy with a published aarv version.
+replace github.com/nilshah80/aarv => ../..
