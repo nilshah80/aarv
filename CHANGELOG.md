@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-02
+
 ### Added
 - Core: `(*Context).RoutePattern() string` returns the registered aarv route pattern that matched a request, in path-only form (e.g. `/users/{id}`), or empty for 404, 405, `App.Mount` handlers, and any path outside the registered aarv route table. Set by the dispatcher before the matched handler runs, so route-level middleware sees it pre-`next` and global middleware sees it post-`next`. Used by the prometheus and otel plugins for cardinality-controlled label values and span names.
 - Core: `(*Context).SetLogger(*slog.Logger)` swaps the request-scoped logger for the remainder of a request. Pass `nil` to clear any previous override; the next `Logger()` call rebuilds from `app.logger`. The override is also cleared on pool return. Pairs with `Logger()` for the OTel log-correlation pattern.
@@ -149,7 +151,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 4. Push: `git push origin vX.Y.Z`
 5. Create GitHub Release with notes from this file
 
-[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/nilshah80/aarv/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/nilshah80/aarv/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/nilshah80/aarv/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/nilshah80/aarv/compare/v0.4.3...v0.4.4
