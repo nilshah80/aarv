@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-02
+
 ### Added — Phase 10 Security Plugins
 - IP filter plugin (`plugins/ipfilter`, root module, stdlib-only): allowlist or denylist filtering against a set of CIDRs (or bare IPs auto-converted to /32 / /128). Default source IP is `(*aarv.Context).RealIP()`; overridable via `IPFunc` for proxy fronts. Invalid CIDRs panic in `New` (parity with jwt). Empty CIDRs in `ModeAllowlist` panics — an empty allowlist would block all traffic, almost always a misconfiguration. Empty/unparseable source IP fails closed in allowlist mode and fails open in denylist mode (documented).
 - Throttle plugin (`plugins/throttle`, root module, stdlib-only): bounds in-flight request count via a `chan struct{}` semaphore with optional bounded queue. Queue token is released as soon as the goroutine acquires a slot or its wait times out — never held for the duration of the handler — so queue depth is exactly `QueueSize` regardless of handler latency. Slot release is deferred so handler errors and panics don't leak slots; release fires before the panic propagates so Recovery middleware behavior is unchanged. Returns 503 (configurable) on queue full or wait timeout.
