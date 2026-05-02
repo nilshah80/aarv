@@ -7,10 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-29
+
 ### Added
 - API key authentication plugin (`plugins/apikey`): header- and query-based key lookup (query opt-in), pluggable `Validator`, `StaticKeys` helper that hashes stored and presented keys to fixed-length SHA-256 digests for lookup so the key-length side channel is closed (note: SHA-256 is used here for in-memory side-channel resistance, not at-rest key protection — store key digests externally and use a custom validator for that), identity retrieval via `From(c)` / `FromContext(ctx)`. Registers both stdlib and native middleware paths. Validator must return a non-nil identity on success — `(nil, nil)` is rejected as auth failure because `context.Context` cannot distinguish a stored nil from a missing value.
 - Basic authentication plugin (`plugins/basicauth`): RFC 7617 parser (case-insensitive scheme, first-colon split so passwords can contain `:`), pluggable `Validator`, `StaticCreds` helper that hashes stored and attempted passwords to fixed-length SHA-256 digests and compares with `crypto/subtle.ConstantTimeCompare` so the password-length side channel is closed (note: SHA-256 is used here for in-memory side-channel resistance, not at-rest password protection — use bcrypt/argon2 for that), identity retrieval via `From(c)` / `FromContext(ctx)`. Emits `WWW-Authenticate: Basic` on 401 with optional `realm` and `charset` parameters; suppresses the challenge for non-401 statuses (e.g. validator-returned 403). `Realm` is validated at `New()` for header-safe characters; `Charset`, when set, must be `"UTF-8"` (case-insensitive) per RFC 7617 §2.1. Registers both stdlib and native middleware paths.
 - JWT authentication plugin (`plugins/jwt`): stdlib-only RFC 7519 implementation supporting HS256/384/512, RS256/384/512, ES256/384/512, and EdDSA. Token lookup from header / query / cookie via an ordered `Lookups` list (default `Authorization: Bearer`). Standard claim validation for `exp`, `nbf`, `iat`, `iss`, and `aud` with configurable `Leeway`. Optional `ClaimsValidator` hook with `*aarv.AppError` honored on both native and stdlib paths. `KeyFunc` receives the parsed JOSE header for `kid`-based dispatch and JWKS-style key rotation; `HMACSecret` is a sugar field for single-secret HS\* deployments. Public helpers: `SignToken`, `Parse`, `RefreshToken`, `From`, `FromContext`, `GetClaims[T]`. Registers both stdlib and native middleware paths.
+- Codec benchmark harness (`codec/benchmarks/`) and per-codec READMEs for `codec/jsonv2`, `codec/segmentio`, and `codec/sonic`.
+
+### Changed
+- `codec/jsonv2` bumped to Go 1.26 and `github.com/go-json-experiment/json` v0.0.0-20260214004413-d219187c3433.
+- `codec/segmentio` bumped to `github.com/segmentio/encoding` v0.5.4.
+- `codec/sonic` bumped to `github.com/bytedance/sonic` v1.15.0.
 
 ### Notes
 - The `plugins/apikey` and `plugins/basicauth` `Validator` signatures return `(identity any, err error)` rather than the `(bool, error)` shape sketched in `docs/tasks-md.md` §6.2/§6.3. The identity-returning shape matches the planned §6.4 Bearer Token validator and lets a single auth pass produce the caller identity without a second lookup.
@@ -22,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `plugins/jwt` `New(cfg)` panics on misconfiguration (parity with `apikey`/`basicauth`); `Parse` and `RefreshToken` validate the same `Config` but return typed sentinels (`ErrMissingKey`, `ErrNoAlgorithms`, `ErrConflictingKey`, `ErrSecretAlgMismatch`, `ErrInvalidLookup`, `ErrUnknownAlg`) so programmatic callers can branch via `errors.Is` without `recover`.
 - `plugins/jwt` `KeyFunc` receives the JOSE header only; issuer-based key selection is not framework-supported because the iss claim is unverified at key-resolution time. Callers needing iss-based dispatch must decode unverified claims themselves.
 - `plugins/jwt` `RefreshToken` preserves the verified token's JOSE header verbatim — `kid` and any other custom header parameters carry across the refresh, which is required for JWKS-style key rotation. Only `iat` and `exp` are rewritten on the claim side; `nbf`, `jti`, and all other claims are copied unchanged. The `alg` field is always rewritten from the verified alg to keep header/alg coherence; `typ` defaults to `"JWT"` when absent.
+
+### Codec Submodules
+- `codec/jsonv2`, `codec/segmentio`, and `codec/sonic` are tagged at `v0.5.0` alongside the core release; see the `Changed` section above for the per-codec dependency bumps.
 
 ## [0.4.4] - 2026-04-13
 
@@ -107,7 +118,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 4. Push: `git push origin vX.Y.Z`
 5. Create GitHub Release with notes from this file
 
-[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/nilshah80/aarv/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/nilshah80/aarv/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/nilshah80/aarv/compare/v0.4.0...v0.4.3
 [0.4.0]: https://github.com/nilshah80/aarv/compare/v0.3.0...v0.4.0
