@@ -486,24 +486,32 @@ Notes from latest benchmark pass:
 ## Phase 6: Auth Plugins (M6)
 
 ### 6.1 JWT Plugin
-- [ ] Implement JWT parser (split header.payload.signature, base64url decode)
-- [ ] Implement HMAC signing/verification (HS256, HS384, HS512) via `crypto/hmac`
-- [ ] Implement RSA signing/verification (RS256, RS384, RS512) via `crypto/rsa`
-- [ ] Implement ECDSA signing/verification (ES256, ES384, ES512) via `crypto/ecdsa`
-- [ ] Implement EdDSA signing/verification via `crypto/ed25519`
-- [ ] Token lookup: header (`Authorization: Bearer`), query param, cookie
-- [ ] Standard claims validation: `exp`, `nbf`, `iat`, `iss`, `aud`
-- [ ] Custom claims validation: `ClaimsValidator func(claims map[string]any) error` callback
-- [ ] Typed claims extraction: `GetClaims[T](c *Context) T` generic helper
-- [ ] Store claims in Context via configurable key
-- [ ] Skip paths configuration
-- [ ] `KeyFunc` callback for JWKS / key rotation support
-- [ ] Error handler for auth failures (401/403)
-- [ ] Token creation helper: `SignToken(claims, key)` → string
-- [ ] Token refresh helper: `RefreshToken(token, key, newExp)` → string
-- [ ] Unit tests: each algorithm, expired token, invalid signature, missing token, skip paths
-- [ ] Unit tests: custom claims validation, typed claims extraction
-- [ ] Security tests: algorithm confusion attack, none algorithm rejection
+- [x] Implement JWT parser (split header.payload.signature, base64url decode)
+- [x] Implement HMAC signing/verification (HS256, HS384, HS512) via `crypto/hmac`
+- [x] Implement RSA signing/verification (RS256, RS384, RS512) via `crypto/rsa`
+- [x] Implement ECDSA signing/verification (ES256, ES384, ES512) via `crypto/ecdsa`
+- [x] Implement EdDSA signing/verification via `crypto/ed25519`
+- [x] Token lookup: header (`Authorization: Bearer`), query param, cookie
+- [x] Standard claims validation: `exp`, `nbf`, `iat`, `iss`, `aud`
+- [x] Custom claims validation: `ClaimsValidator func(claims map[string]any) error` callback
+- [x] Typed claims extraction: `GetClaims[T](c *Context) T` generic helper
+- [ ] ~~Store claims in Context via configurable key~~ — replaced by hardcoded `identityStoreKey = "jwtClaims"` and accessed via `jwt.From(c)` / `jwt.FromContext(ctx)`. See scope-change note below.
+- [x] Skip paths configuration
+- [x] `KeyFunc` callback for JWKS / key rotation support
+- [x] Error handler for auth failures (401/403)
+- [x] Token creation helper: `SignToken(alg, key, claims)` → string
+- [x] Token refresh helper: `RefreshToken(token, cfg, signingKey, ttl)` → string
+- [x] Unit tests: each algorithm, expired token, invalid signature, missing token, skip paths
+- [x] Unit tests: custom claims validation, typed claims extraction
+- [x] Security tests: algorithm confusion attack, none algorithm rejection
+
+**Scope changes accepted during implementation:**
+- Storage location: claims are stored under a hardcoded internal key (`jwtClaims`). The public access path is `jwt.From(c)` / `jwt.FromContext(ctx)`. A configurable `ContextKey` was rejected for the same reason as §6.2/§6.3: it creates a way for the helpers to silently miss when misconfigured.
+- `Algorithms` allow-list policy: empty `Config.Algorithms` defaults to `[HS256]` only when `Config.HMACSecret` is set. When only `KeyFunc` is set, empty `Algorithms` is a configuration error (no silent HS256 fallback that would surprise asymmetric deployments). `HMACSecret` and `KeyFunc` are mutually exclusive.
+- NumericDate strictness: `exp`, `nbf`, and `iat` must be JSON integers in `[0, 253402300799]` (year-9999 upper bound). Fractional, string-shaped, negative, and millisecond-scale values are rejected with `ErrInvalidNumericDate`. This is intentionally stricter than RFC 7519 §2 (which permits non-integer NumericDates) and is documented in the package GoDoc and CHANGELOG.
+- Configuration error surface: `New(cfg)` panics on misconfiguration to match `apikey` / `basicauth`. `Parse` and `RefreshToken` validate the same `Config` and return typed sentinels (`ErrMissingKey`, `ErrNoAlgorithms`, `ErrConflictingKey`, `ErrSecretAlgMismatch`, `ErrInvalidLookup`, `ErrUnknownAlg`) so programmatic callers can branch on them via `errors.Is` without `recover`.
+- `KeyFunc` callback contract: `KeyFunc` receives the parsed JOSE header only. Issuer-based key selection is not framework-supported because `iss` is unverified at key-resolution time. The `(nil, nil)` rule from §6.2/§6.3 carries forward: returning `(nil, nil)` from `KeyFunc` is treated as auth failure (the plugin refuses to attempt verification with a nil key). `ClaimsValidator` returns only `error` and is unaffected.
+- `RefreshToken` signature: `RefreshToken(token, cfg, signingKey, ttl time.Duration)` rather than the original sketch `RefreshToken(token, key, newExp)`. `ttl < time.Second` returns `ErrInvalidTTL` (NumericDate is second-granular per RFC 7519, and a sub-second `ttl` would issue a token whose `exp` equals `iat`); `iat` is set to `now` and `exp` to `now.Add(ttl)`. Other claims (including `jti`) are preserved unchanged — callers wanting to rotate `jti` must do it themselves.
 
 ### 6.2 API Key Plugin
 - [x] Lookup from header (configurable name) or query param
@@ -844,8 +852,8 @@ Notes from latest benchmark pass:
 - [x] Pre-compute binder + validator at registration time (no per-request reflect)
 
 ### Security
-- [ ] JWT: reject `alg: none`
-- [ ] JWT: validate `alg` header matches expected algorithm
+- [x] JWT: reject `alg: none`
+- [x] JWT: validate `alg` header matches expected algorithm
 - [x] Body limit enforced before parsing
 - [x] Timeout enforced via context cancellation
 - [x] No user input in log format strings (slog structured logging prevents this)
