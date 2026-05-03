@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.7] - 2026-05-03
+
 ### Added — Phase 12.6.1: ALP-feedback hardening (post-v0.7.6 review)
 
-> Target tag: `v0.7.7` (root only). The companion submodules (`plugins/hmacauth-redis`, `plugins/ratelimit-redis`, `plugins/idempotency-redis`) are unchanged at `v0.7.6` and do not need fresh tags unless their `require github.com/nilshah80/aarv` lines bump to `v0.7.7`.
+> Root-only tag. The companion submodules (`plugins/hmacauth-redis`,
+> `plugins/ratelimit-redis`, `plugins/idempotency-redis`) remain at
+> `v0.7.6` because their code and `require github.com/nilshah80/aarv`
+> lines are unchanged.
 
 - `plugins/hmacauth`: secretless `Principal` accessor.
   - New `Principal { ClientID string; Identity any }` exposes the safe view of an authenticated request — no `Secret` / `Secrets` reachable from handler-side code.
