@@ -3,7 +3,7 @@ module github.com/nilshah80/aarv/plugins/autocert
 go 1.23.0
 
 require (
-	github.com/nilshah80/aarv v0.7.6
+	github.com/nilshah80/aarv v0.7.7
 	golang.org/x/crypto v0.32.0
 )
 

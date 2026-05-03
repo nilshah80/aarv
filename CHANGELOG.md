@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes — Phase 12.6.1
 
 - ALP review noted the default `NonceTTL = 2*SkewSeconds + 60s = 11m` differs from ALP's documented 10m. Aarv's default is preserved (longer TTL is the safer side of the trade-off — it never causes false-accepts, only delayed eviction). ALP can pin its preferred value via `Config.NonceTTL = 10*time.Minute` at construction.
-- All three Redis companion submodules continue to require `github.com/nilshah80/aarv v0.7.6` and remain unchanged. They will pick up the new `Principal` API automatically when callers bump their root require to `v0.7.7`.
+- Plugin and codec submodules are tagged at `v0.7.7` for version alignment. Plugin submodule `go.mod` files now require `github.com/nilshah80/aarv v0.7.7`; codec benchmark dependencies point to the `codec/* v0.7.7` tags.
 
 ## [0.7.6] - 2026-05-03
 

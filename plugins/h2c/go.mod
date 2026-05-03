@@ -3,7 +3,7 @@ module github.com/nilshah80/aarv/plugins/h2c
 go 1.23.0
 
 require (
-	github.com/nilshah80/aarv v0.7.6
+	github.com/nilshah80/aarv v0.7.7
 	golang.org/x/net v0.34.0
 )
 
