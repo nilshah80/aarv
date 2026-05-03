@@ -13,6 +13,12 @@ github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433 h1:vymEbVw
 github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433/go.mod h1:tphK2c80bpPhMOI4v6bIc2xWywPfbqi1Z06+RcrMkDg=
 github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=
 github.com/klauspost/cpuid/v2 v2.3.0/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
+github.com/nilshah80/aarv/codec/jsonv2 v0.7.6 h1:9YC/lRsu9cQW6fHJ7uoItWJztnEpJLWa5X+sAO0HCPE=
+github.com/nilshah80/aarv/codec/jsonv2 v0.7.6/go.mod h1:LXiwHYEmO1xx9R8u+Nzc/HZRJlTwwiiwCb37f114c90=
+github.com/nilshah80/aarv/codec/segmentio v0.7.6 h1:CG0ZNc3fp6BFyg+M2oRpSK4U2cDBVWuVRK39q+eYL58=
+github.com/nilshah80/aarv/codec/segmentio v0.7.6/go.mod h1:VzBvFXcGRTV80hokA4cprXUHw2bHOfFRcPG52Zl2HA8=
+github.com/nilshah80/aarv/codec/sonic v0.7.6 h1:JA0WhI0YuB1cfNEHxprqtY2xSBKEsQ1g33NuHx6cvDo=
+github.com/nilshah80/aarv/codec/sonic v0.7.6/go.mod h1:UXTJkK67yAaAqyRIYtRNdan/2i4U3piUQaXzBnWY5EM=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/segmentio/asm v1.2.1 h1:DTNbBqs57ioxAD4PrArqftgypG4/qNpXoJx8TVXxPR0=

@@ -3,9 +3,9 @@ module github.com/nilshah80/aarv/codec/benchmarks
 go 1.26
 
 require (
-	github.com/nilshah80/aarv/codec/jsonv2 v0.0.0-00010101000000-000000000000
-	github.com/nilshah80/aarv/codec/segmentio v0.0.0-00010101000000-000000000000
-	github.com/nilshah80/aarv/codec/sonic v0.0.0-00010101000000-000000000000
+	github.com/nilshah80/aarv/codec/jsonv2 v0.7.6
+	github.com/nilshah80/aarv/codec/segmentio v0.7.6
+	github.com/nilshah80/aarv/codec/sonic v0.7.6
 )
 
 require (
@@ -20,10 +20,4 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	golang.org/x/arch v0.26.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
-)
-
-replace (
-	github.com/nilshah80/aarv/codec/jsonv2 => ../jsonv2
-	github.com/nilshah80/aarv/codec/segmentio => ../segmentio
-	github.com/nilshah80/aarv/codec/sonic => ../sonic
 )

@@ -174,7 +174,7 @@ func DefaultConfig() Config {
 }
 
 // New constructs the HMAC verification middleware. Panics on missing
-// Validator, non-positive SkewSeconds, negative NonceTTL, or
+// Validator, negative SkewSeconds, negative NonceTTL, or
 // negative MaxBodyBytes — these are all misconfigurations that
 // would silently weaken auth.
 func New(cfg Config) aarv.Middleware {
@@ -230,7 +230,7 @@ func normalize(cfg Config) *normalized {
 		panic("hmacauth: Config.Validator is required")
 	}
 	if cfg.SkewSeconds < 0 {
-		panic("hmacauth: Config.SkewSeconds must be > 0")
+		panic("hmacauth: Config.SkewSeconds must be >= 0")
 	}
 	if cfg.NonceTTL < 0 {
 		panic("hmacauth: Config.NonceTTL must not be negative")
