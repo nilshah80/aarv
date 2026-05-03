@@ -81,8 +81,8 @@ type App struct {
 	// plumbing. Read-only after the App has started serving;
 	// concurrent reads are safe.
 	routeIdempotencyTTL map[string]map[string]time.Duration
-	trustedProxyCIDRs       []*net.IPNet
-	trustedProxyIPs         map[string]struct{}
+	trustedProxyCIDRs   []*net.IPNet
+	trustedProxyIPs     map[string]struct{}
 
 	// Shutdown
 	shutdownHooks []ShutdownHook

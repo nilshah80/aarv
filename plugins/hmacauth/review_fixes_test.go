@@ -2,13 +2,17 @@ package hmacauth
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nilshah80/aarv"
 )
 
 // --- Finding 1 (High): Sign body resolution ---
@@ -226,6 +230,133 @@ func TestSigningTransport_RoundTripStillSigns(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("got %d", resp.StatusCode)
+	}
+}
+
+// --- v0.7.7 review: explicit 2^53 timestamp upper bound ---
+
+func TestVerify_RejectsTimestampsAbove2to53(t *testing.T) {
+	cfg, client := newConfig(t, NewMemoryNonceStore(64))
+	mw := New(cfg)
+	const beyond2to53 = int64(1)<<53 + 1
+	req := httptest.NewRequest("GET", "/x", http.NoBody)
+	signRequest(t, req, nil, client, beyond2to53, "n-huge")
+	rec := httptest.NewRecorder()
+	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler reached with timestamp past 2^53")
+	})).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d want 401", rec.Code)
+	}
+}
+
+func TestVerify_AcceptsTimestampAtBoundary(t *testing.T) {
+	// Exactly 2^53 must still be accepted (boundary is inclusive
+	// upper) — the rejection rule is `> 2^53`. We pin this so a
+	// future refactor that changes the comparison direction is
+	// caught immediately.
+	cfg, client := newConfig(t, NewMemoryNonceStore(64))
+	cfg.SkewSeconds = 1 << 30 // disable skew for this case
+	cfg.Now = func() time.Time { return time.Unix(int64(1)<<53, 0) }
+	mw := New(cfg)
+
+	req := httptest.NewRequest("GET", "/x", http.NoBody)
+	signRequest(t, req, nil, client, int64(1)<<53, "n-boundary")
+	rec := httptest.NewRecorder()
+	called := false
+	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, req)
+	if !called {
+		t.Fatalf("boundary timestamp 2^53 must be accepted; got %d", rec.Code)
+	}
+}
+
+// --- v0.7.7 review: secretless Principal accessor ---
+
+func TestPrincipalFrom_ExposesIDAndIdentityNoSecret(t *testing.T) {
+	secret := bytes.Repeat([]byte{0xab}, 32)
+	type myIdentity struct{ Tier string }
+	srcClient := Client{
+		ClientID: "alpha",
+		Secret:   secret,
+		Identity: myIdentity{Tier: "gold"},
+	}
+	cfg := DefaultConfig()
+	cfg.Validator = func(id string) (Client, error) {
+		if id == srcClient.ClientID {
+			return srcClient, nil
+		}
+		return Client{}, errors.New("unknown")
+	}
+	cfg.NonceStore = NewMemoryNonceStore(64)
+	cfg.SkewSeconds = 60
+	cfg.Now = stubClock(1735000000)
+	mw := New(cfg)
+
+	app := aarv.New()
+	app.Use(mw)
+	var (
+		seenPrincipal Principal
+		seenOk        bool
+	)
+	app.Get("/x", func(c *aarv.Context) error {
+		seenPrincipal, seenOk = PrincipalFrom(c)
+		// Mirror via context.Context path too to confirm both sides
+		// store the secretless Principal.
+		if _, ok := PrincipalFromContext(c.Context()); !ok {
+			return errors.New("PrincipalFromContext returned no value")
+		}
+		return c.NoContent(http.StatusOK)
+	})
+
+	req := httptest.NewRequest("GET", "/x", http.NoBody)
+	signRequest(t, req, nil, srcClient, 1735000000, "n-principal")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !seenOk {
+		t.Fatalf("PrincipalFrom returned ok=false")
+	}
+	if seenPrincipal.ClientID != "alpha" {
+		t.Fatalf("ClientID: got %q want alpha", seenPrincipal.ClientID)
+	}
+	id, ok := seenPrincipal.Identity.(myIdentity)
+	if !ok {
+		t.Fatalf("Identity type lost: %T", seenPrincipal.Identity)
+	}
+	if id.Tier != "gold" {
+		t.Fatalf("Identity payload lost: %v", id)
+	}
+}
+
+// TestPrincipal_StructIsSecretless is the static-shape lock-in: the
+// struct exposed to handlers must NOT carry secret bytes. If a
+// future change adds Secret/Secrets to Principal, this test fails
+// loudly so the regression cannot land silently.
+func TestPrincipal_StructIsSecretless(t *testing.T) {
+	rt := reflect.TypeOf(Principal{})
+	for i := 0; i < rt.NumField(); i++ {
+		name := rt.Field(i).Name
+		if name == "Secret" || name == "Secrets" {
+			t.Fatalf("Principal must not expose %s", name)
+		}
+	}
+}
+
+func TestPrincipalFrom_NilContextSafe(t *testing.T) {
+	if _, ok := PrincipalFrom(nil); ok {
+		t.Fatalf("PrincipalFrom(nil) should return ok=false")
+	}
+	// Pass an explicit nil context.Context via a typed nil so the
+	// staticcheck SA1012 advisory does not flag the call site;
+	// PrincipalFromContext is documented to tolerate this.
+	var nilCtx context.Context
+	if _, ok := PrincipalFromContext(nilCtx); ok {
+		t.Fatalf("PrincipalFromContext(nil) should return ok=false")
 	}
 }
 

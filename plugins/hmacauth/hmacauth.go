@@ -86,8 +86,46 @@ import (
 )
 
 type contextKey struct{}
+type principalContextKey struct{}
 
-const identityStoreKey = "hmacAuthClient"
+const (
+	identityStoreKey  = "hmacAuthClient"
+	principalStoreKey = "hmacAuthPrincipal"
+)
+
+// Principal is the secretless view of an authenticated request.
+// Handlers and downstream plugins should read Principal in
+// preference to Client when they only need to know "who is this
+// request?" — Principal carries the public ClientID and the
+// caller-owned Identity, and deliberately does NOT expose Secret
+// or Secrets.
+//
+// Storing the Client struct (with secrets) on the request context
+// is convenient for tests and for legacy uses, but it makes the
+// secret bytes reachable from any downstream code that holds the
+// Context. Principal is the safer-by-default shape: pass it to
+// loggers, telemetry, error renderers, and audit hooks without
+// having to mask anything.
+type Principal struct {
+	// ClientID is the authenticated client's public identifier.
+	// Always populated on a successfully authenticated request.
+	ClientID string
+
+	// Identity is the opaque caller-owned metadata copied from
+	// Client.Identity at verification time. Same shape as before;
+	// the only difference vs reading Client.Identity is that
+	// Principal does not also expose the secret material.
+	Identity any
+}
+
+// principalOf builds the secretless view from a verified Client.
+// Internal helper — callers should use From / PrincipalFrom.
+func principalOf(c Client) Principal {
+	return Principal{
+		ClientID: c.ClientID,
+		Identity: c.Identity,
+	}
+}
 
 // Default header names. Callers can override via Config.
 const (
@@ -123,7 +161,7 @@ type Skipper func(*aarv.Context) bool
 // every other field has a sane default exposed as a Default*
 // constant.
 type Config struct {
-	Validator Validator
+	Validator  Validator
 	NonceStore NonceStore
 
 	ClientIDHeader  string
@@ -309,8 +347,11 @@ func (n *normalized) verifyNative(c *aarv.Context) error {
 		return n.errNative(c, status, n.errorMessage)
 	}
 
+	principal := principalOf(client)
 	c.Set(identityStoreKey, client)
+	c.Set(principalStoreKey, principal)
 	c.SetContextValue(contextKey{}, client)
+	c.SetContextValue(principalContextKey{}, principal)
 	return nil
 }
 
@@ -335,12 +376,16 @@ func (n *normalized) verifyStdlib(w http.ResponseWriter, r *http.Request) (*http
 		return nil, errStop
 	}
 
+	principal := principalOf(client)
 	if c, ok := aarv.FromRequest(r); ok {
 		c.Set(identityStoreKey, client)
+		c.Set(principalStoreKey, principal)
 		c.SetContextValue(contextKey{}, client)
+		c.SetContextValue(principalContextKey{}, principal)
 		return c.RawRequest(), nil
 	}
 	ctx := context.WithValue(r.Context(), contextKey{}, client)
+	ctx = context.WithValue(ctx, principalContextKey{}, principal)
 	return r.WithContext(ctx), nil
 }
 
@@ -361,6 +406,17 @@ func (n *normalized) verify(ctx context.Context, clientID, tsStr, nonce, sigHex,
 
 	ts, err := strconv.ParseInt(tsStr, 10, 64)
 	if err != nil || ts <= 0 {
+		return Client{}, false, http.StatusUnauthorized
+	}
+	// Reject absurdly large timestamps before doing arithmetic on
+	// them. The 2^53 ceiling matches JavaScript's safe-integer bound
+	// (the most common cross-language source of timestamp drift) and
+	// keeps `now-ts` well clear of int64 overflow even for distant
+	// future or past values. Anything past 2^53 seconds (~285 million
+	// years from epoch) is unambiguously a parse bug or a malicious
+	// input — there is no legitimate skew-window argument for it.
+	const maxSafeTimestamp = int64(1) << 53
+	if ts > maxSafeTimestamp {
 		return Client{}, false, http.StatusUnauthorized
 	}
 
@@ -576,6 +632,12 @@ func codeForStatus(status int) string {
 // From retrieves the authenticated Client from an aarv.Context.
 // Returns (Client{}, false) if the middleware did not run on this
 // route or auth failed.
+//
+// The returned Client carries the secret material (Secret /
+// Secrets) — useful for tests and for legacy callers, but most
+// handlers want PrincipalFrom instead, which exposes only the
+// public ClientID and caller-owned Identity without surfacing the
+// HMAC keys to downstream code.
 func From(c *aarv.Context) (Client, bool) {
 	if c == nil {
 		return Client{}, false
@@ -591,6 +653,10 @@ func From(c *aarv.Context) (Client, bool) {
 // FromContext retrieves the authenticated Client from a request's
 // context.Context. Useful for handlers and downstream plugins that
 // only have r.Context() in scope.
+//
+// Same secret-exposure caveat as From applies: prefer
+// PrincipalFromContext for handler code that does not need the raw
+// HMAC keys.
 func FromContext(ctx context.Context) (Client, bool) {
 	if ctx == nil {
 		return Client{}, false
@@ -601,6 +667,42 @@ func FromContext(ctx context.Context) (Client, bool) {
 	}
 	client, ok := v.(Client)
 	return client, ok
+}
+
+// PrincipalFrom retrieves the secretless Principal of the
+// authenticated request from an aarv.Context. Returns
+// (Principal{}, false) when the middleware did not run on this
+// route or authentication failed.
+//
+// PrincipalFrom is the recommended accessor for handler code,
+// loggers, audit hooks, and telemetry: it carries the public
+// ClientID and the caller-owned Identity without exposing the HMAC
+// secret bytes to downstream code that has no business with them.
+func PrincipalFrom(c *aarv.Context) (Principal, bool) {
+	if c == nil {
+		return Principal{}, false
+	}
+	v, ok := c.Get(principalStoreKey)
+	if !ok {
+		return Principal{}, false
+	}
+	p, ok := v.(Principal)
+	return p, ok
+}
+
+// PrincipalFromContext is the context.Context-keyed equivalent of
+// PrincipalFrom. Use it from handlers and downstream plugins that
+// only have r.Context() in scope.
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	if ctx == nil {
+		return Principal{}, false
+	}
+	v := ctx.Value(principalContextKey{})
+	if v == nil {
+		return Principal{}, false
+	}
+	p, ok := v.(Principal)
+	return p, ok
 }
 
 func abs64(x int64) int64 {

@@ -141,4 +141,3 @@ func appendHex(dst, src []byte) []byte {
 	}
 	return dst
 }
-

@@ -28,16 +28,16 @@ var vectorsFS embed.FS
 //     pin both the input form and the expected canonical form so a
 //     bug in the canonicalizer is caught.
 type Vector struct {
-	Description           string `json:"description"`
-	ClientID              string `json:"client_id"`
-	SecretHex             string `json:"secret_hex"`
-	Method                string `json:"method"`
-	Path                  string `json:"path"`
-	Query                 string `json:"query"`
-	BodyB64               string `json:"body_b64"`
-	Timestamp             int64  `json:"timestamp"`
-	Nonce                 string `json:"nonce"`
-	ExpectedSignatureHex  string `json:"expected_signature_hex"`
+	Description          string `json:"description"`
+	ClientID             string `json:"client_id"`
+	SecretHex            string `json:"secret_hex"`
+	Method               string `json:"method"`
+	Path                 string `json:"path"`
+	Query                string `json:"query"`
+	BodyB64              string `json:"body_b64"`
+	Timestamp            int64  `json:"timestamp"`
+	Nonce                string `json:"nonce"`
+	ExpectedSignatureHex string `json:"expected_signature_hex"`
 }
 
 // Body returns the decoded body bytes for the vector.

@@ -7,12 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Phase 12.6.1: ALP-feedback hardening (post-v0.7.6 review)
+
+> Target tag: `v0.7.7` (root only). The companion submodules (`plugins/hmacauth-redis`, `plugins/ratelimit-redis`, `plugins/idempotency-redis`) are unchanged at `v0.7.6` and do not need fresh tags unless their `require github.com/nilshah80/aarv` lines bump to `v0.7.7`.
+
+- `plugins/hmacauth`: secretless `Principal` accessor.
+  - New `Principal { ClientID string; Identity any }` exposes the safe view of an authenticated request — no `Secret` / `Secrets` reachable from handler-side code.
+  - New `PrincipalFrom(c *aarv.Context) (Principal, bool)` and `PrincipalFromContext(ctx context.Context) (Principal, bool)` accessors. Recommended for handlers, loggers, audit hooks, and telemetry — anything that does not need the raw HMAC keys.
+  - Existing `From` / `FromContext` continue to return the full `Client` for backwards compatibility (and for tests / signers that genuinely need the secret bytes). Their godoc now points readers at the secretless variants.
+  - Storage: middleware now stashes both the `Client` and the derived `Principal` on the context (under separate keys), so retrieval is O(1) for either form regardless of which path the request took.
+- `plugins/hmacauth`: explicit upper bound on parsed timestamps. Values strictly greater than `1<<53` (the JavaScript safe-integer ceiling, ~285 million years past epoch) are rejected before any arithmetic so a malformed parse cannot land near `int64` overflow when computing `now - ts`. Spec parity with ALP's signed-request reference. Boundary value (`ts == 1<<53`) is still accepted under skew.
+- gofmt -s clean: `aarv.go`, `plugins/hmacauth/canonical.go`, `plugins/hmacauth/hmacauth.go`, `plugins/hmacauth/vectors.go`. Go Report Card gofmt warnings cleared.
+
+### Notes — Phase 12.6.1
+
+- ALP review noted the default `NonceTTL = 2*SkewSeconds + 60s = 11m` differs from ALP's documented 10m. Aarv's default is preserved (longer TTL is the safer side of the trade-off — it never causes false-accepts, only delayed eviction). ALP can pin its preferred value via `Config.NonceTTL = 10*time.Minute` at construction.
+- All three Redis companion submodules continue to require `github.com/nilshah80/aarv v0.7.6` and remain unchanged. They will pick up the new `Principal` API automatically when callers bump their root require to `v0.7.7`.
+
+## [0.7.6] - 2026-05-03
+
 ### Added — Phase 12.6: ALP companion plugins
 
-> Target tag: `v0.7.6` for the root module + new submodule tags
-> `plugins/hmacauth-redis/v0.7.6`, `plugins/ratelimit-redis/v0.7.6`,
-> `plugins/idempotency-redis/v0.7.6`. `plugins/hmacauth` lives in the
-> root module and ships under the root tag.
+> Root tag `v0.7.6` plus submodule tags `plugins/hmacauth-redis/v0.7.6`,
+> `plugins/ratelimit-redis/v0.7.6`, `plugins/idempotency-redis/v0.7.6`.
+> `plugins/hmacauth` lives in the root module and ships under the root tag.
 
 - Core: `WithRouteIdempotencyTTL(d time.Duration) RouteOption` — overrides the idempotency middleware's global TTL for a specific route. Lookup is keyed on `(Method, RoutePattern())`, so all four dispatch paths (App fast, App dynamic, Group fast, Group dynamic) are supported with no per-path plumbing. `RouteInfo.IdempotencyTTL *time.Duration` exposes the value via `App.Routes()` for introspection. Negative durations panic at construction; a registered zero is honored as the per-route caching opt-out signal. Request-time accessor: `(*Context).RouteIdempotencyTTL() (time.Duration, bool)`. `App.routeIdempotencyTTL` index is read-only after the App starts serving.
 - `plugins/hmacauth` (root module, stdlib-only): HMAC-SHA256 signed-request authentication. Verifies that every protected request was signed by a known client and is fresh (within `SkewSeconds`, default 300) and not a replay (within `NonceTTL`, default `2*SkewSeconds + 60s`). Canonical request bytes are exactly `METHOD\nPATH\nCANONICAL_QUERY\nHEX(SHA256(body))\nTIMESTAMP\nNONCE`; canonical query encodes per RFC 3986 §2.3 (uppercase `%HH`, NOT `application/x-www-form-urlencoded` — `url.QueryEscape` would silently break interop). All failure modes (missing header, malformed timestamp, skew, unknown client, bad signature, malformed signature hex, replay) collapse to a generic `401` so no information leaks externally; body overflow returns `413`. Body cap defaults to 1 MiB (parity with `plugins/idempotency`); `MaxBytesReader` is used on the native path so the `bodylimit` plugin's response shape is preserved. Re-injects body via `(*Context).SetBody` so downstream `aarv.Bind` still works. `Client { ClientID; Secret []byte; Secrets [][]byte; Identity any }` supports rotation: `compareAllSecrets` iterates every candidate without short-circuiting (timing-safe), and a missing client returns the zero `Client` rather than a placeholder so per-request HMAC cost does not depend on whether the client ID exists. `From(c) (Client, bool)` / `FromContext(ctx) (Client, bool)`. `StaticClients(map[string]Client) Validator` defensively copies secret slices at snapshot time. `NonceStore` interface: `SetNX(ctx, key, ttl) (fresh bool, err error)`. `MemoryNonceStore` for dev/single-process; `NewMemoryNonceStoreWithJanitor` runs a periodic eviction goroutine and returns a stop function for `app.OnShutdown`. Configuring `NonceStore = nil` disables replay protection and emits a one-time `slog.Warn`. Custom `ErrorHandler`, `Skipper`, configurable header names. Native and stdlib middleware paths registered via `aarv.RegisterNativeMiddleware`. Sentinel `errStop` keeps the stdlib short-circuit clean.
