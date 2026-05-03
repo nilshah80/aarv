@@ -371,7 +371,6 @@ func TestHMACAuth_PanicsOnMisconfig(t *testing.T) {
 		cfg  Config
 	}{
 		{"nil validator", Config{SkewSeconds: 1}},
-		{"zero skew", Config{Validator: func(string) (Client, error) { return Client{}, nil }, SkewSeconds: 0}},
 		{"negative skew", Config{Validator: func(string) (Client, error) { return Client{}, nil }, SkewSeconds: -1}},
 		{"negative nonce ttl", Config{Validator: func(string) (Client, error) { return Client{}, nil }, SkewSeconds: 1, NonceTTL: -1}},
 		{"negative max body", Config{Validator: func(string) (Client, error) { return Client{}, nil }, SkewSeconds: 1, MaxBodyBytes: -1}},

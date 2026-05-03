@@ -132,7 +132,8 @@ type Config struct {
 	SignatureHeader string
 
 	// SkewSeconds is the maximum absolute difference between the
-	// signed timestamp and server time. Must be > 0.
+	// signed timestamp and server time. Zero uses DefaultSkewSeconds;
+	// negative values panic.
 	SkewSeconds int64
 
 	// NonceTTL is how long a nonce is remembered for replay
@@ -228,11 +229,7 @@ func normalize(cfg Config) *normalized {
 	if cfg.Validator == nil {
 		panic("hmacauth: Config.Validator is required")
 	}
-	if cfg.SkewSeconds <= 0 {
-		// Guard against the zero-value pitfall: a caller who builds
-		// Config{} from scratch (without DefaultConfig) gets a
-		// zero SkewSeconds, which would accept signatures from the
-		// epoch. Fail loudly.
+	if cfg.SkewSeconds < 0 {
 		panic("hmacauth: Config.SkewSeconds must be > 0")
 	}
 	if cfg.NonceTTL < 0 {
@@ -259,6 +256,9 @@ func normalize(cfg Config) *normalized {
 	}
 	if n.now == nil {
 		n.now = time.Now
+	}
+	if n.skewSeconds == 0 {
+		n.skewSeconds = DefaultSkewSeconds
 	}
 	if n.maxBodyBytes == 0 {
 		n.maxBodyBytes = DefaultMaxBodyBytes

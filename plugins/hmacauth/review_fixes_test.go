@@ -76,6 +76,16 @@ func TestSign_NoBodySignsEmptyHash(t *testing.T) {
 	}
 }
 
+func TestNew_DefaultsZeroSkewSeconds(t *testing.T) {
+	mw := New(Config{
+		Validator: StaticClients(map[string]Client{"x": {Secret: []byte("k")}}),
+		Now:       func() time.Time { return time.Unix(1000, 0) },
+	})
+	if mw == nil {
+		t.Fatal("expected middleware")
+	}
+}
+
 // --- Finding 2 (Medium): StaticClients empty-ClientID ---
 
 func TestStaticClients_PanicsOnEmptyMapKey(t *testing.T) {
