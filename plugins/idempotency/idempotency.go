@@ -22,11 +22,54 @@
 //	CacheStatuses: []int{200, 201, 202} // cache only these
 //	CacheStatuses: []int{}              // cache nothing — every response bypasses the cache
 //
+// # CachedHeaders allowlist
+//
+// Only headers in the CachedHeaders allowlist are persisted (and
+// therefore replayed on retries). The default allowlist is
+// Content-Type, Content-Encoding, Cache-Control, Location, ETag.
+// Hop-by-hop headers, Set-Cookie, Authorization, WWW-Authenticate,
+// and X-Request-Id are ALWAYS stripped, regardless of allowlist
+// configuration — replaying them would carry stale per-request
+// security state into a different request's response.
+//
+// # CacheStatusFunc
+//
+// CacheStatusFunc, when non-nil, fully replaces the CacheStatuses
+// allowlist as the per-status caching predicate. Use it when the
+// caching policy is simpler to express in code than as a list (e.g.
+// "cache 2xx, plus deterministic 4xx like 409, but never 5xx").
+//
 // # ConflictWait + WaitableStore
 //
 // ConflictWait requires the configured Store to implement WaitableStore.
 // Stores that don't implement it behave exactly like ConflictReject —
 // returning 409 immediately on contention. No polling, no busy wait.
+//
+// # Per-route TTL
+//
+// Routes registered with aarv.WithRouteIdempotencyTTL override the
+// middleware's global TTL for that single route. The override is
+// resolved at request time via Context.RouteIdempotencyTTL, so the
+// global Config.TTL is the fallback for routes that did not set one.
+// A route registered with TTL == 0 opts out of caching for that
+// route only — the response is returned but not persisted.
+//
+// # Recommended middleware order
+//
+//	requestid -> recover -> hmacauth -> idempotency -> handler
+//
+// Place idempotency AFTER hmacauth so the lock key is derived from
+// an authenticated request — otherwise an unauthenticated caller
+// could pollute the lock space with arbitrary keys.
+//
+// # Payload-mismatch error code
+//
+// When HashRequestBody is enabled and a retry with the same key
+// arrives carrying a different body, the middleware responds with
+// 422 and the JSON error code "idempotency_key_reused_with_different_payload".
+// Other 422 paths (none today) emit the generic "unprocessable_entity"
+// code; the specific code lets clients reliably identify replays
+// against drifted payloads.
 package idempotency
 
 import (
@@ -90,6 +133,24 @@ type Config struct {
 	ConflictBehavior ConflictBehavior
 	WaitTimeout      time.Duration
 	CacheStatuses    []int // nil-vs-empty contract above
+
+	// CacheStatusFunc, when non-nil, fully replaces CacheStatuses as
+	// the per-status caching predicate. See package doc.
+	CacheStatusFunc func(status int) bool
+
+	// CachedHeaders restricts which response header names are
+	// persisted (and therefore replayed). The default allowlist
+	// when nil is: Content-Type, Content-Encoding, Cache-Control,
+	// Location, ETag. An empty non-nil slice means "do not persist
+	// any header" (the replayed response will only carry the status
+	// and body). Header names are matched via http.CanonicalHeaderKey.
+	//
+	// The hardcoded blocklist (Set-Cookie, Authorization,
+	// WWW-Authenticate, X-Request-Id, hop-by-hop) is always applied
+	// AFTER the allowlist; callers cannot opt back into replaying
+	// those headers via this knob.
+	CachedHeaders []string
+
 	MaxResponseBytes int64
 	Skipper          Skipper
 	SkipPaths        []string
@@ -121,11 +182,23 @@ type normalized struct {
 	waitTimeout         time.Duration
 	cacheStatuses       map[int]struct{} // nil = cache 2xx/3xx; empty map = cache nothing
 	cacheNothing        bool
+	cacheStatusFunc     func(int) bool
+	cachedHeaders       map[string]struct{} // nil = built-in allowlist; empty = drop all
 	maxResponseBytes    int64
 	skipper             Skipper
 	skipPaths           map[string]struct{}
 	errFn               ErrorHandler
 }
+
+// PayloadMismatchErrorCode is the JSON error code emitted when a
+// retry with a different payload is detected. Exposed so callers
+// (and ALP) can match against it without duplicating the literal.
+const PayloadMismatchErrorCode = "idempotency_key_reused_with_different_payload"
+
+// payloadMismatchMessage is the human-readable companion for the
+// payload-mismatch error code. Kept private — the code is the
+// stable contract; the message is a developer hint.
+const payloadMismatchMessage = "Idempotency-Key reused with a different request payload"
 
 // New constructs idempotency middleware. Panics on invalid configuration.
 func New(cfg Config) aarv.Middleware {
@@ -206,6 +279,20 @@ func normalize(cfg Config) *normalized {
 		skipPaths[p] = struct{}{}
 	}
 
+	// CachedHeaders allowlist. nil → built-in default allowlist;
+	// empty non-nil → persist no header. Stored in canonical form so
+	// runtime lookups against http.CanonicalHeaderKey are O(1) and
+	// case-insensitive (which matches how http.Header is keyed).
+	var cachedHeaders map[string]struct{}
+	if cfg.CachedHeaders == nil {
+		cachedHeaders = defaultCachedHeaders()
+	} else {
+		cachedHeaders = make(map[string]struct{}, len(cfg.CachedHeaders))
+		for _, h := range cfg.CachedHeaders {
+			cachedHeaders[http.CanonicalHeaderKey(h)] = struct{}{}
+		}
+	}
+
 	n := &normalized{
 		headerName:          cfg.HeaderName,
 		store:               store,
@@ -218,6 +305,8 @@ func normalize(cfg Config) *normalized {
 		waitTimeout:         cfg.WaitTimeout,
 		cacheStatuses:       cache,
 		cacheNothing:        cacheNothing,
+		cacheStatusFunc:     cfg.CacheStatusFunc,
+		cachedHeaders:       cachedHeaders,
 		maxResponseBytes:    cfg.MaxResponseBytes,
 		skipper:             cfg.Skipper,
 		skipPaths:           skipPaths,
@@ -273,7 +362,7 @@ func (n *normalized) handleNative(c *aarv.Context, next aarv.HandlerFunc) error 
 		return aarv.ErrInternal(err).WithDetail("idempotency: store Get failed")
 	} else if cached != nil {
 		if hashSet && cached.PayloadHash != ([32]byte{}) && cached.PayloadHash != hash {
-			return n.errNative(c, http.StatusUnprocessableEntity, "Idempotency-Key reused with a different request payload")
+			return n.errPayloadMismatchNative(c)
 		}
 		return n.replayNative(c, cached)
 	}
@@ -305,13 +394,15 @@ func (n *normalized) handleNative(c *aarv.Context, next aarv.HandlerFunc) error 
 		return handlerErr
 	}
 
-	// Decide whether to cache the response.
-	if n.shouldCache(cw.Status()) {
-		snap := cw.Snapshot()
+	// Decide whether to cache the response. shouldCacheForRequest
+	// honors a per-route TTL of zero as the caching opt-out signal.
+	if n.shouldCacheForRequest(c, cw.Status()) {
+		snap := cw.Snapshot(n.cachedHeaders)
 		if hashSet {
 			snap.PayloadHash = hash
 		}
-		if err := n.store.Save(key, snap, n.ttl); err != nil {
+		ttl := n.resolveTTL(c)
+		if err := n.store.Save(key, snap, ttl); err != nil {
 			// Save failed; still flush the response and return the
 			// handler's result. We don't fail the user's request just
 			// because the cache step failed.
@@ -375,7 +466,7 @@ func (n *normalized) handleStdlib(w http.ResponseWriter, r *http.Request, next h
 		return
 	} else if cached != nil {
 		if hashSet && cached.PayloadHash != ([32]byte{}) && cached.PayloadHash != hash {
-			n.errStdlib(w, c, hasCtx, http.StatusUnprocessableEntity, "Idempotency-Key reused with a different request payload")
+			n.errPayloadMismatchStdlib(w, c, hasCtx)
 			return
 		}
 		n.replayStdlib(w, cached)
@@ -401,12 +492,13 @@ func (n *normalized) handleStdlib(w http.ResponseWriter, r *http.Request, next h
 		return
 	}
 
-	if n.shouldCache(cw.Status()) {
-		snap := cw.Snapshot()
+	if n.shouldCacheForRequest(c, cw.Status()) {
+		snap := cw.Snapshot(n.cachedHeaders)
 		if hashSet {
 			snap.PayloadHash = hash
 		}
-		if err := n.store.Save(key, snap, n.ttl); err != nil {
+		ttl := n.resolveTTL(c)
+		if err := n.store.Save(key, snap, ttl); err != nil {
 			cw.FlushUnderCap()
 			return
 		}
@@ -432,7 +524,7 @@ func (n *normalized) handleConflictNative(c *aarv.Context, key string, hashSet b
 			return n.errNative(c, http.StatusConflict, "idempotency: concurrent request in flight")
 		}
 		if hashSet && resp.PayloadHash != ([32]byte{}) && resp.PayloadHash != hash {
-			return n.errNative(c, http.StatusUnprocessableEntity, "Idempotency-Key reused with a different request payload")
+			return n.errPayloadMismatchNative(c)
 		}
 		return n.replayNative(c, resp)
 	}
@@ -458,7 +550,7 @@ func (n *normalized) handleConflictStdlib(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if hashSet && resp.PayloadHash != ([32]byte{}) && resp.PayloadHash != hash {
-			n.errStdlib(w, c, hasCtx, http.StatusUnprocessableEntity, "Idempotency-Key reused with a different request payload")
+			n.errPayloadMismatchStdlib(w, c, hasCtx)
 			return
 		}
 		n.replayStdlib(w, resp)
@@ -477,30 +569,21 @@ func (n *normalized) waitContext(parent context.Context) (context.Context, conte
 // --- replay paths ---
 
 func (n *normalized) replayNative(c *aarv.Context, resp *Response) error {
-	w := c.Response()
-	for k, vs := range resp.Headers {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
-	w.Header().Set("Idempotency-Replayed", "true")
+	n.replayHeadersTo(c.Response().Header(), resp.Headers)
+	c.Response().Header().Set("Idempotency-Replayed", "true")
 	status := resp.StatusCode
 	if status == 0 {
 		status = http.StatusOK
 	}
-	w.WriteHeader(status)
+	c.Response().WriteHeader(status)
 	if len(resp.Body) > 0 {
-		_, _ = w.Write(resp.Body)
+		_, _ = c.Response().Write(resp.Body)
 	}
 	return nil
 }
 
 func (n *normalized) replayStdlib(w http.ResponseWriter, resp *Response) {
-	for k, vs := range resp.Headers {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
+	n.replayHeadersTo(w.Header(), resp.Headers)
 	w.Header().Set("Idempotency-Replayed", "true")
 	status := resp.StatusCode
 	if status == 0 {
@@ -509,12 +592,41 @@ func (n *normalized) replayStdlib(w http.ResponseWriter, resp *Response) {
 	w.WriteHeader(status)
 	if len(resp.Body) > 0 {
 		_, _ = w.Write(resp.Body)
+	}
+}
+
+// replayHeadersTo copies the cached header set into dst, applying
+// the same allowlist + blocklist that Snapshot used at capture
+// time. The double-filter is intentional: a Store populated by an
+// older middleware version (or by a direct backend write) may have
+// entries that were not previously filtered. Filtering on read
+// ensures replays remain safe regardless of the cache provenance.
+func (n *normalized) replayHeadersTo(dst, src http.Header) {
+	for k, vs := range src {
+		canon := http.CanonicalHeaderKey(k)
+		if isHardStripped(canon) {
+			continue
+		}
+		if n.cachedHeaders != nil {
+			if _, ok := n.cachedHeaders[canon]; !ok {
+				continue
+			}
+		}
+		for _, v := range vs {
+			dst.Add(canon, v)
+		}
 	}
 }
 
 // --- caching policy ---
 
 func (n *normalized) shouldCache(status int) bool {
+	// CacheStatusFunc takes precedence over the allowlist when set.
+	// Both fall through to the default 2xx/3xx behavior when neither
+	// is configured.
+	if n.cacheStatusFunc != nil {
+		return n.cacheStatusFunc(status)
+	}
 	if n.cacheNothing {
 		return false
 	}
@@ -524,6 +636,78 @@ func (n *normalized) shouldCache(status int) bool {
 	}
 	_, ok := n.cacheStatuses[status]
 	return ok
+}
+
+// defaultCachedHeaders is the built-in response-header allowlist
+// applied when Config.CachedHeaders is nil. These are the headers
+// that have well-defined replay semantics: content negotiation,
+// caching directives, redirect targets, and entity tags.
+//
+// Headers that depend on per-request state — Set-Cookie (session),
+// Authorization / WWW-Authenticate (per-request auth), X-Request-Id
+// (per-request tracing), and the standard hop-by-hop set — are
+// stripped unconditionally elsewhere, regardless of allowlist.
+func defaultCachedHeaders() map[string]struct{} {
+	return map[string]struct{}{
+		"Content-Type":     {},
+		"Content-Encoding": {},
+		"Cache-Control":    {},
+		"Location":         {},
+		"Etag":             {},
+	}
+}
+
+// hardStrippedHeaders is the unconditional blocklist applied to
+// captured + replayed responses regardless of the allowlist. These
+// can never be safely replayed across requests — replaying them
+// either leaks per-request security state (Set-Cookie,
+// Authorization), poisons the new request's tracing context
+// (X-Request-Id), or depends on a hop the cached response no
+// longer terminates (hop-by-hop).
+var hardStrippedHeaders = map[string]struct{}{
+	"Set-Cookie":          {},
+	"Authorization":       {},
+	"Www-Authenticate":    {},
+	"X-Request-Id":        {},
+	"Connection":          {},
+	"Keep-Alive":          {},
+	"Proxy-Authenticate":  {},
+	"Proxy-Authorization": {},
+	"Te":                  {},
+	"Trailer":             {},
+	"Transfer-Encoding":   {},
+	"Upgrade":             {},
+}
+
+func isHardStripped(name string) bool {
+	_, ok := hardStrippedHeaders[http.CanonicalHeaderKey(name)]
+	return ok
+}
+
+// resolveTTL picks the effective TTL for the current request. Per-
+// route TTL set via aarv.WithRouteIdempotencyTTL wins when present,
+// even if it is zero (zero is the per-route opt-out signal — see
+// shouldCacheForRequest).
+func (n *normalized) resolveTTL(c *aarv.Context) time.Duration {
+	if c == nil {
+		return n.ttl
+	}
+	if d, ok := c.RouteIdempotencyTTL(); ok {
+		return d
+	}
+	return n.ttl
+}
+
+// shouldCacheForRequest combines the global status policy with the
+// per-route TTL opt-out. A per-route TTL of exactly zero means
+// "never cache this route's responses, regardless of status".
+func (n *normalized) shouldCacheForRequest(c *aarv.Context, status int) bool {
+	if c != nil {
+		if d, ok := c.RouteIdempotencyTTL(); ok && d == 0 {
+			return false
+		}
+	}
+	return n.shouldCache(status)
 }
 
 // --- skip / error helpers ---
@@ -543,6 +727,46 @@ func (n *normalized) errNative(c *aarv.Context, status int, message string) erro
 		return n.errFn(c, status, message)
 	}
 	return aarv.NewError(status, codeForStatus(status), message)
+}
+
+// errPayloadMismatchNative emits a 422 with the contract-stable
+// PayloadMismatchErrorCode. Custom ErrorHandler hooks still receive
+// the status + message — they cannot, however, change the error
+// code observed by clients that bypass the hook (the framework
+// JSON path uses the code directly).
+func (n *normalized) errPayloadMismatchNative(c *aarv.Context) error {
+	if n.errFn != nil {
+		return n.errFn(c, http.StatusUnprocessableEntity, payloadMismatchMessage)
+	}
+	return aarv.NewError(http.StatusUnprocessableEntity, PayloadMismatchErrorCode, payloadMismatchMessage)
+}
+
+// errPayloadMismatchStdlib is the stdlib-path equivalent. It writes
+// a JSON error body carrying the PayloadMismatchErrorCode directly
+// — bypassing codeForStatus, which would emit the generic
+// "unprocessable_entity" code that other 422 paths use.
+func (n *normalized) errPayloadMismatchStdlib(w http.ResponseWriter, c *aarv.Context, hasCtx bool) {
+	if hasCtx && n.errFn != nil {
+		if err := n.errFn(c, http.StatusUnprocessableEntity, payloadMismatchMessage); err != nil {
+			writePayloadMismatch(w, c, hasCtx)
+		}
+		return
+	}
+	writePayloadMismatch(w, c, hasCtx)
+}
+
+func writePayloadMismatch(w http.ResponseWriter, c *aarv.Context, hasCtx bool) {
+	requestID := ""
+	if hasCtx {
+		requestID = c.RequestID()
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusUnprocessableEntity)
+	_ = json.NewEncoder(w).Encode(errorBody{
+		Error:     PayloadMismatchErrorCode,
+		Message:   payloadMismatchMessage,
+		RequestID: requestID,
+	})
 }
 
 func (n *normalized) errStdlib(w http.ResponseWriter, c *aarv.Context, hasCtx bool, status int, message string) {

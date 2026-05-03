@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const maxReusableBodyCache = 16 << 10
@@ -958,6 +959,35 @@ func (c *Context) Logger() *slog.Logger {
 //	defer c.SetLogger(prev)
 func (c *Context) SetLogger(l *slog.Logger) {
 	c.cachedLogger = l
+}
+
+// RouteIdempotencyTTL returns the per-route idempotency TTL set via
+// WithRouteIdempotencyTTL, or (0, false) when no override was
+// configured for the matched route. Lookup is by (Method,
+// RoutePattern); the result is the duration to pass to
+// idempotency.Store.Save in place of the middleware's global TTL.
+//
+// Returns (0, false) for unmatched requests (404/405), for
+// App.Mount-installed handlers, and for any request that did not
+// hit a route registered with WithRouteIdempotencyTTL. Callers
+// should fall back to their global default in that case.
+//
+// A registered zero TTL is honored — that is the per-route opt-out
+// signal. Callers that want to skip caching on (0, true) can do so
+// without a separate flag.
+func (c *Context) RouteIdempotencyTTL() (time.Duration, bool) {
+	if c == nil || c.app == nil || c.routePattern == "" {
+		return 0, false
+	}
+	m, ok := c.app.routeIdempotencyTTL[c.req.Method]
+	if !ok {
+		return 0, false
+	}
+	d, ok := m[c.routePattern]
+	if !ok {
+		return 0, false
+	}
+	return d, true
 }
 
 // RoutePattern returns the registered aarv route pattern that matched this

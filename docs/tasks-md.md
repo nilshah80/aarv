@@ -798,6 +798,139 @@ Prerequisite work in the root module to unblock cardinality control on metrics l
 
 ---
 
+## Phase 12.6: ALP-Driven Plugin Work (M12.6) ✅ COMPLETE
+
+> **Why now:** ALP has completed Track 1 on `aarv@v0.7.0` and identified the reusable framework pieces needed for Tracks 3, 4, and 6. Current Aarv already has `ratelimit`, `idempotency`, `pprof`, `openapi`, `openapi-ui`, `h2c`, TLS helpers, and the observability plugins; the remaining Aarv work is narrower: signed-request auth, Redis-backed stores, and a few idempotency hardening refinements.
+
+### 12.6.0 Intake and release boundary
+- [x] Confirm ALP's current dependency picture before starting: root `github.com/nilshah80/aarv@v0.7.0`, `plugins/otel@v0.7.0`, `plugins/prometheus@v0.7.0`
+- [x] Document that ALP can consume `v0.7.5` separately for `BindRoute`, `plugins/openapi`, `plugins/openapi-ui`, TLS helpers, and h2c; those are already built and are not part of this phase
+- [x] Keep root module zero-dependency: Redis-backed companions live in separate modules and must not pull `go-redis` into the root module
+- [x] Use `v0.7.6` for this ALP-driven work; bump to `v0.8.0` only if an idempotency refinement becomes a breaking config/API change
+- [x] Add release notes to `CHANGELOG.md` under `[Unreleased]` as each item lands
+- [x] Before tagging, lift local `replace github.com/nilshah80/aarv => ../..` directives in every new plugin submodule, bump `require` lines to the published root tag, run `go mod tidy`, and test without local replace directives
+
+### 12.6.1 `plugins/hmacauth` — signed request authentication
+- [x] Create `plugins/hmacauth` package in the root module; stdlib-only
+- [x] Package doc defines the canonical request byte sequence exactly:
+  ```
+  METHOD\n
+  PATH\n
+  CANONICAL_QUERY\n
+  HEX(SHA256(body))\n
+  TIMESTAMP\n
+  NONCE
+  ```
+- [x] Configurable header names with defaults: `X-Client-Id`, `X-Timestamp`, `X-Nonce`, `X-Signature`
+- [x] Reject missing/malformed auth headers with generic `401` responses; never reveal which header or computed signature failed
+- [x] Parse timestamp as Unix seconds in `int64`; reject malformed, negative, zero, and absurdly large values
+- [x] Enforce configurable clock skew window; default `SkewSeconds = 300`
+- [x] Define `Client` with `ClientID`, `Secret []byte`, `Secrets [][]byte`, and caller-owned `Identity any`
+- [x] Define validator shape for client lookup, matching existing auth plugin style: `type Validator func(clientID string) (Client, error)`
+- [x] Treat unknown clients and nil/empty secrets as authentication failure
+- [x] Implement `StaticClients(map[string]Client) Validator`
+- [x] Document that HMAC secrets must remain plaintext in memory because verification needs the secret bytes; never hash or log them
+- [x] Read the request body for hashing with a configurable cap; re-inject the body via `c.SetBody(...)` so downstream `aarv.Bind` still works
+- [x] Ensure `hmacauth` does not bypass `plugins/bodylimit`; document recommended middleware order: `requestid -> recover/recovery -> bodylimit -> hmacauth -> handler`
+- [x] Implement canonical query encoding: sort keys ASCII-ascending, sort repeated values, percent-encode per RFC 3986 unreserved set, and do not use `url.QueryEscape`
+- [x] Compute HMAC-SHA256 over the canonical request
+- [x] Compare expected and received signatures with `crypto/subtle.ConstantTimeCompare`
+- [x] Support secret rotation by checking all configured candidate secrets and accumulating the match result without short-circuiting on the first match
+- [x] Define `NonceStore` interface: `SetNX(ctx context.Context, key string, ttl time.Duration) (fresh bool, err error)`
+- [x] Add replay protection via `NonceStore.SetNX(ctx, "nonce:"+clientID+":"+nonce, NonceTTL)`
+- [x] Default `NonceTTL = 2*SkewSeconds + 60s`; reject `SkewSeconds <= 0` and `NonceTTL <= 0` at construction
+- [x] If `NonceStore` is nil, allow requests but emit a one-time warning that replay protection is disabled
+- [x] Implement `MemoryNonceStore` for dev/tests with TTL expiry and a bounded max-entry cap
+- [x] Provide a stop/cleanup path for `MemoryNonceStore` if it starts any goroutine; document `OnShutdown` wiring
+- [x] Store authenticated client data in the request context and expose `hmacauth.From(c) (Client, bool)` and `hmacauth.FromContext(ctx) (Client, bool)`
+- [x] Provide custom error handler hook for callers that need non-default response bodies
+- [x] Unit tests: valid signature, missing each auth header, malformed timestamp, skew past/future/boundary, unknown client, bad signature, malformed signature hex, empty body, unicode body, large body at cap, query canonicalization edge cases, replay rejection, nil-store warning, per-client nonce isolation
+- [x] Unit tests: rotation accepts old+new while both active, rejects old after removal, and does not short-circuit candidate secret checks
+- [x] Fuzz test canonical query encoding for determinism and panic-freedom
+- [x] Run race tests for `MemoryNonceStore`
+
+### 12.6.2 `plugins/hmacauth` test vectors and client signer
+- [x] Add `plugins/hmacauth/testdata/vectors.json`
+- [x] Vector schema: `description`, `client_id`, `secret_hex`, `method`, `path`, `query`, `body_b64`, `timestamp`, `nonce`, `expected_signature_hex`
+- [x] Cover vectors for empty body, ASCII body, UTF-8 body, binary body, single and repeated query params, path params, long path, long body, SHA-256 block boundary, and GET/POST/PATCH/DELETE methods
+- [x] Expose `Vectors() []Vector` so ALP's internal client and other implementations can verify against the same data
+- [x] Implement `Sign(req *http.Request, client Client, body []byte, now func() time.Time, nonce string) error`
+- [x] Implement `Transport(client Client, opts ...TransportOption) http.RoundTripper`
+- [x] Transport options: deterministic clock for tests, nonce source, body clone strategy, and redirect behavior
+- [x] Default nonce source uses `crypto/rand` and 16 random bytes hex-encoded
+- [x] Signer and verifier round-trip every JSON vector byte-for-byte
+- [x] Document redirect behavior explicitly: either re-sign redirected requests with the new URL or fail cleanly
+
+### 12.6.3 `plugins/hmacauth-redis` — Redis nonce store
+- [x] Create `plugins/hmacauth-redis/go.mod` as a separate module; package name `hmacauthredis`
+- [x] Depend on `github.com/redis/go-redis/v9` without adding Redis to the root module
+- [x] Implement `RedisNonceStore` satisfying `hmacauth.NonceStore`
+- [x] Use atomic Redis `SET key value NX EX ttl` semantics; return `fresh=false` on duplicate nonce
+- [x] Prefix keys in caller-visible config, defaulting to `aarv:hmacauth:nonce:`
+- [x] Preserve caller context cancellation and deadlines
+- [x] Unit tests with a fake/miniredis-style Redis if practical; otherwise integration tests gated behind env vars
+- [x] Tests: first nonce accepted, duplicate rejected, expiry allows reuse, Redis error propagates, context cancellation propagates
+- [x] README with ALP-style middleware wiring example
+
+### 12.6.4 `plugins/ratelimit-redis` — distributed rate limiting
+- [x] Create `plugins/ratelimit-redis/go.mod` as a separate module; package name `ratelimitredis`
+- [x] Reuse the public `plugins/ratelimit` config concepts where possible: `Limit`, `Window`, `Burst`, `KeyFunc`, `SkipPaths`, `Skipper`, headers, custom limit handler
+- [x] Decide whether to extract a small backend interface from core `plugins/ratelimit` or keep Redis implementation as a parallel middleware with compatible config; avoid breaking existing `ratelimit.New(cfg)` callers
+- [x] Implement Redis-backed token bucket with atomic Lua script for read/refill/decrement/reset calculation
+- [x] Set `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` on admitted and denied requests
+- [x] Set `Retry-After` on `429`
+- [x] Support custom key functions; ALP can pass `hmacauth.From(c).ClientID` with `c.RealIP()` fallback
+- [x] Support skip paths for `/health`, `/ready`, `/live`, `/metrics`, and `/debug/*`
+- [x] Add configurable key prefix, defaulting to `aarv:ratelimit:`
+- [x] Define fail-open/fail-closed behavior on Redis errors; default fail-closed for security-sensitive APIs unless there is a strong reason otherwise
+- [x] Tests: within limit, exceed limit, burst, refill timing, custom key func, skip paths, Redis error policy, context cancellation, concurrent callers against same key
+- [x] k6 or Go benchmark note showing the Redis variant is suitable for ALP's multi-instance Track 3 usage
+- [x] README with ALP-style wiring after HMAC auth
+
+### 12.6.5 `plugins/idempotency` refinements for ALP
+- [x] Add `CachedHeaders []string` config; default allowlist: `Content-Type`, `Content-Encoding`, `Cache-Control`, `Location`, `ETag`
+- [x] Ensure persisted/replayed responses never include `Set-Cookie`, `Authorization`, `WWW-Authenticate`, `X-Request-Id`, hop-by-hop headers, or other per-request security headers unless explicitly and safely allowed
+- [x] Keep `Idempotency-Replayed: true` replay marker; make header name configurable only if there is a concrete consumer need
+- [x] Review current `HashRequestBody` behavior against ALP's requirement: same key + different body returns `422 idempotency_key_reused_with_different_payload`
+- [x] Add configurable protected methods directly, or document current `SafeMethods` nil-vs-empty settings needed for ALP's default protected set of `POST` and `PATCH`
+- [x] Add `CacheStatusFunc func(status int) bool` or equivalent policy hook for non-default cache behavior
+- [x] Support ALP policy: cache deterministic 4xx responses; do not cache 5xx responses
+- [x] Decide whether per-route TTL belongs in Aarv route metadata; if yes, add `WithRouteIdempotencyTTL(d time.Duration)` without affecting non-idempotency users
+- [x] Document canonical middleware order when HMAC and idempotency are both enabled: `requestid -> recovery -> hmacauth -> idempotency -> handler`
+- [x] Tests: header allowlist replay, `Set-Cookie` not replayed, `X-Request-Id` not replayed, payload mismatch returns 422, default 5xx not cached, configurable 4xx caching, protected methods match ALP configuration, concurrent same-key reject/wait modes
+- [x] Confirm native and stdlib middleware paths have identical behavior after refinements
+
+### 12.6.6 `plugins/idempotency-redis` — distributed idempotency store
+- [x] Create `plugins/idempotency-redis/go.mod` as a separate module; package name `idempotencyredis`
+- [x] Depend on `github.com/redis/go-redis/v9` without adding Redis to the root module
+- [x] Implement `idempotency.Store`; implement `idempotency.WaitableStore` if Redis pub/sub, blocking pop, polling-free wait, or another clean mechanism is selected
+- [x] Store lock and cached response separately so a failed handler does not leave a false cached response
+- [x] Use atomic lock acquisition with TTL; avoid permanent in-flight locks after process death
+- [x] Serialize `idempotency.Response` including status, allowed headers, body, and request body hash
+- [x] Preserve TTL exactly enough for ALP retry semantics
+- [x] Support configurable key prefix, defaulting to `aarv:idempotency:`
+- [x] Tests: first request lock/save/replay, duplicate while in flight, TTL expiry, payload mismatch, Redis outage, context cancellation, malformed cached payload handling
+- [x] README with ALP `POST /v1/links` wiring example
+
+### 12.6.7 ALP observability feedback loop — DEFERRED until ALP Track 6 lands
+- [ ] After ALP Track 6 RED audit, review whether `plugins/prometheus` needs custom default buckets for sub-ms redirect paths
+- [ ] After ALP Track 6 RED audit, review whether `plugins/prometheus` needs safe optional labels such as authenticated client class; avoid high-cardinality defaults
+- [ ] After ALP Trace audit, review whether `plugins/otel` needs additional context propagation or span/log correlation hooks
+- [ ] Track every ALP-discovered rough edge as an Aarv issue or PR and mirror it in ALP's `AARV_FEEDBACK.md`
+- [ ] Do not change `plugins/prometheus` or `plugins/otel` preemptively; build only concrete deltas observed under ALP
+
+### 12.6.8 Release and ALP consumption
+- [ ] Run root tests: `go test -race ./...`
+- [ ] Run every new/changed plugin submodule test with `go test -race ./...`
+- [ ] Run `golangci-lint run`
+- [ ] Run `govulncheck` for root and each new Redis submodule
+- [ ] Tag root release and all touched plugin submodules
+- [ ] Verify from outside the repo that `go list -m` resolves the new tags for root and submodules
+- [ ] Add ALP follow-up note: replace internal HMAC, rate-limit, and idempotency implementations with Aarv imports once tags resolve
+- [ ] Add ALP follow-up note: evaluate `BindRoute` + `plugins/openapi` + `plugins/openapi-ui` for management API drift detection after ALP bumps from `v0.7.0`
+
+---
+
 ## Phase 13: Documentation & Benchmarks (M13) — PARTIALLY COMPLETE
 
 ### Docs
@@ -817,7 +950,7 @@ Prerequisite work in the root module to unblock cardinality control on metrics l
 
 ### Benchmarks ✅
 - [x] Framework overhead: empty handler, measure latency + allocs
-- [ ] JSON codec comparison: stdlib vs segmentio vs sonic vs jsonv2
+- [x] JSON codec comparison: stdlib vs segmentio vs sonic vs jsonv2
 - [x] Middleware chain: 0, 1, 5, 10 middlewares overhead
 - [x] Binding: manual vs `Bind[T]` overhead
 - [x] Validation: framework validator vs go-playground/validator

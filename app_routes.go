@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // PluginOption configures plugin registration.
@@ -109,8 +110,25 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 
 	a.routes = append(a.routes, a.routeInfoFromConfig(method, pattern, rc))
 	a.trackMethodPattern(method, pattern, isDynamic, directPattern)
+	a.recordRouteIdempotencyTTL(method, pattern, rc)
 
 	return a
+}
+
+// recordRouteIdempotencyTTL stores a per-route idempotency TTL set
+// via WithRouteIdempotencyTTL into the App-level index so the
+// idempotency middleware can look it up at request time keyed on
+// (Method, RoutePattern). No-op when the option was not used.
+func (a *App) recordRouteIdempotencyTTL(method, pattern string, rc *routeConfig) {
+	if rc.idempotencyTTL == nil {
+		return
+	}
+	m := a.routeIdempotencyTTL[method]
+	if m == nil {
+		m = make(map[string]time.Duration)
+		a.routeIdempotencyTTL[method] = m
+	}
+	m[pattern] = *rc.idempotencyTTL
 }
 
 // Get registers a GET route for the given pattern.
@@ -186,10 +204,11 @@ func (a *App) Mount(prefix string, handler http.Handler) *App {
 // Routes returns the registered route metadata in registration order.
 //
 // The returned slice is a deep copy: the slice itself, each RouteInfo's
-// Tags slice, and each RouteInfo's Responses map are independent of the
-// framework's internal state. Mutating the result is safe and will not
-// affect dispatch, hooks, or future Routes() calls. RequestType and
-// ResponseType (reflect.Type) are immutable and shared.
+// Tags slice, each RouteInfo's Responses map, and each RouteInfo's
+// IdempotencyTTL pointer are independent of the framework's internal
+// state. Mutating the result is safe and will not affect dispatch,
+// hooks, or future Routes() calls. RequestType and ResponseType
+// (reflect.Type) are immutable and shared.
 func (a *App) Routes() []RouteInfo {
 	out := make([]RouteInfo, len(a.routes))
 	for i, r := range a.routes {
@@ -202,6 +221,14 @@ func (a *App) Routes() []RouteInfo {
 			for k, v := range r.Responses {
 				copy.Responses[k] = v
 			}
+		}
+		if r.IdempotencyTTL != nil {
+			// Allocate a fresh *time.Duration so a caller mutating
+			// *Routes()[i].IdempotencyTTL cannot reach back into
+			// the framework's routeConfig and silently change
+			// caching behavior on a live route.
+			d := *r.IdempotencyTTL
+			copy.IdempotencyTTL = &d
 		}
 		out[i] = copy
 	}

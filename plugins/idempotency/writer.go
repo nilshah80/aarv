@@ -173,16 +173,28 @@ func (cw *captureWriter) FlushUnderCap() {
 // Snapshot copies the captured response into a stored shape (for under-cap
 // responses only — overflowed responses must not be cached). Returns nil
 // when the writer overflowed.
-func (cw *captureWriter) Snapshot() *Response {
+//
+// allow is the per-instance header allowlist; nil means "every non-
+// blocked header is persisted" (the legacy behavior). The hard-strip
+// list (hop-by-hop, Set-Cookie, Authorization, WWW-Authenticate,
+// X-Request-Id) is applied regardless of allow — it cannot be opted
+// out of.
+func (cw *captureWriter) Snapshot(allow map[string]struct{}) *Response {
 	if cw.overflowed {
 		return nil
 	}
 	hdrs := http.Header{}
 	for k, vs := range cw.headers {
-		if isHopByHop(k) {
+		canon := http.CanonicalHeaderKey(k)
+		if _, blocked := hardStrippedHeaders[canon]; blocked {
 			continue
 		}
-		hdrs[k] = append([]string(nil), vs...)
+		if allow != nil {
+			if _, ok := allow[canon]; !ok {
+				continue
+			}
+		}
+		hdrs[canon] = append([]string(nil), vs...)
 	}
 	body := append([]byte(nil), cw.body.Bytes()...)
 	status := cw.statusCode
@@ -209,22 +221,8 @@ func (cw *captureWriter) Status() int {
 // streamed through unchanged.
 func (cw *captureWriter) Overflowed() bool { return cw.overflowed }
 
-// hopByHopHeaders is the set of headers that must not be forwarded
-// across HTTP intermediaries (RFC 7230 §6.1). We strip them from the
-// snapshot so a replayed response doesn't carry stale connection
-// metadata.
-var hopByHopHeaders = map[string]struct{}{
-	"Connection":          {},
-	"Keep-Alive":          {},
-	"Proxy-Authenticate":  {},
-	"Proxy-Authorization": {},
-	"Te":                  {},
-	"Trailer":             {},
-	"Transfer-Encoding":   {},
-	"Upgrade":             {},
-}
-
-func isHopByHop(name string) bool {
-	_, ok := hopByHopHeaders[http.CanonicalHeaderKey(name)]
-	return ok
-}
+// Note: the hop-by-hop and Set-Cookie / Authorization / X-Request-Id
+// blocklist now lives in idempotency.go as hardStrippedHeaders so it
+// is shared between Snapshot (capture-time filter) and replayHeadersTo
+// (replay-time filter). Keeping a single source of truth means the
+// allowlist semantics cannot drift between the two sites.

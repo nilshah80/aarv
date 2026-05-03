@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -44,6 +45,16 @@ type RouteInfo struct {
 	// "application/json", or as overridden by WithRequestContentType).
 	// Empty when no body schema is declared.
 	RequestContentType string `json:"requestContentType,omitempty"`
+
+	// IdempotencyTTL is the TTL the idempotency middleware should
+	// apply to cached responses for this route. nil means "use the
+	// middleware's global TTL"; a non-nil value overrides it. Set
+	// via WithRouteIdempotencyTTL. Distinct from a zero-valued
+	// time.Duration (which the middleware would treat as "use
+	// default" anyway) because nil-vs-set must be distinguishable
+	// from set-to-zero so callers can audit configured routes
+	// without false negatives.
+	IdempotencyTTL *time.Duration `json:"idempotencyTTL,omitempty"`
 }
 
 // RouteOption configures per-route metadata and behavior.
@@ -62,6 +73,7 @@ type routeConfig struct {
 	schemaRes          reflect.Type
 	responses          map[int]string
 	requestContentType string
+	idempotencyTTL     *time.Duration
 }
 
 // WithName sets a stable human-readable name for the route.
@@ -161,6 +173,29 @@ func WithRequestContentType(ct string) RouteOption {
 	return func(rc *routeConfig) { rc.requestContentType = ct }
 }
 
+// WithRouteIdempotencyTTL overrides the global TTL the idempotency
+// plugin uses when caching responses for this route. The value is
+// stored on the route's metadata and exposed at request time via
+// (*Context).RouteIdempotencyTTL — the idempotency middleware reads
+// it and supplies it to Store.Save in place of its own configured
+// TTL.
+//
+// Negative durations panic at construction (a negative TTL would
+// cause stores to refuse to persist or to expire instantly, depending
+// on backend, which is never what the caller intended). A zero
+// duration is permitted and means "do not cache this route's
+// responses" — the idempotency middleware treats it as a per-route
+// disable.
+func WithRouteIdempotencyTTL(d time.Duration) RouteOption {
+	if d < 0 {
+		panic("aarv: WithRouteIdempotencyTTL must not be negative")
+	}
+	return func(rc *routeConfig) {
+		dd := d
+		rc.idempotencyTTL = &dd
+	}
+}
+
 func schemaTypeOf(v any) reflect.Type {
 	if v == nil {
 		return nil
@@ -202,6 +237,7 @@ func (a *App) routeInfoFromConfig(method, pattern string, rc *routeConfig) Route
 		ResponseType:       rc.schemaRes,
 		Responses:          rc.responses,
 		RequestContentType: requestCT,
+		IdempotencyTTL:     rc.idempotencyTTL,
 	}
 }
 
@@ -299,6 +335,7 @@ func (g *RouteGroup) addRoute(method, pattern string, handler any, opts ...Route
 	g.app.routesByKey[muxPattern] = struct{}{}
 	g.app.routes = append(g.app.routes, g.app.routeInfoFromConfig(method, fullPattern, rc))
 	g.app.trackMethodPattern(method, fullPattern, isDynamic, directPattern)
+	g.app.recordRouteIdempotencyTTL(method, fullPattern, rc)
 
 	if !isDynamic {
 		if g.app.groupRouteHandlers[method] == nil {

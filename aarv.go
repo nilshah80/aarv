@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 )
 
 // App is the central framework instance.
@@ -71,6 +72,15 @@ type App struct {
 	directDynamicRoutes     map[string][]directDynamicRoute
 	redirectSlashExact      map[string]struct{}
 	redirectSlashDynamic    []directPattern
+
+	// routeIdempotencyTTL maps [method][pattern]→TTL for routes
+	// registered with WithRouteIdempotencyTTL. Lookup is keyed on
+	// the method and pattern Context.RoutePattern() exposes, so
+	// every dispatch path that sets c.routePattern (fast, mux,
+	// dynamic, group) is automatically supported with no per-path
+	// plumbing. Read-only after the App has started serving;
+	// concurrent reads are safe.
+	routeIdempotencyTTL map[string]map[string]time.Duration
 	trustedProxyCIDRs       []*net.IPNet
 	trustedProxyIPs         map[string]struct{}
 
@@ -103,6 +113,7 @@ func New(opts ...Option) *App {
 		directDynamicRoutes:     make(map[string][]directDynamicRoute),
 		redirectSlashExact:      make(map[string]struct{}),
 		trustedProxyIPs:         make(map[string]struct{}),
+		routeIdempotencyTTL:     make(map[string]map[string]time.Duration),
 	}
 	a.setCodec(defaultCodec)
 

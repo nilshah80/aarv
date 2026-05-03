@@ -65,7 +65,14 @@ func TestFirstRequest_SavedAndCached(t *testing.T) {
 
 func TestReplay_VerbatimResponse(t *testing.T) {
 	store := NewMemoryStore()
-	mw := New(Config{Store: store, TTL: time.Hour})
+	// Opt X-Custom into the cached-headers allowlist; the default
+	// allowlist persists only Content-Type / Content-Encoding /
+	// Cache-Control / Location / ETag.
+	mw := New(Config{
+		Store:         store,
+		TTL:           time.Hour,
+		CachedHeaders: []string{"Content-Type", "X-Custom"},
+	})
 	hits := atomic.Int32{}
 	app := makeApp(t, mw, func(c *aarv.Context) error {
 		hits.Add(1)
@@ -570,7 +577,11 @@ func TestNativeAndStdlib_ProduceIdenticalReplay(t *testing.T) {
 			if lane == "stdlib" {
 				app.Use(aarv.Middleware(nonNativeMW))
 			}
-			app.Use(New(Config{Store: store, TTL: time.Hour}))
+			app.Use(New(Config{
+				Store:         store,
+				TTL:           time.Hour,
+				CachedHeaders: []string{"Content-Type", "X-Result"},
+			}))
 			app.Post("/", func(c *aarv.Context) error {
 				c.SetHeader("X-Result", "value")
 				return c.Text(http.StatusCreated, "body-bytes")
@@ -1354,7 +1365,7 @@ func TestCaptureWriter_Snapshot_OverflowedReturnsNil(t *testing.T) {
 	defer releaseCaptureWriter(cw)
 	cw.WriteHeader(http.StatusOK)
 	_, _ = cw.Write([]byte("xxxx"))
-	if cw.Snapshot() != nil {
+	if cw.Snapshot(nil) != nil {
 		t.Fatal("Snapshot of overflowed writer must be nil")
 	}
 }
@@ -1367,7 +1378,10 @@ func TestCaptureWriter_Snapshot_FiltersHopByHop(t *testing.T) {
 	cw.Header().Set("X-Custom", "value")
 	cw.WriteHeader(http.StatusOK)
 	_, _ = cw.Write([]byte("ok"))
-	snap := cw.Snapshot()
+	// Pass nil allow to keep the test focused on the hard-strip
+	// behavior — with nil, every non-blocked header is kept, so a
+	// custom header survives.
+	snap := cw.Snapshot(nil)
 	if snap.Headers.Get("Connection") != "" {
 		t.Fatal("hop-by-hop not filtered")
 	}

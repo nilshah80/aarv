@@ -1,0 +1,122 @@
+[
+  {
+    "description": "empty body GET",
+    "client_id": "alpha",
+    "secret_hex": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "method": "GET",
+    "path": "/health",
+    "query": "",
+    "body_b64": "",
+    "timestamp": 1735689600,
+    "nonce": "00000000000000000000000000000001",
+    "expected_signature_hex": "acbae383e46a07d69402fd46e15066f99f2e689fe3efbdb70940993f721b6735"
+  },
+  {
+    "description": "ASCII JSON body POST",
+    "client_id": "beta",
+    "secret_hex": "deadbeefcafef00d0102030405060708090a0b0c0d0e0f101112131415161718",
+    "method": "POST",
+    "path": "/v1/links",
+    "query": "",
+    "body_b64": "eyJ0YXJnZXQiOiJodHRwczovL2V4YW1wbGUuY29tIn0=",
+    "timestamp": 1735689601,
+    "nonce": "00000000000000000000000000000002",
+    "expected_signature_hex": "e5eef85cb5650475768f552a1c80b23fca5e1213bfe514b140c19919214679be"
+  },
+  {
+    "description": "UTF-8 body PATCH",
+    "client_id": "gamma",
+    "secret_hex": "11223344556677889900aabbccddeeff",
+    "method": "PATCH",
+    "path": "/v1/links/abc",
+    "query": "actor=admin",
+    "body_b64": "eyJsYWJlbCI6IsOpLcOuLcO/In0=",
+    "timestamp": 1735689602,
+    "nonce": "00000000000000000000000000000003",
+    "expected_signature_hex": "4a58805b7d98ce3fc08bc5b95d239449ebada291f4fa72156fd1d7710b205b5e"
+  },
+  {
+    "description": "binary body PUT",
+    "client_id": "delta",
+    "secret_hex": "ff",
+    "method": "PUT",
+    "path": "/v1/blobs/01",
+    "query": "",
+    "body_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "timestamp": 1735689603,
+    "nonce": "00000000000000000000000000000004",
+    "expected_signature_hex": "2db6bedc59e6cde8166e16d48dc911b24f2499a33de249478c27b509f5cf05ed"
+  },
+  {
+    "description": "single query param",
+    "client_id": "alpha",
+    "secret_hex": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "method": "GET",
+    "path": "/v1/search",
+    "query": "q=hello+world",
+    "body_b64": "",
+    "timestamp": 1735689604,
+    "nonce": "00000000000000000000000000000005",
+    "expected_signature_hex": "99ccb7947680d2a4bef90a77efbc9377a312d0b809b45f32f966909c24bb7bf4"
+  },
+  {
+    "description": "repeated query params (sort within key)",
+    "client_id": "alpha",
+    "secret_hex": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "method": "GET",
+    "path": "/v1/search",
+    "query": "tag=zoo\u0026tag=alpha\u0026tag=bravo",
+    "body_b64": "",
+    "timestamp": 1735689605,
+    "nonce": "00000000000000000000000000000006",
+    "expected_signature_hex": "6a96c2cfb22b1d9e426e2c1c02ac711ab77eefac6f6681010ee5717c86f57efd"
+  },
+  {
+    "description": "RFC 3986 unreserved set divergence (space encoded as %20, not +)",
+    "client_id": "alpha",
+    "secret_hex": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "method": "GET",
+    "path": "/v1/search",
+    "query": "q=hello%20world\u0026filter=name%3Dfoo",
+    "body_b64": "",
+    "timestamp": 1735689606,
+    "nonce": "00000000000000000000000000000007",
+    "expected_signature_hex": "afef9187a90786f2060015b0e372805d6e4272d9bfbdd3db1d2a9705cecc7c06"
+  },
+  {
+    "description": "long path",
+    "client_id": "alpha",
+    "secret_hex": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "method": "GET",
+    "path": "/v1/orgs/acme/projects/widgets/issues/12345/comments/0001/replies/abcdef0123456789abcdef0123456789",
+    "query": "",
+    "body_b64": "",
+    "timestamp": 1735689607,
+    "nonce": "00000000000000000000000000000008",
+    "expected_signature_hex": "de6b3adf77ffbd2d02286a57b5aab995c337fa3eeb8fdf9cd68570b353a03768"
+  },
+  {
+    "description": "body straddling SHA-256 64-byte block boundary (65 bytes)",
+    "client_id": "alpha",
+    "secret_hex": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "method": "POST",
+    "path": "/v1/blocks",
+    "query": "",
+    "body_b64": "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=",
+    "timestamp": 1735689608,
+    "nonce": "00000000000000000000000000000009",
+    "expected_signature_hex": "07ce15ce318ca7f19cb162a7ae91af59e5096c718886380a54ff3cdfe4f448d1"
+  },
+  {
+    "description": "DELETE with no body",
+    "client_id": "alpha",
+    "secret_hex": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "method": "DELETE",
+    "path": "/v1/links/xyz",
+    "query": "",
+    "body_b64": "",
+    "timestamp": 1735689609,
+    "nonce": "0000000000000000000000000000000a",
+    "expected_signature_hex": "3cec0dc96c65921f51f5b20766fa67e9b22b7879e6e4f18e4accdf81f7e18885"
+  }
+]
