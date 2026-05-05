@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-05
+
 ### Added
 
 - `plugins/session` (root module, stdlib-only): cookie-tracked HTTP session middleware. Includes the following review-driven hardenings landed pre-merge so the initial release ships clean:
