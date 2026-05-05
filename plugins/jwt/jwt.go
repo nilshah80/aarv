@@ -208,6 +208,12 @@ func validateConfig(cfg Config) (normalized, error) {
 		if hasSecret && !isHMAC(a) {
 			return n, ErrSecretAlgMismatch
 		}
+		if hasSecret {
+			spec, _ := lookupAlg(a)
+			if len(cfg.HMACSecret) < spec.hmacSize {
+				return n, ErrWeakKey
+			}
+		}
 		allowed[a] = struct{}{}
 	}
 

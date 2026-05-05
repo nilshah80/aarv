@@ -818,3 +818,121 @@ func TestRawRequestSkipsMaterializePathParams(t *testing.T) {
 		t.Fatalf("expected 204, got %d", rec.Code)
 	}
 }
+
+// TestBindRequest_InvalidatesRequestDerivedCaches verifies that swapping
+// the bound *http.Request via BindRequest also clears parsed-query and
+// body-byte caches on the *Context. Without this, a hook that reads
+// c.Query() / c.Body() before an upstream stdlib middleware clones and
+// mutates the request would cause subsequent reads (after BindRequest
+// re-pointed c at the mutated request) to keep returning stale values
+// from the original request — a silent and hard-to-debug correctness
+// hazard now that BindRequest is part of the public core API.
+func TestBindRequest_InvalidatesRequestDerivedCaches(t *testing.T) {
+	app := New(WithBanner(false))
+
+	// Run inside an aarv.Context lifecycle so the *Context is properly
+	// initialized (sync.Pool acquire path). POST so the test can supply
+	// a body to populate the body cache.
+	app.Post("/p", func(c *Context) error {
+		// Populate caches against the original request.
+		if got := c.Query("q"); got != "before" {
+			return fmt.Errorf("setup: original q=%q, want before", got)
+		}
+		body, err := c.Body()
+		if err != nil {
+			return fmt.Errorf("setup body: %v", err)
+		}
+		if string(body) != "old-body" {
+			return fmt.Errorf("setup body=%q, want old-body", string(body))
+		}
+
+		// Construct a fresh request with a different query AND body.
+		// This is the shape an upstream stdlib middleware would produce
+		// via r.Clone(...) followed by URL.RawQuery/Body mutation.
+		newReq := httptest.NewRequest("POST", "/p?q=after", strings.NewReader("new-body"))
+
+		// Swap. Caches must be invalidated.
+		c.BindRequest(newReq)
+
+		// Re-read: subsequent calls must reflect the rebound request.
+		if got := c.Query("q"); got != "after" {
+			return fmt.Errorf("after BindRequest: q=%q, want after (parsed-query cache not invalidated)", got)
+		}
+		newBody, err := c.Body()
+		if err != nil {
+			return fmt.Errorf("after BindRequest body: %v", err)
+		}
+		if string(newBody) != "new-body" {
+			return fmt.Errorf("after BindRequest: body=%q, want new-body (body-byte cache not invalidated)", string(newBody))
+		}
+		return c.NoContent(http.StatusNoContent)
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("POST", "/p?q=before", strings.NewReader("old-body")))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestBindRequest_ReusesBodyCacheBuffer verifies that a small body cache
+// is reused (truncated to len 0, capacity preserved) rather than
+// reallocated, matching reset()'s allocation discipline. This is a
+// performance-correctness check: BindRequest is called per-request on
+// hot paths (rbac, bearer), so we should not trigger an extra allocation
+// every time.
+func TestBindRequest_ReusesBodyCacheBuffer(t *testing.T) {
+	app := New(WithBanner(false))
+	var beforeCap, afterCap int
+	var sameUnderlying bool
+
+	app.Post("/p", func(c *Context) error {
+		body, err := c.Body()
+		if err != nil {
+			return err
+		}
+		if string(body) != "abc" {
+			return fmt.Errorf("setup body=%q", string(body))
+		}
+		beforeCap = cap(c.bodyCache)
+		beforePtr := &c.bodyCache[:1][0] // pin the underlying array via slice op
+
+		c.BindRequest(httptest.NewRequest("POST", "/p", strings.NewReader("xyz")))
+
+		// After invalidation, len should be 0 but cap preserved (small
+		// buffer path — well under maxReusableBodyCache).
+		afterCap = cap(c.bodyCache)
+		if len(c.bodyCache) != 0 {
+			t.Errorf("bodyCache len after BindRequest = %d, want 0", len(c.bodyCache))
+		}
+		// Re-read the body so the cache repopulates against the new request.
+		newBody, err := c.Body()
+		if err != nil {
+			return err
+		}
+		if string(newBody) != "xyz" {
+			return fmt.Errorf("rebound body=%q, want xyz", string(newBody))
+		}
+		// Confirm the same underlying array got reused — the buffer's
+		// first byte address should match the pre-swap pointer.
+		if len(c.bodyCache) > 0 && &c.bodyCache[0] == beforePtr {
+			sameUnderlying = true
+		}
+		return c.NoContent(http.StatusNoContent)
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("POST", "/p", strings.NewReader("abc")))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if beforeCap == 0 {
+		t.Fatal("bodyCache was empty before BindRequest; precondition not met")
+	}
+	if afterCap != beforeCap {
+		t.Errorf("bodyCache cap changed across BindRequest: before=%d after=%d (cleanup must reuse, not reallocate)", beforeCap, afterCap)
+	}
+	if !sameUnderlying {
+		t.Error("bodyCache underlying array was not reused across BindRequest+re-read")
+	}
+}

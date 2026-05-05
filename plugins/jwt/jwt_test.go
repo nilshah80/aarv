@@ -5,8 +5,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -329,6 +331,11 @@ func TestValidateConfig(t *testing.T) {
 			"invalid lookup",
 			Config{HMACSecret: hs, Lookups: []Lookup{{Source: "body", Name: "tok"}}},
 			ErrInvalidLookup,
+		},
+		{
+			"weak hmac secret",
+			Config{HMACSecret: make([]byte, 16)},
+			ErrWeakKey,
 		},
 	}
 	for _, c := range cases {
@@ -942,6 +949,30 @@ func TestFromContext_StdlibPath(t *testing.T) {
 func TestSignToken_WeakHMAC(t *testing.T) {
 	short := make([]byte, 16) // < 32 for HS256
 	if _, err := SignToken(HS256, short, validClaimsNow()); !errors.Is(err, ErrWeakKey) {
+		t.Fatalf("want ErrWeakKey, got %v", err)
+	}
+}
+
+func TestParse_WeakHMACKey(t *testing.T) {
+	short := []byte("0123456789abcdef") // 16 bytes, too short for HS256.
+	header := b64Encode([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	payloadBytes, err := json.Marshal(validClaimsNow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := b64Encode(payloadBytes)
+	signingInput := append(append(header, '.'), payload...)
+	mac := hmac.New(sha256.New, short)
+	mac.Write(signingInput)
+	token := string(signingInput) + "." + string(b64Encode(mac.Sum(nil)))
+
+	cfg := Config{
+		Algorithms: []Algorithm{HS256},
+		KeyFunc: func(_ map[string]any) (any, error) {
+			return short, nil
+		},
+	}
+	if _, _, err := Parse(token, cfg); !errors.Is(err, ErrWeakKey) {
 		t.Fatalf("want ErrWeakKey, got %v", err)
 	}
 }

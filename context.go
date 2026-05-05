@@ -192,6 +192,61 @@ func (c *Context) SetContextValue(key, value any) {
 	}
 }
 
+// BindRequest re-binds c to the supplied *http.Request, attaching the
+// framework's context marker to r so [FromRequest] succeeds on it, and
+// updating c.req so [Context.Path], [Context.Method], [Context.Header],
+// [Context.BodyReader], and [Context.Context] all reflect r's URL,
+// headers, body, and context.
+//
+// Use this from a stdlib http.Handler middleware that received a request
+// possibly cloned or mutated by an upstream middleware (URL rewrites,
+// header injection, body decompression, prefix stripping, etc.).
+// [Context.SetContext] only swaps the context.Context on the framework's
+// original c.req — it preserves nothing else from upstream r. BindRequest
+// swaps the entire request, preserving every upstream mutation while
+// keeping the c-recoverable contract intact.
+//
+// Request-derived caches on c are invalidated to match the swap: parsed
+// query values ([Context.Query]) and the body byte cache ([Context.Body])
+// are cleared so subsequent reads come from the rebound request. Path
+// params are re-materialized on the next access. Response-side state
+// (status, written flag), request-id, and the request-scoped store are
+// independent of r and left intact.
+//
+// Returns the request the caller must forward to next.ServeHTTP. Under
+// [WithRequestContextBridge](false) the previous request's pointer-keyed
+// registry mapping is removed; under bridge mode (the default) the
+// returned request carries an in-context marker so [FromRequest] still
+// finds c via the context.Context chain.
+func (c *Context) BindRequest(r *http.Request) *http.Request {
+	if c == nil {
+		return r
+	}
+	if r == nil {
+		return c.req
+	}
+	prevReq := c.req
+	req := withFrameworkContext(r, c)
+	c.req = req
+	c.pathParamsApplied = false
+	// Invalidate request-derived caches so subsequent reads come from
+	// the rebound request, not the previous one. Mirrors the cleanup
+	// shape used by reset() / SetBody().
+	c.query = nil
+	c.bodyRead = false
+	if c.bodyCache != nil {
+		if cap(c.bodyCache) > maxReusableBodyCache {
+			c.bodyCache = nil
+		} else {
+			c.bodyCache = c.bodyCache[:0]
+		}
+	}
+	if prevReq != nil && prevReq != req && c.app != nil && !c.app.config.RequestContextBridge {
+		deleteRequestContext(prevReq)
+	}
+	return req
+}
+
 // Method returns the HTTP method.
 func (c *Context) Method() string { return c.req.Method }
 

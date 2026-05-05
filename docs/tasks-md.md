@@ -542,42 +542,89 @@ Notes from latest benchmark pass:
 - Scheme matching is case-insensitive (`Basic`, `basic`, `BASIC`) per RFC 7235 §2.1.
 - `StaticCreds` helper provided, mirroring §6.2's `StaticKeys`. Stored passwords are hashed to fixed-length 32-byte SHA-256 digests at snapshot time; per-request comparison hashes the attempted password and uses `crypto/subtle.ConstantTimeCompare` on the equal-length digests so the password-length side channel exposed by `ConstantTimeCompare`'s length-mismatch fast-exit is closed. The map lookup itself remains a small "is this username known" timing channel; SHA-256 here is for in-memory side-channel resistance, not at-rest password protection (use bcrypt/argon2 for that).
 
-### 6.4 Bearer Token Plugin
-- [ ] Extract `Authorization: Bearer <token>` from header
-- [ ] Validator callback: `func(token string) (any, error)` — returns claims/user
-- [ ] Store result in Context
-- [ ] Unit tests: valid token, invalid, missing
+### 6.4 Bearer Token Plugin ✅
+- [x] Extract `Authorization: Bearer <token>` from header
+- [x] Validator callback: `func(token string) (any, error)` — returns claims/user
+- [x] Store result in Context
+- [x] Unit tests: valid token, invalid, missing
 
-### 6.5 RBAC Plugin
-- [ ] Define `RoleExtractor = func(*Context) []string`
-- [ ] Middleware: `RequireRoles("admin", "editor")` → check extracted roles
-- [ ] Middleware: `RequireAnyRole("admin", "editor")` → OR check
-- [ ] Return 403 Forbidden on mismatch
-- [ ] Unit tests: has role, missing role, multiple roles
+**Scope additions on top of spec (mirroring §6.2 apikey / §6.3 basicauth conventions):**
+- Validator signature returns `(any, error)` (not `bool`) so a single lookup yields both authentication and identity, matching apikey/basicauth.
+- `(nil, nil)` from the validator is treated as authentication failure: `context.Context.Value` cannot distinguish a stored nil from a missing one, so the plugin refuses to store nil identities.
+- Identity stored under hardcoded internal key (`bearerIdentity`); public access via `bearer.From(c)` / `bearer.FromContext(ctx)` only — no configurable context key, same rationale as apikey/basicauth.
+- Optional `Config.Query` for query-parameter token transport (RFC 6750 §2.3); disabled by default because URL-borne tokens leak via proxy logs / Referer / browser history. Form-body transport (§2.2) is intentionally not supported (interferes with body parsers, discouraged by spec).
+- **Header presence is exclusive** (RFC 6750 §2 single-transport model): when the configured `Header` is non-empty on a request it MUST yield a valid Bearer token, and the `Query` parameter is NOT consulted — even when a valid query token is also present. Closes an audit-bypass where a malformed header (`Authorization: Bearer ` with no token, `Authorization: Basic …`, etc.) is paired with a query token to evade header-only logging.
+- Stdlib path uses the new `(*Context).BindRequest` core helper to re-bind `c` to the (possibly upstream-mutated) `r` before stamping identity. Preserves any upstream `r.Clone()` URL/Header/Body mutations rather than silently discarding them in favor of the pre-mutation request bound to `*aarv.Context`.
+- **AppError shape parity across native and stdlib middleware paths (default response pipeline only)**: when the validator returns an `*aarv.AppError` and the framework uses its default ErrorHandler, default JSON codec/Content-Type, and no response-mutating OnError, both paths emit byte-identical responses (status, body bytes, Content-Type, WWW-Authenticate) including `Code()` and `Detail()`. With any of `WithErrorHandler`, `WithCodec`, or a response-mutating `OnError` installed, the native path flows through the framework's pipeline while the stdlib path writes JSON directly, so responses diverge — documented in the package godoc.
+- `WWW-Authenticate: Bearer realm="..."` challenge emitted on 401 per RFC 6750 §3 / RFC 7235; suppressed for non-401 statuses (e.g. validator-returned `aarv.ErrForbidden`).
+- `Realm` validated at `New()` for characters that would yield a malformed header (`"`, `\`, control chars); panics on misconfiguration.
+- Scheme matching is case-insensitive (`Bearer`, `bearer`, `BEARER`) per RFC 7235 §2.1; one extra leading space after the scheme is tolerated.
+- `StaticTokens` helper mirroring §6.2's `StaticKeys`: stored tokens are hashed to fixed-length 32-byte SHA-256 digests at snapshot time so the token-length side channel is closed. SHA-256 here is for in-memory side-channel resistance, not at-rest token protection (use a real credential store for that).
+- Configuration error surface: `New(cfg)` panics on misconfiguration (nil validator, both Header and Query empty, invalid Realm) to match apikey/basicauth.
 
-### 6.6 RFC 7807 Problem Details
-- [ ] Implement `ProblemDetails` struct per RFC 7807: type, title, status, detail, instance
-- [ ] Add `extensions` map for custom fields
-- [ ] Create `ValidationProblem` formatter that wraps validation errors in RFC 7807 format
-- [ ] Configurable: enable/disable RFC 7807 format globally or per-route
-- [ ] Content-Type: `application/problem+json`
-- [ ] Unit tests: RFC 7807 compliance, extension fields
+### 6.5 RBAC Plugin ✅
+- [x] Define `RoleExtractor = func(*Context) []string`
+- [x] Middleware: `RequireRoles("admin", "editor")` → check extracted roles
+- [x] Middleware: `RequireAnyRole("admin", "editor")` → OR check
+- [x] Return 403 Forbidden on mismatch
+- [x] Unit tests: has role, missing role, multiple roles
 
-### 6.7 Session Plugin
+**Scope decisions made during implementation:**
+- API shape: `New(Config) *Authorizer` returns a factory; the same `*Authorizer` produces many distinct middlewares via `RequireRoles(...)` (AND) and `RequireAnyRole(...)` (OR). One `RoleExtractor` is configured at construction and reused across every policy on top of it. Avoids both global state and per-call extractor passing.
+- `Config.RoleExtractor` is required; `New` panics if nil. Silent passthrough on misconfiguration is unsafe for an authz plugin.
+- `RequireRoles()` / `RequireAnyRole()` panic on a zero-length input. "No constraint" should be expressed by omitting the middleware, not registering a no-op.
+- Role matching is case-sensitive. Identity providers emit canonical role names; case-insensitive matching would silently mask drift between policy strings and IdP output.
+- Authorization-only plugin: rbac never emits 401 or `WWW-Authenticate`. Wire your auth plugin (jwt / bearer / apikey / basicauth / custom) BEFORE rbac so the extractor has an authenticated identity to read. A request that reaches rbac with no identity (extractor returns nil/empty) is rejected with 403, matching RFC 7235's "authenticated but lacks privilege" semantics.
+- Response body shape matches aarv's framework `errorResponse` (`{"error":"forbidden","message":"...","request_id":"..."}`). The plugin deliberately does NOT include the missing role names in the response — that would leak the policy surface to unauthorized callers.
+- Native + stdlib middleware paths registered via `aarv.RegisterNativeMiddleware`. Both paths emit byte-identical denial responses (status, body bytes, Content-Type) **only when the framework uses ALL of: its default ErrorHandler, default JSON codec / Content-Type, and no response-mutating OnError hook**, enforced by an explicit cross-path test. With any of `WithErrorHandler`, `WithCodec`, or a response-mutating `OnError` installed the two diverge — locked in by a second test that documents the limitation in code so any future plugin-level handler/codec hook will surface as a test diff.
+- Stdlib path fails closed when no `*aarv.Context` is reachable (i.e. plugin mounted on plain `net/http` without the framework): the extractor signature requires `*aarv.Context`, and silently admitting would defeat authorization. Documented in the package godoc.
+- Stdlib path uses the new `(*Context).BindRequest` core helper to re-bind `c` to the (possibly upstream-mutated) `r` before invoking the extractor. `BindRequest` swaps the entire `*http.Request` on `c` (URL, headers, body, context) — preserving any upstream `r.Clone()` mutations — and attaches the framework marker so downstream `aarv.FromRequest(r)` still works. The previous `SetContext`-only sync only carried `r.Context()` across, silently discarding URL/Header/Body changes that an upstream stdlib middleware (header rewriter, prefix stripper, body decompressor, etc.) might have made.
+- Role slices are snapshot-copied at middleware construction; mutating the caller's slice afterward cannot change the policy at request time.
+
+### 6.6 RFC 7807 Problem Details ✅
+- [x] Implement `ProblemDetails` struct per RFC 7807: type, title, status, detail, instance — landed as `problem.Details` in `plugins/problem`.
+- [x] Add `extensions` map for custom fields — `Details.Extensions map[string]any`, flattened into the top-level JSON object on marshal per RFC 7807 §3.2.
+- [x] Create `ValidationProblem` formatter that wraps validation errors in RFC 7807 format — `problem.ValidationProblem(*aarv.ValidationErrors) *Details` exposes the per-field failures under the `errors` extension.
+- [x] Configurable: enable/disable RFC 7807 format globally or per-route — globally by installing or omitting `problem.Handler(...)` via `aarv.WithErrorHandler`. Per-route toggling would require invasive changes to the framework's error pipeline (the handler runs after middleware returns and does not know which route was hit), so it is intentionally out of scope; documented in the package godoc with a wrap-and-switch workaround.
+- [x] Content-Type: `application/problem+json` — exposed as the `problem.ContentType` constant; written via `c.Blob` so the framework's response pipeline (Blob handles status + content-type) stays the source of truth.
+- [x] Unit tests: RFC 7807 compliance, extension fields — 100% statement coverage; tests assert the `application/problem+json` Content-Type, default `type` of `"about:blank"`, omission of zero-valued optional members, extension flattening, standard-members-win-on-collision, AppError mapping (status/title/detail), ValidationErrors mapping (422 + `errors` extension), generic-error masking (no internal message leaks to the wire; `OnInternal` callback receives the unmasked error), `TypeForCode` override, fall-through to `Config.Type`, `Instance` generator, `request_id` extension propagation, and the marshal-failure fallback path.
+
+**Scope decisions made during implementation:**
+- Single root-module package (`plugins/problem`), stdlib-only — just JSON marshaling, no third-party deps.
+- API shape: `Handler(Config) aarv.ErrorHandler` is the primary entry point; users wire via `aarv.WithErrorHandler(problem.Handler(...))`. `FromError(err)` and `ValidationProblem(errs)` are exposed for callers that need the structured form before serialization (e.g. audit logging, composing higher-level responses).
+- `Type` resolution: per-error override via `Config.TypeForCode[appErr.Code()]` → `Config.Type` fallback → `DefaultType` ("about:blank"). Lets teams point at a stable error-class taxonomy URL while keeping per-error specificity.
+- Generic errors are masked: the original `err.Error()` is never written to the wire (it may carry DB connection strings, stack traces, etc.); the response carries the static `"Internal server error"` text and the `OnInternal` callback receives the unmasked error for logging/instrumentation.
+- `request_id` extension is added automatically when the framework's request-id middleware has populated `c.RequestID()`, matching the framework's default error handler's correlation behavior.
+- `MarshalJSON` strips reserved keys (`type`/`title`/`status`/`detail`/`instance`) from `Extensions` during the flatten copy — even when the corresponding standard struct field is the zero value (RFC 7807 §3.2 forbids extensions overriding standard members). An older "non-zero overwrites" design would have let an extension impersonate a standard field whenever the struct field was zero; the strip approach closes that. Guarded by both a non-zero collision test and a zero-fields-impersonator regression test.
+- `MarshalJSON` is on a value receiver so `json.Marshal(Details{...})` (value) and `json.Marshal(&Details{...})` (pointer) both flow through the custom marshaler. A pointer-receiver design would silently bypass it for the value form and emit Go field names plus a nested `Extensions` object — a footgun for callers who treat `Details` as a value type. Guarded by an explicit value-marshal test.
+- `OnInternal` fires for both non-`AppError` 5xx (the obvious case) AND `*aarv.AppError` 5xx that carry a non-nil `Internal()` (the `aarv.ErrInternal(downstream)` shape) so wrapped downstream failures are not silently swallowed when the caller uses problem+json. Plain `*aarv.AppError` 5xx with no `Internal()` (e.g. `ErrServiceUnavailable("draining")`) does NOT fire — the caller chose that status to communicate state, not to signal a fault. Matches the framework's default-handler `slog.Error` parity for users who switch to problem+json.
+- Defense-in-depth: `marshalOrFallback` traps a non-marshalable `Extensions` value (channel, func, complex) and emits a hardcoded minimal `application/problem+json` document so the client always sees a conforming response. Both branches are test-covered via direct calls.
+- `Status: 0` is omitted from the wire; the handler always populates a non-zero status before writing.
+
+### 6.7 Session Plugin ✅ (sub-modules deferred)
 **Why**: Aarv already has the hard half via `securecookie.go` (HMAC-signed + AES-encrypted cookies). A thin session layer on top rounds out the auth story for cookie-based apps and pairs naturally with the CSRF plugin (10.3) and Basic/Bearer auth plugins.
-- [ ] Create `plugins/session` package
-- [ ] Define `Store` interface: `Get(id) (Session, error)`, `Save(Session) error`, `Delete(id) error`
-- [ ] Implement `CookieStore` — serializes session into a signed/encrypted cookie via `securecookie`, no server state
-- [ ] Implement `MemoryStore` — in-process map with TTL eviction (zero-dep, default for dev/single-node)
-- [ ] `Session` type: `Get/Set/Delete(key)`, `Flash(key, value)` for one-shot messages, `Regenerate()` for fixation prevention, `Destroy()`
-- [ ] Middleware: loads session at request start, persists on response if dirty
-- [ ] Helper: `session.From(c)` to retrieve current session from Context
-- [ ] Configurable: cookie name, max age, secure, httponly, samesite, domain, path
-- [ ] CSRF token integration: expose `Session.CSRFToken()` for the CSRF plugin (10.3)
-- [ ] Optional: `plugins/session-redis/go.mod` for distributed sessions
-- [ ] Optional: `plugins/session-sql/go.mod` for SQL-backed sessions
-- [ ] Unit tests: CookieStore round-trip, MemoryStore eviction, regeneration, flash messages, concurrent access
-- [ ] Security tests: tampered cookie rejected, expired session rejected, regenerate clears old ID
+- [x] Create `plugins/session` package — root module, stdlib-only.
+- [x] Define `Store` interface: `Get(id) (*Stored, error)`, `Save(id, *Stored, ttl) error`, `Delete(id) error` — `(nil, nil)` on missing/expired matches `idempotency.Store` convention.
+- [x] Implement `CookieStore` — JSON-marshals `Stored` and AES-256-GCM-encrypts it into the cookie value itself; no server state. Wired via separate `NewCookie(CookieConfig)` constructor and intentionally does NOT satisfy the `Store` interface (request/response-scoped, fundamentally different load/save shape — keeping it out of `Store` prevents misuse where a server-side store is required).
+- [x] Implement `MemoryStore` — in-process `map[string]*memEntry` with lazy TTL eviction (`Get` evicts expired in-line); optional `NewMemoryStoreWithJanitor(d)` adds a periodic sweep goroutine and returns an idempotent `stop func()` for `app.OnShutdown` wiring. Both `Get` and `Save` deep-copy `Stored.Data` and `Stored.Flash` so concurrent requests cannot share live map instances.
+- [x] `Session` type: `Get/Set/Delete(key)`, `Flash(key, value)` (write-side) + `ConsumeFlash(key) (any, bool)` (read-side, removes), `Regenerate()` (new ID, preserves data, queues old ID for `Store.Delete` on save), `Destroy()` (subsequent mutations are no-ops; cookie expired and store entry removed on save). `IsNew()` exposes the load-time "no entry was found" signal for handlers that branch on first-touch.
+- [x] Middleware: loads session at request start; the `sessionWriter` wrapper commits before the FIRST `WriteHeader` / `Write` / `Flush` (so cookies land alongside `c.JSON` / `c.Blob` / `c.Text` which write headers inline at handler time, not via `OnSend`); a post-handler `commit()` fallback covers handlers that returned without writing. The `c.SetResponse(orig)` restore is `defer`-guarded around `next(c)` so panic / recovery paths cannot leak the wrapper. Persistence predicate is `dirty || len(consumed) > 0 || regenerated || destroyed` — a newly-issued session that the handler never wrote to is NOT saved (clean reads emit zero `Set-Cookie` and incur zero `Store.Save`). Wrapper implements `Unwrap() http.ResponseWriter` (matches `idempotency` / `prometheus` / `otel` convention) so `http.ResponseController` walks through to the underlying Flusher / Hijacker.
+- [x] Helper: `session.From(c) (*Session, bool)` and `session.MustFrom(c) *Session` (panics if middleware did not run for this route — surfaces missing wiring during development rather than as a confusing nil-deref later).
+- [x] Configurable: `CookieName`, `MaxAge` (zero → `DefaultMaxAge` 24h; negative or `SessionMaxAge` sentinel → browser-session cookie with no Max-Age / Expires attributes; server-side TTL still uses `DefaultMaxAge` to bound retention), `DisableSecure` / `DisableHTTPOnly` (bool fields invert so secure-by-default is the zero value, mirroring the framework's `aarv.CookieOptions.DisableHttpOnly` precedent), `CookieSameSite` (zero → Lax), `CookieDomain`, `CookiePath` (zero → "/"). Two-tier error handling: `ErrorHandler func(*aarv.Context, error) error` for load-time failures (runs BEFORE the handler so it can produce a controlled response) and `SaveErrorHandler func(*aarv.Context, error)` for commit-time failures (side-effect only — by the time it fires, headers may already be flushed). Default save-error path logs via the request-scoped `c.Logger()` (or `Config.Logger` / `slog.Default()` when `c == nil` on stdlib mounts) and swallows.
+- [x] CSRF token integration: `Session.CSRFToken()` lazy-issues a 32-byte base64url token, marks the session dirty so it persists, and returns the same token on subsequent calls within the request and across save/load round-trips. `Stored.CSRF` is the only home for the token; `_csrf` is NOT a reserved user key (`Get("_csrf")` returns `(nil, false)`). The CSRF plugin (10.3) will read it via `session.From(c).CSRFToken()` for session-bound tokens.
+- [ ] Optional: `plugins/session-redis/go.mod` for distributed sessions — deferred to follow-up task; the `Store` interface and `MemoryStore` are designed so an external backend drops in without middleware changes.
+- [ ] Optional: `plugins/session-sql/go.mod` for SQL-backed sessions — deferred to follow-up task; same drop-in shape as session-redis.
+- [x] Unit tests: CookieStore round-trip (data + flash + CSRF survive encrypt/decrypt cycle), MemoryStore lazy + janitor eviction, Regenerate (new ID, data preserved, multi-call collapses to single old-ID delete, store actually deletes oldID end-to-end), flash lifecycle (write → consume on next request → gone on the one after), concurrent access (`-race` with N writers + readers against a single key, plus deep-copy guards on both `Save` and `Get` boundaries).
+- [x] Security tests: tampered cookie rejected (CookieStore returns fresh session, never raises load error), expired session rejected (forced via store delete; handler observes `IsNew()`), Regenerate clears old ID from store (instrumented store call counts), default-secure cookie attributes (`Secure`, `HttpOnly`, `SameSite=Lax`), `sessionWriter.Unwrap` participates in `http.NewResponseController` chain, SSE-style `Flush` commits cookie before mid-stream chunks reach the client.
+
+**Scope decisions made during implementation:**
+- `CookieStore` does NOT implement the public `Store` interface. A stateless cookie backend cannot cleanly satisfy `Save(id, stored, ttl)` without response/writer context — treating ciphertext as an "id" leaks backend-specific semantics into the generic store contract. Internal `sessionBackend` interface unifies both via `(c, r, cfg)` and `(c, w, sess, cfg)` shapes that work whether `c == nil` (stdlib mount) or not. `NewCookie(CookieConfig)` is the dedicated constructor.
+- Cookie commit timing is wrapper-driven, not hook-driven. `OnSend` only buffers when hooks are registered (dispatch.go path), so piggybacking on it would impose a runtime cost on every other route. The `sessionWriter` wrapper's `WriteHeader` / `Write` / `Flush` interception is the only path that lands cookies before `c.JSON` / `c.Blob` / `c.Text` flush headers inline.
+- Lazy persistence: `new` alone does NOT trigger a save. Only `dirty || len(consumed) > 0 || regenerated || destroyed` does. A health-check route that calls `From(c)` but never mutates emits zero `Set-Cookie` and incurs zero `Store.Save` — verified with instrumented store call counts.
+- `MaxAge` representation: `time.Duration` zero → default (24h), negative → browser-session cookie. The split avoids overloading "0" to mean both "unset" and "browser-session" simultaneously. `SessionMaxAge` constant exposes the negative-sentinel value as a self-documenting name.
+- `Secure` / `HttpOnly` use `Disable*` fields (bool, default false) so the safe defaults are the zero-value config. Pointer-to-bool would also work but introduces nil checks throughout the hot path; the existing framework `aarv.CookieOptions.DisableHttpOnly` (securecookie.go:71) sets the pattern.
+- CookieStore implements its own AES-256-GCM + JSON envelope rather than calling the framework's `(*Context).SetEncryptedCookie` so it works on stdlib mounts where `c == nil` and so the plugin is insulated from future framework cookie-format changes. Wire format: `base64url(nonce || ciphertext || tag)` over `{"t": unixSec, "s": Stored}`. Server-side expiry checks the embedded `t`, independent of the client-spoofable HTTP `Max-Age`. 3.5 KiB encoded-payload guard at Save time stays safely under the ~4 KiB browser cookie limit; oversize surfaces as a `SaveErrorHandler` call carrying `ErrCookiePayloadTooLarge`.
+- CSRF storage is single-source on `Stored.CSRF` rather than dual-stored on both `Session.csrf` and `Data["_csrf"]`. Reasoning: `_csrf` should not be a reserved user-visible key; handler `Get("_csrf")` returning `(nil, false)` is the cleanest contract for the user-data namespace. Round-trip parity is verified by an explicit save/load test.
 
 ---
 

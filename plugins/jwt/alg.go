@@ -111,6 +111,9 @@ func hmacSpec(h crypto.Hash, minKey int) *algSpec {
 			if !ok {
 				return ErrKeyTypeMismatch
 			}
+			if len(k) < minKey {
+				return ErrWeakKey
+			}
 			mac := hmac.New(hashFunc(h), k)
 			mac.Write(msg)
 			expected := mac.Sum(nil)
