@@ -7,7 +7,7 @@ require (
 	github.com/nilshah80/aarv/codec/jsonv2 v0.0.0
 )
 
-require github.com/go-json-experiment/json v0.0.0-20250223041408-d3c622f1b874 // indirect
+require github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433 // indirect
 
 replace github.com/nilshah80/aarv => ../..
 

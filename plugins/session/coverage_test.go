@@ -239,6 +239,217 @@ func TestStdlibErrorHandlerReturnsErrorWrites500(t *testing.T) {
 	}
 }
 
+// TestStdlibPathSkipperBypasses covers the stdlib-path skipper branch
+// (hasCtx=true, skipper returns true) — the middleware short-circuits
+// to next.ServeHTTP(w, r) without ever reaching backend.load.
+func TestStdlibPathSkipperBypasses(t *testing.T) {
+	store := &instrumentedStore{MemoryStore: NewMemoryStore()}
+	app := aarv.New()
+	app.Use(New(Config{
+		Store:         store,
+		DisableSecure: true,
+		Skipper:       func(c *aarv.Context) bool { return c.Path() == "/skip" },
+	}))
+	// Stdlib-only sibling forces the chain off the native fast path.
+	app.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+	})
+	app.Get("/skip", func(c *aarv.Context) error { return c.JSON(http.StatusOK, "ok") })
+	resp := aarv.NewTestClient(app).Get("/skip")
+	if resp.Status != http.StatusOK {
+		t.Fatalf("status = %d", resp.Status)
+	}
+	if store.getN.Load() != 0 {
+		t.Fatalf("skipper bypass failed; getN = %d", store.getN.Load())
+	}
+}
+
+// TestStdlibPathFreshSessionRandFailure covers the stdlib-path branch
+// where the load-error fallback's backend.freshSession also fails
+// (rand exhausted). The middleware writes a generic 500 and stops.
+func TestStdlibPathFreshSessionRandFailure(t *testing.T) {
+	store := &instrumentedStore{MemoryStore: NewMemoryStore(), failGet: errors.New("boom")}
+	app := aarv.New()
+	app.Use(New(Config{Store: store, DisableSecure: true}))
+	app.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+	})
+	app.Get("/x", func(c *aarv.Context) error { return c.JSON(http.StatusOK, "ok") })
+
+	swapRand(t, failReader{}) // makes generateID fail in the fallback path
+
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.AddCookie(&http.Cookie{Name: "_session", Value: "anything"})
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500 (rand-failure fallback)", rec.Code)
+	}
+}
+
+// TestNativePathErrorHandlerReturnsErr covers the native-path branch
+// where ErrorHandler returns a non-nil error — that error propagates
+// up through the middleware chain.
+func TestNativePathErrorHandlerReturnsErr(t *testing.T) {
+	store := &instrumentedStore{MemoryStore: NewMemoryStore(), failGet: errors.New("boom")}
+	called := false
+	app := aarv.New()
+	app.Use(New(Config{
+		Store:         store,
+		DisableSecure: true,
+		ErrorHandler: func(c *aarv.Context, err error) error {
+			called = true
+			return aarv.ErrServiceUnavailable("session backend down")
+		},
+	}))
+	app.Get("/x", func(c *aarv.Context) error { return c.JSON(http.StatusOK, "should not run") })
+
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.AddCookie(&http.Cookie{Name: "_session", Value: "anything"})
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if !called {
+		t.Fatal("ErrorHandler not invoked")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503 (handler-returned error)", rec.Code)
+	}
+}
+
+// TestNativePathFreshSessionRandFailure covers the native-path branch
+// where the load-error fallback's backend.freshSession also fails.
+// The middleware returns the rand error, which the framework error
+// handler translates to a 500.
+func TestNativePathFreshSessionRandFailure(t *testing.T) {
+	store := &instrumentedStore{MemoryStore: NewMemoryStore(), failGet: errors.New("boom")}
+	app := aarv.New()
+	app.Use(New(Config{Store: store, DisableSecure: true}))
+	app.Get("/x", func(c *aarv.Context) error { return c.JSON(http.StatusOK, "ok") })
+
+	swapRand(t, failReader{})
+
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.AddCookie(&http.Cookie{Name: "_session", Value: "anything"})
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500 (native-path rand failure)", rec.Code)
+	}
+}
+
+// TestSessionFromStoredNilMaps covers the defensive nil-map branches
+// in sessionFromStored: when Stored.Data and/or Stored.Flash come in
+// as nil (legacy entries from older serializers), the function must
+// substitute fresh empty maps so handlers calling Set/Flash don't
+// nil-deref.
+func TestSessionFromStoredNilMaps(t *testing.T) {
+	st := &Stored{} // both Data and Flash are nil
+	s := sessionFromStored("id", st, defaultIDLen)
+	if s.data == nil {
+		t.Fatal("sessionFromStored must replace nil Data with empty map")
+	}
+	if s.flash == nil {
+		t.Fatal("sessionFromStored must replace nil Flash with empty map")
+	}
+	// Verify Set still works without panic.
+	s.Set("k", "v")
+	if v, _ := s.Get("k"); v != "v" {
+		t.Fatal("Set after nil-Data fallback failed")
+	}
+}
+
+// TestRegenerateZeroIDLenFallsBackToDefault covers the
+// idLen <= 0 defensive branch in Regenerate. Triggered by hand-
+// constructing a Session with idLen=0 (legacy / unconfigured shape).
+func TestRegenerateZeroIDLenFallsBackToDefault(t *testing.T) {
+	s := newSession("orig", false, 0) // idLen explicitly zero
+	if err := s.Regenerate(); err != nil {
+		t.Fatalf("Regenerate: %v", err)
+	}
+	// 32 raw bytes → 43 base64url characters (no padding).
+	if want := 43; len(s.id) != want {
+		t.Fatalf("regenerated id length = %d; want %d (default fallback)", len(s.id), want)
+	}
+}
+
+// TestCookieStoreLoadEnvWithNilStored covers the env.Stored == nil
+// defensive branch: even when decode succeeds but the inner Stored
+// pointer is nil, load must produce a usable empty session.
+func TestCookieStoreLoadEnvWithNilStored(t *testing.T) {
+	cs, _ := NewCookieStore(testCookieKey)
+	cfg := normalizeCookieConfig(CookieConfig{Key: testCookieKey})
+
+	// Encode an envelope with Stored = nil explicitly.
+	encoded, err := cs.encode(cookieEnvelope{IssuedAt: time.Now().Unix(), Stored: nil}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Cookie", cfg.cookieName+"="+encoded)
+	sess, err := cs.load(nil, r, cfg)
+	if err != nil {
+		t.Fatalf("load with nil Stored returned err: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected non-nil session")
+	}
+	if sess.IsNew() {
+		t.Fatal("decoded session should not be marked as new (decode succeeded)")
+	}
+	// Set must not panic on the synthesized empty Data map.
+	sess.Set("ok", true)
+}
+
+// TestCookieStoreFreshSessionZeroIDLenFallsBack covers the
+// idLen <= 0 fallback inside CookieStore.freshSession.
+func TestCookieStoreFreshSessionZeroIDLenFallsBack(t *testing.T) {
+	cs, _ := NewCookieStore(testCookieKey)
+	cfg := &normalized{idLength: 0} // zero → must default to defaultIDLen
+	s, err := cs.freshSession(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 43; len(s.id) != want { // 32 raw bytes → 43 base64url chars
+		t.Fatalf("fresh id length = %d; want %d (default fallback)", len(s.id), want)
+	}
+}
+
+// TestCookieStoreDecodeShortRawAfterB64 covers the "len(raw) < ns"
+// branch in decode — base64 decodes to fewer bytes than the GCM nonce.
+func TestCookieStoreDecodeShortRawAfterB64(t *testing.T) {
+	cs, _ := NewCookieStore(testCookieKey)
+	cfg := &normalized{cookieName: "_session"}
+	// "AAAAAAAA" → 6 bytes, less than NonceSize (12).
+	if _, err := cs.decode("AAAAAAAA", cfg); err == nil {
+		t.Fatal("expected error on too-short blob")
+	}
+}
+
+// TestCookieStoreDecodeExpiredViaIssuedAt covers the "age > maxAge"
+// branch where the embedded IssuedAt timestamp causes a server-side
+// expiry rejection (independent of the client-spoofable cookie
+// Max-Age attribute).
+func TestCookieStoreDecodeExpiredViaIssuedAt(t *testing.T) {
+	cs, _ := NewCookieStore(testCookieKey)
+	cfg := &normalized{cookieName: "_session", maxAge: time.Minute}
+
+	// Issue a cookie with IssuedAt 10 minutes ago — server-side
+	// expiry should reject regardless of the configured cookie
+	// Max-Age (which is what the client could spoof).
+	envelope := cookieEnvelope{
+		IssuedAt: time.Now().Add(-10 * time.Minute).Unix(),
+		Stored:   &Stored{Data: map[string]any{"k": "v"}},
+	}
+	encoded, err := cs.encode(envelope, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.decode(encoded, cfg); err == nil {
+		t.Fatal("expected expiry error from IssuedAt check")
+	}
+}
+
 // TestStdlibErrorHandlerProceedsWithFresh covers the stdlib path's
 // "ErrorHandler returned nil → continue with fresh" branch.
 func TestStdlibErrorHandlerProceedsWithFresh(t *testing.T) {

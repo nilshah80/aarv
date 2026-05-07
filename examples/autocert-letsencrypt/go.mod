@@ -3,7 +3,7 @@ module github.com/nilshah80/aarv/examples/autocert-letsencrypt
 go 1.23.0
 
 require (
-	github.com/nilshah80/aarv v0.7.0
+	github.com/nilshah80/aarv v0.8.0
 	github.com/nilshah80/aarv/plugins/autocert v0.0.0
 	golang.org/x/crypto v0.32.0
 )

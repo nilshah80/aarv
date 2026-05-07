@@ -1,4 +1,4 @@
-module github.com/nilshah80/aarv/examples/openapi-spec
+module github.com/nilshah80/aarv/examples/openapi
 
 go 1.23.0
 

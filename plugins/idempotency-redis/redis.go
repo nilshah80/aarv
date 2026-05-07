@@ -86,9 +86,9 @@ type Config struct {
 // Store implements idempotency.Store and idempotency.WaitableStore
 // over Redis.
 type Store struct {
-	client    *redis.Client
-	prefix    string
-	lockTTL   time.Duration
+	client  *redis.Client
+	prefix  string
+	lockTTL time.Duration
 }
 
 // Compile-time interface checks. Failing here means an upstream

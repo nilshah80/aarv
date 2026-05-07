@@ -978,22 +978,31 @@ Prerequisite work in the root module to unblock cardinality control on metrics l
 
 ---
 
-## Phase 13: Documentation & Benchmarks (M13) — PARTIALLY COMPLETE
+## Phase 13: Documentation & Benchmarks (M13) ✅
 
 ### Docs
 - [x] README.md: badges, install, quick start, feature list
-- [ ] docs/getting-started.md
-- [ ] docs/routing.md
-- [ ] docs/binding.md
-- [ ] docs/validation.md
-- [ ] docs/middleware.md
-- [ ] docs/hooks.md
-- [ ] docs/plugins.md (using + writing)
-- [ ] docs/error-handling.md
-- [ ] docs/tls-http2.md
-- [ ] docs/testing.md
-- [ ] docs/auth.md
-- [ ] docs/architecture.md
+- [x] docs/getting-started.md
+- [x] docs/routing.md
+- [x] docs/binding.md
+- [x] docs/validation.md
+- [x] docs/middleware.md
+- [x] docs/hooks.md
+- [x] docs/plugins.md (using + writing)
+- [x] docs/error-handling.md
+- [x] docs/tls-http2.md
+- [x] docs/testing.md
+- [x] docs/auth.md
+- [x] docs/session.md
+- [x] docs/architecture.md
+
+### Adoption Docs
+- [x] docs/observability.md (request IDs, logging, health, Prometheus, OpenTelemetry, pprof)
+- [x] docs/resilience.md (body limits, timeout, throttle, rate limiting, idempotency, Redis stores)
+- [x] docs/security.md (security headers, CORS, CSRF, IP filtering, sanitization, encryption)
+- [x] docs/responses.md (response helpers, files, uploads, streaming, static, compression, ETags)
+- [x] docs/codecs.md (stdlib, segmentio, sonic, jsonv2)
+- [x] docs/release-policy.md (compatibility, root/submodule tags, release verification)
 
 ### Benchmarks ✅
 - [x] Framework overhead: empty handler, measure latency + allocs
@@ -1004,17 +1013,23 @@ Prerequisite work in the root module to unblock cardinality control on metrics l
 - [x] Comparison: framework vs Gin vs Mach vs Fiber (tests/benchmark/compare_test.go)
 - [x] Load test: 500K requests, 100 VCs, real TCP with latency/memory/CPU metrics
 
-### Examples — PARTIALLY COMPLETE
+### Examples ✅
 - [x] examples/hello — minimal hello world
 - [x] examples/rest-crud — full CRUD with typed handlers
-- [ ] examples/jwt-auth — JWT protected API
-- [ ] examples/file-upload — multipart form handling with binder integration
-- [ ] examples/middleware-chain — custom middleware
-- [ ] examples/plugin-custom — writing a plugin
-- [ ] examples/tls-http2 — HTTPS setup
-- [ ] examples/microservice — health check + prometheus + structured logging
-- [ ] examples/sse — server-sent events real-time updates
-- [ ] examples/openapi — auto-generated OpenAPI docs with Swagger UI
+- [x] examples/jwt-auth — JWT protected API
+- [x] examples/file-upload — multipart form handling with binder integration
+- [x] examples/middleware-chain — custom middleware
+- [x] examples/plugin-custom — writing a plugin
+- [x] examples/tls-http2 — HTTPS setup
+- [x] examples/microservice — health check + prometheus + structured logging
+- [x] examples/sse — server-sent events real-time updates
+- [x] examples/openapi — auto-generated OpenAPI docs with Swagger UI
+
+### Quality Gates / Follow-ups
+- [x] Add `gofmt -s -l` check to CI lint workflow
+- [ ] Consider advisory `gocyclo` measurement for large handlers and fixtures; do not make it release-blocking without agreed thresholds
+- [ ] Consider deduplicating `plugins/session` normalize helpers after v0.8.0 if the API stays stable
+- [ ] Continue plugin curation notes as overlap grows across observability and auth-related plugins
 
 ---
 

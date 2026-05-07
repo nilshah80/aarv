@@ -182,5 +182,6 @@ registration entirely.
 
 ## See also
 
-- [`examples/openapi-spec/`](../examples/openapi-spec/) — runnable end-to-end demo
+- [`examples/openapi/`](../examples/openapi/) — canonical runnable demo with generated spec and Swagger UI
+- [`examples/openapi-spec/`](../examples/openapi-spec/) — earlier end-to-end spec demo
 - [`plugins/openapi-ui/ASSETS.md`](../plugins/openapi-ui/ASSETS.md) — vendored UI bundle versions + update procedure

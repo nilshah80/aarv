@@ -66,8 +66,42 @@ Concrete examples live under [`examples/`](./examples):
 - `examples/performance-profile` — bridge-off plus fast JSON codec for throughput-oriented services
 - `examples/custom-plugin` — decorators, dependencies, plugin-scoped routes, dual middleware registration
 - `examples/auth` — JWT, API key, and session auth
+- `examples/jwt-auth` — JWT protected API using the JWT plugin
 - `examples/database` — repository-style app with typed handlers
 - `examples/fileserver` and `examples/streaming` — file and stream responses
+- `examples/file-upload` — multipart upload binding with `UploadedFile`
+- `examples/middleware-chain` — production-shaped middleware ordering
+- `examples/plugin-custom` — custom plugin interface and scoped routes
+- `examples/tls-http2` — HTTPS and HTTP/2 setup
+- `examples/microservice` — health checks, Prometheus, and structured logging
+- `examples/sse` — server-sent events
+- `examples/openapi` — generated OpenAPI spec and Swagger UI
+
+## Guides
+
+Start with these docs when wiring a real service:
+
+- [`docs/getting-started.md`](docs/getting-started.md) — first service, typed handlers, production-shaped baseline
+- [`docs/routing.md`](docs/routing.md) — routes, groups, metadata, OpenAPI-facing route options
+- [`docs/binding.md`](docs/binding.md) — path/query/header/cookie/form/file/JSON binding
+- [`docs/validation.md`](docs/validation.md) — validation tags, custom rules, struct-level validation
+- [`docs/middleware.md`](docs/middleware.md) — middleware forms, ordering, streaming/buffering notes
+- [`docs/hooks.md`](docs/hooks.md) — lifecycle phases, priorities, startup/shutdown hooks
+- [`docs/auth.md`](docs/auth.md) — JWT, Bearer, API key, Basic auth, HMAC, RBAC, Problem Details
+- [`docs/session.md`](docs/session.md) — MemoryStore vs CookieStore, login/logout, flash, CSRF, secure cookies
+- [`docs/security.md`](docs/security.md) — security headers, CORS, CSRF, IP filtering, sanitization, encryption
+- [`docs/resilience.md`](docs/resilience.md) — body limits, timeout, throttle, rate limiting, idempotency, Redis stores
+- [`docs/observability.md`](docs/observability.md) — request IDs, logging, health, Prometheus, OpenTelemetry, pprof
+- [`docs/responses.md`](docs/responses.md) — response helpers, files, uploads, streaming, static, compression, ETags
+- [`docs/codecs.md`](docs/codecs.md) — stdlib, segmentio, sonic, jsonv2 codec choices
+- [`docs/plugins.md`](docs/plugins.md) — using and writing plugins, root vs submodule release model
+- [`docs/error-handling.md`](docs/error-handling.md) — AppError, validation failures, Problem Details, recovery
+- [`docs/tls-http2.md`](docs/tls-http2.md) — TLS/HTTP2 production entry point
+- [`docs/testing.md`](docs/testing.md) — TestClient, httptest, race, coverage, submodule checks
+- [`docs/architecture.md`](docs/architecture.md) — request flow, core boundaries, modules
+- [`docs/release-policy.md`](docs/release-policy.md) — compatibility, submodule tags, release verification
+- [`docs/tls.md`](docs/tls.md) — TLS, mTLS, cert reload, autocert, h2c
+- [`docs/openapi.md`](docs/openapi.md) — generated OpenAPI specs and UI viewers
 
 ## Type-Safe Handlers
 
@@ -177,8 +211,8 @@ Plugins fall into three groups depending on their dependency footprint:
 | Layer | What lives here | Module path |
 |---|---|---|
 | **Root features** (built into the root module) | Lifecycle (`ListenServer`, `TLSConfig`, `MutualTLSConfig`, `Shutdown`), hooks, codec, route binding (`Bind`, `BindRoute`, `WithSchema`, …), cert hot-reload (`WithCertReload`) | `github.com/nilshah80/aarv` |
-| **Root plugins** (stdlib-only, in the root module) | `apikey`, `basicauth`, `bodylimit`, `compress`, `cors`, `csrf`, `encrypt`, `etag`, `health`, `idempotency`, `ipfilter`, `jwt`, `logger`, `pprof`, `ratelimit`, `recover`, `requestid`, `sanitize`, `secure`, `static`, `throttle`, `timeout`, `verboselog` | `github.com/nilshah80/aarv/plugins/<name>` |
-| **Submodule plugins** (separate `go get`, third-party deps) | `prometheus`, `otel`, `autocert`, `h2c`, `openapi`, `openapi-ui` | `github.com/nilshah80/aarv/plugins/<name>` (own `go.mod`) |
+| **Root plugins** (stdlib-only, in the root module) | `apikey`, `basicauth`, `bearer`, `bodylimit`, `compress`, `cors`, `csrf`, `encrypt`, `etag`, `health`, `hmacauth`, `idempotency`, `ipfilter`, `jwt`, `logger`, `pprof`, `problem`, `ratelimit`, `rbac`, `recover`, `requestid`, `secure`, `session`, `static`, `throttle`, `timeout`, `verboselog` | `github.com/nilshah80/aarv/plugins/<name>` |
+| **Submodule plugins** (separate `go get`, third-party deps) | `prometheus`, `otel`, `autocert`, `h2c`, `openapi`, `openapi-ui`, `sanitize`, `hmacauth-redis`, `idempotency-redis`, `ratelimit-redis` | `github.com/nilshah80/aarv/plugins/<name>` (own `go.mod`) |
 
 Submodule plugins each carry their own `go.mod` so the root module can
 remain stdlib-only. Add them à la carte:

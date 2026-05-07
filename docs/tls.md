@@ -76,7 +76,7 @@ Use `plugins/secure` to set the header on your HTTPS responses:
 import "github.com/nilshah80/aarv/plugins/secure"
 
 app.Use(secure.New(secure.Config{
-    HSTSMaxAge:            365 * 24 * time.Hour,
+    HSTSMaxAge:            365 * 24 * 60 * 60,
     HSTSIncludeSubdomains: true,
     HSTSPreload:           true, // only after submitting to hstspreload.org
 }))

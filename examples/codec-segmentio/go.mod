@@ -8,9 +8,9 @@ require (
 )
 
 require (
-	github.com/segmentio/asm v1.1.3 // indirect
-	github.com/segmentio/encoding v0.4.1 // indirect
-	golang.org/x/sys v0.0.0-20211110154304-99a53858aa08 // indirect
+	github.com/segmentio/asm v1.2.1 // indirect
+	github.com/segmentio/encoding v0.5.4 // indirect
+	golang.org/x/sys v0.43.0 // indirect
 )
 
 replace github.com/nilshah80/aarv => ../..
