@@ -201,6 +201,143 @@ func TestIncludeOverridesExclude(t *testing.T) {
 	}
 }
 
+func TestTagsFilter_OnlyTaggedRoutesIncluded(t *testing.T) {
+	app := newApp()
+	app.Get("/public/users", func(c *aarv.Context) error { return nil },
+		aarv.WithTags("public"))
+	app.Get("/internal/admin", func(c *aarv.Context) error { return nil },
+		aarv.WithTags("internal"))
+	app.Get("/untagged", func(c *aarv.Context) error { return nil })
+
+	p, err := New(app, Config{Tags: []string{"public"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	spec := mustSpec(t, p)
+
+	if _, ok := spec.Paths["/public/users"]; !ok {
+		t.Error("/public/users must be included (tag matches)")
+	}
+	if _, ok := spec.Paths["/internal/admin"]; ok {
+		t.Error("/internal/admin must be excluded (tag does not match)")
+	}
+	if _, ok := spec.Paths["/untagged"]; ok {
+		t.Error("/untagged must be excluded when Tags filter is set (no tags = no match)")
+	}
+}
+
+func TestTagsFilter_MultipleTagsAreUnion(t *testing.T) {
+	app := newApp()
+	app.Get("/a", func(c *aarv.Context) error { return nil }, aarv.WithTags("alpha"))
+	app.Get("/b", func(c *aarv.Context) error { return nil }, aarv.WithTags("beta"))
+	app.Get("/c", func(c *aarv.Context) error { return nil }, aarv.WithTags("gamma"))
+
+	p, err := New(app, Config{Tags: []string{"alpha", "beta"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	spec := mustSpec(t, p)
+
+	for _, want := range []string{"/a", "/b"} {
+		if _, ok := spec.Paths[want]; !ok {
+			t.Errorf("%s should be present (matches one of the configured tags)", want)
+		}
+	}
+	if _, ok := spec.Paths["/c"]; ok {
+		t.Error("/c must be excluded (its tag is not in the filter set)")
+	}
+}
+
+func TestTagsFilter_RouteWithMultipleTagsMatchesIfAny(t *testing.T) {
+	app := newApp()
+	app.Get("/multi", func(c *aarv.Context) error { return nil },
+		aarv.WithTags("public", "v2"))
+	app.Get("/v1", func(c *aarv.Context) error { return nil },
+		aarv.WithTags("v1"))
+
+	p, err := New(app, Config{Tags: []string{"v2"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	spec := mustSpec(t, p)
+
+	if _, ok := spec.Paths["/multi"]; !ok {
+		t.Error("/multi must be present (one of its tags matches)")
+	}
+	if _, ok := spec.Paths["/v1"]; ok {
+		t.Error("/v1 must be absent (tag does not match)")
+	}
+}
+
+func TestTagsFilter_IgnoredWhenIncludeSet(t *testing.T) {
+	app := newApp()
+	app.Get("/x", func(c *aarv.Context) error { return nil }, aarv.WithTags("public"))
+	app.Get("/y", func(c *aarv.Context) error { return nil }, aarv.WithTags("internal"))
+
+	// Include returns true for everything; Tags would normally drop /y
+	// because it carries "internal" not "public", but Include overrides.
+	p, err := New(app, Config{
+		Include: func(r aarv.RouteInfo) bool { return true },
+		Tags:    []string{"public"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	spec := mustSpec(t, p)
+
+	for _, want := range []string{"/x", "/y"} {
+		if _, ok := spec.Paths[want]; !ok {
+			t.Errorf("%s missing — Include must override Tags", want)
+		}
+	}
+}
+
+func TestTagsFilter_EmptyOrAllBlankIsTreatedAsUnset(t *testing.T) {
+	app := newApp()
+	app.Get("/route", func(c *aarv.Context) error { return nil })
+
+	// Tags consisting only of empty strings is equivalent to unset —
+	// route with no tags should still be included.
+	p, err := New(app, Config{Tags: []string{"", ""}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	spec := mustSpec(t, p)
+
+	if _, ok := spec.Paths["/route"]; !ok {
+		t.Error("/route must be present when Tags has no real entries")
+	}
+}
+
+func TestTagsFilter_AppliedBeforeExclude(t *testing.T) {
+	app := newApp()
+	app.Get("/api/public/v1", func(c *aarv.Context) error { return nil },
+		aarv.WithTags("public"))
+	app.Get("/api/admin/v1", func(c *aarv.Context) error { return nil },
+		aarv.WithTags("public"))
+	app.Get("/api/private/v1", func(c *aarv.Context) error { return nil },
+		aarv.WithTags("private"))
+
+	p, err := New(app, Config{
+		Tags:    []string{"public"},
+		Exclude: []string{"/api/admin/"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	spec := mustSpec(t, p)
+
+	if _, ok := spec.Paths["/api/public/v1"]; !ok {
+		t.Error("/api/public/v1 must be present (tag matches, prefix does not)")
+	}
+	if _, ok := spec.Paths["/api/admin/v1"]; ok {
+		t.Error("/api/admin/v1 must be absent (tag matches but Exclude prefix matches)")
+	}
+	if _, ok := spec.Paths["/api/private/v1"]; ok {
+		t.Error("/api/private/v1 must be absent (tag does not match)")
+	}
+}
+
 func TestCustomExcludeHonored(t *testing.T) {
 	app := newApp()
 	app.Get("/admin/users", func(c *aarv.Context) error { return nil })

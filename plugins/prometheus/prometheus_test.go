@@ -657,3 +657,76 @@ func TestNew_NativePath_EmptyGroupPathExcludes(t *testing.T) {
 		t.Fatalf("native path empty group path: expected 0 metric, got %v", got)
 	}
 }
+
+// TestSubMillisecondBuckets_Shape asserts the documented properties of
+// the preset: starts at 100µs, monotonically increasing, ends at 5s. This
+// is the contract every consumer relies on when choosing the preset over
+// DefaultBuckets.
+func TestSubMillisecondBuckets_Shape(t *testing.T) {
+	if len(SubMillisecondBuckets) == 0 {
+		t.Fatal("SubMillisecondBuckets must not be empty")
+	}
+	if got := SubMillisecondBuckets[0]; got != 0.0001 {
+		t.Fatalf("SubMillisecondBuckets[0] = %v, want 0.0001 (100µs)", got)
+	}
+	last := SubMillisecondBuckets[len(SubMillisecondBuckets)-1]
+	if last != 5 {
+		t.Fatalf("SubMillisecondBuckets last = %v, want 5", last)
+	}
+	for i := 1; i < len(SubMillisecondBuckets); i++ {
+		if SubMillisecondBuckets[i] <= SubMillisecondBuckets[i-1] {
+			t.Fatalf("SubMillisecondBuckets not strictly increasing at index %d: %v then %v",
+				i, SubMillisecondBuckets[i-1], SubMillisecondBuckets[i])
+		}
+	}
+}
+
+// TestSubMillisecondBuckets_AppliedViaConfig confirms the preset is
+// accepted by Config.Buckets and produces the expected bucket boundaries
+// on the duration histogram. Guards against a future refactor that
+// changes how Buckets is consumed.
+func TestSubMillisecondBuckets_AppliedViaConfig(t *testing.T) {
+	reg := freshRegistry()
+	cfg := Config{
+		Registerer: reg,
+		Buckets:    SubMillisecondBuckets,
+	}
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(cfg))
+	app.Get("/x", func(c *aarv.Context) error {
+		return c.Text(http.StatusOK, "ok")
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	app.ServeHTTP(rec, req)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var hist *dto.Histogram
+	for _, mf := range mfs {
+		if mf.GetName() != "http_request_duration_seconds" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			if h := m.GetHistogram(); h != nil {
+				hist = h
+				break
+			}
+		}
+	}
+	if hist == nil {
+		t.Fatal("http_request_duration_seconds histogram not found")
+	}
+	got := hist.GetBucket()
+	if len(got) != len(SubMillisecondBuckets) {
+		t.Fatalf("bucket count = %d, want %d", len(got), len(SubMillisecondBuckets))
+	}
+	for i, b := range got {
+		if b.GetUpperBound() != SubMillisecondBuckets[i] {
+			t.Fatalf("bucket[%d] upper = %v, want %v", i, b.GetUpperBound(), SubMillisecondBuckets[i])
+		}
+	}
+}

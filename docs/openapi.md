@@ -157,12 +157,26 @@ openapi.New(app, openapi.Config{
 
 | Field                  | Behavior                                                |
 |------------------------|---------------------------------------------------------|
-| `Config.Include`       | When non-nil, the SOLE filter; `Exclude` is ignored.    |
-| `Config.Exclude`       | Path-prefix list. Routes whose Pattern starts with any entry are dropped. |
+| `Config.Include`       | When non-nil, the SOLE filter; `Tags` and `Exclude` are ignored. |
+| `Config.Tags`          | When non-empty, only routes carrying at least one of the listed tags (set via `aarv.WithTags(...)` at registration) are included. Routes with no tags are excluded. Applied before `Exclude`. Empty / all-blank slice is treated as unset. Ignored when `Include` is set. |
+| `Config.Exclude`       | Path-prefix list. Routes whose Pattern starts with any entry are dropped. Applied after `Tags`. |
 | `DefaultExclude`       | `["/openapi.json", "/openapi.yaml", "/docs", "/redoc"]` so the spec does not document its own viewer routes. |
 
 Custom `JSONPath` / `YAMLPath` are auto-added to `Exclude` so the
 generator does not self-document even at non-default endpoints.
+
+`Tags` is the declarative way to split a multi-section API into per-tag
+specs (one for "public", another for "internal") without writing a
+custom `Include` closure. A route with multiple tags matches if any one
+of them appears in `Config.Tags`:
+
+```go
+app.Get("/v1/public/users",   handler, aarv.WithTags("public"))
+app.Get("/v1/internal/admin", handler, aarv.WithTags("internal"))
+
+publicSpec, _ := openapi.New(app, openapi.Config{Tags: []string{"public"}})
+internalSpec, _ := openapi.New(app, openapi.Config{Tags: []string{"internal"}})
+```
 
 ## YAML output
 

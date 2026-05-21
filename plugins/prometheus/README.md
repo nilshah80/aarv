@@ -95,6 +95,26 @@ app.Use(prom.New(prom.Config{Registerer: reg}))
 metrics, _ := reg.Gather()
 ```
 
+## Histogram bucket presets
+
+Two presets are exported. Pick one or supply your own slice via
+`Config.Buckets`:
+
+- `DefaultBuckets` — `1ms .. 10s`. Fits typical web APIs whose p50 sits in
+  the 10–100ms range.
+- `SubMillisecondBuckets` — `100µs .. 5s`. Use for low-latency services
+  (in-cache redirects, edge proxies, internal RPC) where p50 falls below
+  the 1ms first bucket of `DefaultBuckets`. Symptom that signals you need
+  this: `histogram_quantile(0.5, …)` reports `0.001` regardless of load —
+  every request is collapsing into the first `DefaultBuckets` bucket.
+
+```go
+cfg := prom.Config{
+    Namespace: "aarv",
+    Buckets:   prom.SubMillisecondBuckets,
+}
+```
+
 ## What this plugin does NOT do
 
 - It does not pick exporters or scrape endpoints — `Handler(cfg)` returns

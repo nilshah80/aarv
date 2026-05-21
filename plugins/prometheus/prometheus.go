@@ -61,6 +61,22 @@ var DefaultBuckets = []float64{
 	0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
 }
 
+// SubMillisecondBuckets is a histogram preset for low-latency services
+// where typical request durations fall below the 1ms first bucket of
+// DefaultBuckets. The lowest bucket is 100µs; the slice still spans up
+// to 5s so 5xx long-tails remain observable. Pass to Config.Buckets:
+//
+//	prometheus.New(prometheus.Config{Buckets: prometheus.SubMillisecondBuckets})
+//
+// Symptom this fixes: with DefaultBuckets, a service whose p50 sits at
+// ~150µs collapses every request into the first bucket and
+// histogram_quantile(0.5, …) reports the bucket boundary (1ms) regardless
+// of the real distribution.
+var SubMillisecondBuckets = []float64{
+	0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025,
+	0.05, 0.1, 0.25, 0.5, 1, 2.5, 5,
+}
+
 // DefaultSizeBuckets is a default histogram for response-body sizes, in
 // bytes. Spans 100B JSON responses through ~10MB downloads.
 var DefaultSizeBuckets = []float64{

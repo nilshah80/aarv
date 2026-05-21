@@ -20,15 +20,15 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestResponseWriterHelpers(t *testing.T) {
 	rec := httptest.NewRecorder()
-	rw := newResponseWriter(rec)
+	rw := acquireRecorder(rec)
 
-	if rw.statusCode != 200 {
-		t.Fatalf("expected default status 200, got %d", rw.statusCode)
+	if rw.Status() != 200 {
+		t.Fatalf("expected default status 200, got %d", rw.Status())
 	}
 
 	rw.WriteHeader(201)
-	if rw.statusCode != 201 {
-		t.Fatalf("expected status 201, got %d", rw.statusCode)
+	if rw.Status() != 201 {
+		t.Fatalf("expected status 201, got %d", rw.Status())
 	}
 
 	n, err := rw.Write([]byte("ok"))
@@ -38,27 +38,28 @@ func TestResponseWriterHelpers(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("expected 2 bytes written, got %d", n)
 	}
-	if rw.bytesWritten != 2 {
-		t.Fatalf("expected tracked bytes 2, got %d", rw.bytesWritten)
+	if rw.BytesWritten() != 2 {
+		t.Fatalf("expected tracked bytes 2, got %d", rw.BytesWritten())
 	}
 	if rw.Unwrap() != rec {
 		t.Fatal("unwrap should return underlying response writer")
 	}
 
 	rec = httptest.NewRecorder()
-	rw = newResponseWriter(rec)
+	rw = acquireRecorder(rec)
 	n, err = rw.Write([]byte("body"))
 	if err != nil {
 		t.Fatalf("write-before-header failed: %v", err)
 	}
-	if n != 4 || rw.statusCode != 200 || !rw.written {
-		t.Fatalf("unexpected write-before-header state status=%d written=%v n=%d", rw.statusCode, rw.written, n)
+	if n != 4 || rw.Status() != 200 {
+		t.Fatalf("unexpected write-before-header state status=%d n=%d", rw.Status(), n)
 	}
 
-	releaseResponseWriter(nil)
-	releaseResponseWriter(rw)
-	if rw.ResponseWriter != nil || rw.statusCode != http.StatusOK || rw.bytesWritten != 0 || rw.written {
-		t.Fatalf("expected release to reset pooled writer, got %#v", rw)
+	releaseRecorder(nil)
+	releaseRecorder(rw)
+	if rw.Unwrap() != nil || rw.Status() != http.StatusOK || rw.BytesWritten() != 0 {
+		t.Fatalf("expected release to reset pooled writer, got status=%d bytes=%d unwrap=%v",
+			rw.Status(), rw.BytesWritten(), rw.Unwrap())
 	}
 }
 

@@ -65,6 +65,30 @@
 // MemoryNonceStore is provided for development and single-instance
 // use. Configuring NonceStore to nil disables replay protection and
 // emits a one-time warning at startup.
+//
+// # Observability
+//
+// Set Config.Observer to receive an Event after every verification
+// attempt — success and failure — carrying the canonical Outcome,
+// the client ID, the response status, the wall-clock duration, and
+// (for clock-skew failures) the absolute drift in seconds. The hook
+// is the supported way to layer tracing, metrics, or audit logging
+// without bringing those dependencies into the root aarv module.
+//
+//	cfg.Observer = func(c *aarv.Context, e hmacauth.Event) {
+//	    metrics.IncCounter("hmac.verify",
+//	        "outcome", string(e.Outcome),
+//	        "client_id", e.ClientID)
+//	    if e.Outcome != hmacauth.OutcomeOK {
+//	        slog.Warn("hmac verify failed",
+//	            "outcome", e.Outcome,
+//	            "skew_seconds", e.SkewSeconds)
+//	    }
+//	}
+//
+// OpenTelemetry adapters for the hook live in their own modules
+// (e.g. plugins/hmacauth-otel) so that the root aarv contract stays
+// zero-dependency.
 package hmacauth
 
 import (
@@ -192,6 +216,16 @@ type Config struct {
 	ErrorHandler ErrorHandler
 	Skipper      Skipper
 
+	// Observer, when non-nil, is invoked once per verification attempt
+	// (after Skipper bypass; before the handler runs on success, after
+	// the response status is decided on failure). Observer is the
+	// supported way to layer tracing, metrics, or audit logging on top
+	// of hmacauth without bringing those dependencies into the root
+	// aarv module — tracing-aware companions live in their own
+	// modules (e.g. plugins/hmacauth-otel) and wire themselves in via
+	// this hook. See observer.go for the Outcome and Event shapes.
+	Observer Observer
+
 	// Now overrides time.Now for tests. Production code leaves this
 	// nil.
 	Now func() time.Time
@@ -260,6 +294,7 @@ type normalized struct {
 	errorMessage    string
 	errorHandler    ErrorHandler
 	skipper         Skipper
+	observer        Observer
 	now             func() time.Time
 }
 
@@ -290,6 +325,7 @@ func normalize(cfg Config) *normalized {
 		errorMessage:    defaulted(cfg.ErrorMessage, "missing or invalid authentication"),
 		errorHandler:    cfg.ErrorHandler,
 		skipper:         cfg.Skipper,
+		observer:        cfg.Observer,
 		now:             cfg.Now,
 	}
 	if n.now == nil {
@@ -330,66 +366,160 @@ func defaulted(s, d string) string {
 // verifyNative runs the verification on the native (aarv.Context)
 // path. On failure it returns an *aarv.AppError so the framework's
 // error handler emits the standard JSON shape.
+//
+// Timing for the Observer Event is gated on n.observer != nil. When no
+// Observer is configured the verify path makes no extra observer
+// timing calls and constructs no Event value — verify() itself still
+// reads n.now() once for the skew-window check, which is unrelated to
+// the Observer pathway.
 func (n *normalized) verifyNative(c *aarv.Context) error {
+	hasObs := n.observer != nil
+	var start time.Time
+	if hasObs {
+		start = n.now()
+	}
 	r := c.RawRequest()
 	clientID := c.Header(n.clientIDHeader)
 	tsStr := c.Header(n.timestampHeader)
 	nonce := c.Header(n.nonceHeader)
 	sigHex := c.Header(n.signatureHeader)
 
-	body, status, err := n.readBody(c, r)
+	body, status, readOutcome, err := n.readBody(c, r)
 	if err != nil {
+		if hasObs {
+			n.observer(c, Event{
+				Outcome:  readOutcome,
+				ClientID: clientID,
+				Status:   status,
+				Duration: n.now().Sub(start),
+			})
+		}
 		return n.errNative(c, status, n.errorMessage)
 	}
 
-	client, ok, status := n.verify(c.Context(), clientID, tsStr, nonce, sigHex, r.Method, r.URL.Path, r.URL.Query(), body)
-	if !ok {
-		return n.errNative(c, status, n.errorMessage)
+	res := n.verify(c.Context(), clientID, tsStr, nonce, sigHex, r.Method, r.URL.Path, r.URL.Query(), body)
+	if !res.ok {
+		if hasObs {
+			n.observer(c, Event{
+				Outcome:     res.outcome,
+				ClientID:    clientID,
+				Status:      res.status,
+				SkewSeconds: res.skewSeconds,
+				Duration:    n.now().Sub(start),
+			})
+		}
+		return n.errNative(c, res.status, n.errorMessage)
 	}
 
-	principal := principalOf(client)
-	c.Set(identityStoreKey, client)
+	principal := principalOf(res.client)
+	c.Set(identityStoreKey, res.client)
 	c.Set(principalStoreKey, principal)
-	c.SetContextValue(contextKey{}, client)
+	c.SetContextValue(contextKey{}, res.client)
 	c.SetContextValue(principalContextKey{}, principal)
+	if hasObs {
+		n.observer(c, Event{
+			Outcome:  OutcomeOK,
+			ClientID: res.client.ClientID,
+			Duration: n.now().Sub(start),
+		})
+	}
 	return nil
 }
 
 // verifyStdlib runs the verification on the stdlib path. On failure
 // it writes the response itself and returns a sentinel error so the
 // outer middleware can short-circuit.
+//
+// Same nil-observer gating contract as verifyNative: when no Observer
+// is configured the verify path makes no extra observer timing calls
+// and constructs no Event value. (verify() still calls n.now() once
+// for the skew-window check; that's required by verification, not by
+// the Observer.)
 func (n *normalized) verifyStdlib(w http.ResponseWriter, r *http.Request) (*http.Request, error) {
+	hasObs := n.observer != nil
+	var start time.Time
+	if hasObs {
+		start = n.now()
+	}
 	clientID := r.Header.Get(n.clientIDHeader)
 	tsStr := r.Header.Get(n.timestampHeader)
 	nonce := r.Header.Get(n.nonceHeader)
 	sigHex := r.Header.Get(n.signatureHeader)
 
-	body, status, err := n.readBodyStdlib(r)
+	// Recover the bridged aarv.Context once up front; the Observer
+	// receives c (possibly nil) and we use it again on the success
+	// path when the framework bridge is present.
+	bridged, _ := aarv.FromRequest(r)
+
+	body, status, readOutcome, err := n.readBodyStdlib(r)
 	if err != nil {
+		if hasObs {
+			n.observer(bridged, Event{
+				Outcome:  readOutcome,
+				ClientID: clientID,
+				Status:   status,
+				Duration: n.now().Sub(start),
+			})
+		}
 		n.errStdlib(w, r, status, n.errorMessage)
 		return nil, errStop
 	}
 
-	client, ok, status := n.verify(r.Context(), clientID, tsStr, nonce, sigHex, r.Method, r.URL.Path, r.URL.Query(), body)
-	if !ok {
-		n.errStdlib(w, r, status, n.errorMessage)
+	res := n.verify(r.Context(), clientID, tsStr, nonce, sigHex, r.Method, r.URL.Path, r.URL.Query(), body)
+	if !res.ok {
+		if hasObs {
+			n.observer(bridged, Event{
+				Outcome:     res.outcome,
+				ClientID:    clientID,
+				Status:      res.status,
+				SkewSeconds: res.skewSeconds,
+				Duration:    n.now().Sub(start),
+			})
+		}
+		n.errStdlib(w, r, res.status, n.errorMessage)
 		return nil, errStop
 	}
 
-	principal := principalOf(client)
-	if c, ok := aarv.FromRequest(r); ok {
-		c.Set(identityStoreKey, client)
-		c.Set(principalStoreKey, principal)
-		c.SetContextValue(contextKey{}, client)
-		c.SetContextValue(principalContextKey{}, principal)
-		return c.RawRequest(), nil
+	principal := principalOf(res.client)
+	if bridged != nil {
+		bridged.Set(identityStoreKey, res.client)
+		bridged.Set(principalStoreKey, principal)
+		bridged.SetContextValue(contextKey{}, res.client)
+		bridged.SetContextValue(principalContextKey{}, principal)
+		if hasObs {
+			n.observer(bridged, Event{
+				Outcome:  OutcomeOK,
+				ClientID: res.client.ClientID,
+				Duration: n.now().Sub(start),
+			})
+		}
+		return bridged.RawRequest(), nil
 	}
-	ctx := context.WithValue(r.Context(), contextKey{}, client)
+	ctx := context.WithValue(r.Context(), contextKey{}, res.client)
 	ctx = context.WithValue(ctx, principalContextKey{}, principal)
+	if hasObs {
+		n.observer(nil, Event{
+			Outcome:  OutcomeOK,
+			ClientID: res.client.ClientID,
+			Duration: n.now().Sub(start),
+		})
+	}
 	return r.WithContext(ctx), nil
 }
 
 var errStop = errors.New("hmacauth: response written")
+
+// verifyResult is the shape verify returns. It carries the auth
+// decision plus the data the Observer hook needs to classify the
+// outcome — particularly the Outcome enum and, for clock-skew
+// failures, the absolute drift in seconds.
+type verifyResult struct {
+	client      Client
+	ok          bool
+	status      int
+	outcome     Outcome
+	skewSeconds int64
+}
 
 // verify is the shared per-request decision logic. It returns a
 // status only as a hint to the caller for response shaping —
@@ -397,16 +527,16 @@ var errStop = errors.New("hmacauth: response written")
 // overflow returns 413 separately because that maps to a different
 // recovery path on the client.
 //
-// Returning (Client{}, false, status) means "reject"; (client, true, 0)
-// means "accept".
-func (n *normalized) verify(ctx context.Context, clientID, tsStr, nonce, sigHex, method, path string, query map[string][]string, body []byte) (Client, bool, int) {
+// On reject: ok=false, status=401 or 413, outcome populated. On
+// accept: ok=true, status=0, outcome=OutcomeOK, client populated.
+func (n *normalized) verify(ctx context.Context, clientID, tsStr, nonce, sigHex, method, path string, query map[string][]string, body []byte) verifyResult {
 	if clientID == "" || tsStr == "" || nonce == "" || sigHex == "" {
-		return Client{}, false, http.StatusUnauthorized
+		return verifyResult{ok: false, status: http.StatusUnauthorized, outcome: OutcomeUnauthorized}
 	}
 
 	ts, err := strconv.ParseInt(tsStr, 10, 64)
 	if err != nil || ts <= 0 {
-		return Client{}, false, http.StatusUnauthorized
+		return verifyResult{ok: false, status: http.StatusUnauthorized, outcome: OutcomeUnauthorized}
 	}
 	// Reject absurdly large timestamps before doing arithmetic on
 	// them. The 2^53 ceiling matches JavaScript's safe-integer bound
@@ -417,22 +547,27 @@ func (n *normalized) verify(ctx context.Context, clientID, tsStr, nonce, sigHex,
 	// input — there is no legitimate skew-window argument for it.
 	const maxSafeTimestamp = int64(1) << 53
 	if ts > maxSafeTimestamp {
-		return Client{}, false, http.StatusUnauthorized
+		return verifyResult{ok: false, status: http.StatusUnauthorized, outcome: OutcomeUnauthorized}
 	}
 
 	now := n.now().Unix()
-	if abs64(now-ts) > n.skewSeconds {
-		return Client{}, false, http.StatusUnauthorized
+	if drift := abs64(now - ts); drift > n.skewSeconds {
+		return verifyResult{
+			ok:          false,
+			status:      http.StatusUnauthorized,
+			outcome:     OutcomeClockSkew,
+			skewSeconds: drift,
+		}
 	}
 
 	receivedSig, err := hex.DecodeString(sigHex)
 	if err != nil || len(receivedSig) != sha256.Size {
-		return Client{}, false, http.StatusUnauthorized
+		return verifyResult{ok: false, status: http.StatusUnauthorized, outcome: OutcomeSignatureInvalid}
 	}
 
 	client, err := n.validator(clientID)
 	if err != nil {
-		return Client{}, false, http.StatusUnauthorized
+		return verifyResult{ok: false, status: http.StatusUnauthorized, outcome: OutcomeUnauthorized}
 	}
 	// Reject a zero-ish client. Both the empty-ClientID case AND
 	// the no-secret case are treated as "unknown" — a custom
@@ -441,26 +576,37 @@ func (n *normalized) verify(ctx context.Context, clientID, tsStr, nonce, sigHex,
 	// namespace, letting one client's replay invalidate another
 	// client's traffic.
 	if client.ClientID == "" {
-		return Client{}, false, http.StatusUnauthorized
+		return verifyResult{ok: false, status: http.StatusUnauthorized, outcome: OutcomeUnauthorized}
 	}
 	if len(client.Secret) == 0 && len(client.Secrets) == 0 {
-		return Client{}, false, http.StatusUnauthorized
+		return verifyResult{ok: false, status: http.StatusUnauthorized, outcome: OutcomeUnauthorized}
 	}
 
 	canonical := canonicalRequest(method, path, query, body, ts, nonce)
 	matched := compareAllSecrets(canonical, receivedSig, client.Secret, client.Secrets)
 	if !matched {
-		return Client{}, false, http.StatusUnauthorized
+		return verifyResult{ok: false, status: http.StatusUnauthorized, outcome: OutcomeSignatureInvalid}
 	}
 
 	if n.store != nil {
 		fresh, err := n.store.SetNX(ctx, "nonce:"+clientID+":"+nonce, n.nonceTTL)
-		if err != nil || !fresh {
-			return Client{}, false, http.StatusUnauthorized
+		if err != nil {
+			// Nonce-store transport failure (Redis unreachable, etc.).
+			// We must reject the request — without a successful SetNX
+			// we cannot rule out a replay — but reporting this as
+			// OutcomeReplayDetected would make a Redis outage look
+			// like a flood of replay attacks on dashboards. Surface
+			// it as OutcomeUnauthorized so the operator sees an
+			// auth-availability incident, not a security incident.
+			return verifyResult{ok: false, status: http.StatusUnauthorized, outcome: OutcomeUnauthorized}
+		}
+		if !fresh {
+			// Nonce was already present — genuine replay.
+			return verifyResult{ok: false, status: http.StatusUnauthorized, outcome: OutcomeReplayDetected}
 		}
 	}
 
-	return client, true, 0
+	return verifyResult{client: client, ok: true, status: 0, outcome: OutcomeOK}
 }
 
 // compareAllSecrets verifies the received signature against every
@@ -499,34 +645,43 @@ func compareAllSecrets(canonical, received []byte, primary []byte, rotation [][]
 // http.MaxBytesReader so the framework's response writer machinery
 // is wired up for the 413 path, then re-injects the buffered bytes
 // via Context.SetBody so downstream binders see the same body.
-func (n *normalized) readBody(c *aarv.Context, r *http.Request) ([]byte, int, error) {
+//
+// Returns (body, status, outcome, err). On the happy path:
+// (body, 0, OutcomeOK, nil). On overflow: (nil, 413,
+// OutcomeBodyTooLarge, MaxBytesError). On any other I/O failure:
+// (nil, 401, OutcomeUnauthorized, transportErr) — observers should
+// see this as a generic auth failure rather than a body-size signal.
+func (n *normalized) readBody(c *aarv.Context, r *http.Request) ([]byte, int, Outcome, error) {
 	if r.Body == nil {
-		return nil, 0, nil
+		return nil, 0, OutcomeOK, nil
 	}
 	limited := http.MaxBytesReader(c.Response(), r.Body, n.maxBodyBytes)
 	body, err := io.ReadAll(limited)
 	if err != nil {
-		// MaxBytesReader returns *http.MaxBytesError on overflow;
-		// any other error is a transport problem and also collapses
-		// to 401 (we cannot verify a signature on a body we could
-		// not read).
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			return nil, http.StatusRequestEntityTooLarge, err
+			return nil, http.StatusRequestEntityTooLarge, OutcomeBodyTooLarge, err
 		}
-		return nil, http.StatusUnauthorized, err
+		// Transport-level failure (connection reset, partial read,
+		// etc.). The signature can't be verified on a body we could
+		// not read, so we collapse to 401 — but the outcome is
+		// OutcomeUnauthorized rather than OutcomeBodyTooLarge so
+		// dashboards don't see transport blips as "body too large".
+		return nil, http.StatusUnauthorized, OutcomeUnauthorized, err
 	}
 	c.SetBody(io.NopCloser(bytesReader(body)))
-	return body, 0, nil
+	return body, 0, OutcomeOK, nil
 }
 
 // readBodyStdlib is the stdlib path equivalent. It uses the
 // max+1 read pattern because stdlib middleware does not have the
 // aarv response writer hooked up at this point — emitting 413 is
 // done by errStdlib below.
-func (n *normalized) readBodyStdlib(r *http.Request) ([]byte, int, error) {
+//
+// Same return contract as readBody: (body, status, outcome, err).
+func (n *normalized) readBodyStdlib(r *http.Request) ([]byte, int, Outcome, error) {
 	if r.Body == nil {
-		return nil, 0, nil
+		return nil, 0, OutcomeOK, nil
 	}
 	cap := n.maxBodyBytes
 	buf := make([]byte, 0, min64(cap+1, 64<<10))
@@ -536,21 +691,21 @@ func (n *normalized) readBodyStdlib(r *http.Request) ([]byte, int, error) {
 		if nRead > 0 {
 			buf = append(buf, tmp[:nRead]...)
 			if int64(len(buf)) > cap {
-				return nil, http.StatusRequestEntityTooLarge, errBodyOverflow
+				return nil, http.StatusRequestEntityTooLarge, OutcomeBodyTooLarge, errBodyOverflow
 			}
 		}
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, http.StatusUnauthorized, err
+			return nil, http.StatusUnauthorized, OutcomeUnauthorized, err
 		}
 	}
 	r.Body = io.NopCloser(bytesReader(buf))
 	if c, ok := aarv.FromRequest(r); ok {
 		c.SetBody(r.Body)
 	}
-	return buf, 0, nil
+	return buf, 0, OutcomeOK, nil
 }
 
 var errBodyOverflow = errors.New("hmacauth: body exceeds MaxBodyBytes")

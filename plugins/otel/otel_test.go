@@ -66,16 +66,205 @@ func TestNew_StartsServerSpanPerRequest(t *testing.T) {
 		t.Fatalf("span name: want 'GET /users/{id}', got %q", name)
 	}
 
-	// Verify HTTP semconv attributes.
+	// Verify HTTP semconv attributes — both the modern semconv v1.37.0
+	// keys (the names every current dashboard expects) and the legacy
+	// keys (kept for one transitional minor so dashboards keyed on
+	// http.method, http.target, http.status_code keep working).
 	got := attrMap(span.Attributes())
+	if got["http.request.method"] != "GET" {
+		t.Fatalf("http.request.method: want GET, got %v", got["http.request.method"])
+	}
+	// url.path carries the raw request path (high cardinality is the
+	// expected behavior on spans). The low-cardinality template lives
+	// on http.route below.
+	if got["url.path"] != "/users/42" {
+		t.Fatalf("url.path: want /users/42 (raw path), got %v", got["url.path"])
+	}
+	if got["http.response.status_code"] != int64(200) {
+		t.Fatalf("http.response.status_code: want 200, got %v", got["http.response.status_code"])
+	}
+	if got["http.route"] != "/users/{id}" {
+		t.Fatalf("http.route: want /users/{id}, got %v", got["http.route"])
+	}
+	// Legacy http.target preserved its pre-migration shape: the route
+	// pattern when known, raw path otherwise. Don't conflate this with
+	// modern url.path.
 	if got["http.method"] != "GET" {
 		t.Fatalf("http.method: want GET, got %v", got["http.method"])
 	}
 	if got["http.target"] != "/users/{id}" {
-		t.Fatalf("http.target: want /users/{id}, got %v", got["http.target"])
+		t.Fatalf("http.target (legacy): want /users/{id}, got %v", got["http.target"])
 	}
 	if got["http.status_code"] != int64(200) {
 		t.Fatalf("http.status_code: want 200, got %v", got["http.status_code"])
+	}
+}
+
+// TestSemconv_ModernAndLegacyAttributesEmitted locks down the dual-emit
+// contract for the transitional release: every modern attribute is paired
+// with its legacy counterpart on the same span, with the same value.
+// Removing a legacy emission later (or breaking the value match) will
+// trip this test loud and clear.
+func TestSemconv_ModernAndLegacyAttributesEmitted(t *testing.T) {
+	tp, rec := newTraceRecorder()
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{TracerProvider: tp}))
+	app.Get("/users/{id}", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/users/42", nil)
+	req.Header.Set("User-Agent", "test-ua/1.0")
+	req.RemoteAddr = "10.0.0.1:55555"
+	app.ServeHTTP(httptest.NewRecorder(), req)
+
+	spans := rec.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("spans: want 1, got %d", len(spans))
+	}
+	got := attrMap(spans[0].Attributes())
+
+	// Pairs whose modern + legacy values match by construction: same
+	// underlying source, same value, just different attribute keys.
+	for _, pair := range []struct {
+		modern, legacy string
+		want           any
+	}{
+		{"http.request.method", "http.method", "GET"},
+		{"http.response.status_code", "http.status_code", int64(200)},
+		{"user_agent.original", "http.user_agent", "test-ua/1.0"},
+		{"client.address", "net.peer.ip", "10.0.0.1"},
+	} {
+		if got[pair.modern] != pair.want {
+			t.Errorf("%s: want %v, got %v", pair.modern, pair.want, got[pair.modern])
+		}
+		if got[pair.legacy] != pair.want {
+			t.Errorf("%s (legacy): want %v, got %v", pair.legacy, pair.want, got[pair.legacy])
+		}
+	}
+
+	// url.path and http.target intentionally differ: url.path is the
+	// raw request path (semconv v1.37.0); http.target preserved its
+	// pre-migration shape (route pattern when matched). This guards
+	// against a refactor that re-collapses them into the same value.
+	if got["url.path"] != "/users/42" {
+		t.Errorf("url.path: want /users/42 (raw path), got %v", got["url.path"])
+	}
+	if got["http.target"] != "/users/{id}" {
+		t.Errorf("http.target (legacy): want /users/{id}, got %v", got["http.target"])
+	}
+
+	// http.route is a modern-only addition (no legacy counterpart).
+	if got["http.route"] != "/users/{id}" {
+		t.Errorf("http.route: want /users/{id}, got %v", got["http.route"])
+	}
+
+	// network.protocol.version is modern-only too. The httptest request
+	// reports HTTP/1.1, so we expect "1.1" verbatim.
+	if got["network.protocol.version"] != "1.1" {
+		t.Errorf("network.protocol.version: want 1.1, got %v", got["network.protocol.version"])
+	}
+}
+
+// TestSemconv_MetricsUseRouteNotURLPath asserts the cardinality-control
+// rule for OTel HTTP server metrics: the path-shaped attribute on
+// metrics is http.route (low-cardinality template), not url.path
+// (high-cardinality raw path). Including url.path on metrics would
+// produce a label per distinct URL — typically a TSDB-killing mistake.
+// This test catches a regression where the metric attribute set
+// accidentally re-acquires url.path.
+func TestSemconv_MetricsUseRouteNotURLPath(t *testing.T) {
+	tp, _ := newTraceRecorder()
+	mp, mr := newMetricReader()
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{TracerProvider: tp, MeterProvider: mp}))
+	app.Get("/users/{id}", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/users/42", nil))
+
+	rm := metricdata.ResourceMetrics{}
+	if err := mr.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+
+	// Walk every metric's data points; check the attribute set on each.
+	checked := 0
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			for _, attrs := range collectAttributeSets(m.Data) {
+				checked++
+				if v, ok := attrs.Value(attribute.Key("url.path")); ok {
+					t.Errorf("metric %q has url.path = %q — metrics must use http.route, never url.path (cardinality)",
+						m.Name, v.AsString())
+				}
+				if _, ok := attrs.Value(attribute.Key("http.route")); !ok {
+					t.Errorf("metric %q missing http.route attribute", m.Name)
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no metric data points were collected — assertion never ran")
+	}
+}
+
+// collectAttributeSets returns every attribute.Set the metric data
+// carries, regardless of whether it's a Sum/Histogram of int64 or
+// float64. The metricdata package is generic-typed so we have to
+// switch on the concrete data shape — matching the pattern in
+// readCounter / readHistogramCount below.
+func collectAttributeSets(data metricdata.Aggregation) []attribute.Set {
+	var out []attribute.Set
+	switch d := data.(type) {
+	case metricdata.Sum[int64]:
+		for _, dp := range d.DataPoints {
+			out = append(out, dp.Attributes)
+		}
+	case metricdata.Sum[float64]:
+		for _, dp := range d.DataPoints {
+			out = append(out, dp.Attributes)
+		}
+	case metricdata.Gauge[int64]:
+		for _, dp := range d.DataPoints {
+			out = append(out, dp.Attributes)
+		}
+	case metricdata.Gauge[float64]:
+		for _, dp := range d.DataPoints {
+			out = append(out, dp.Attributes)
+		}
+	case metricdata.Histogram[int64]:
+		for _, dp := range d.DataPoints {
+			out = append(out, dp.Attributes)
+		}
+	case metricdata.Histogram[float64]:
+		for _, dp := range d.DataPoints {
+			out = append(out, dp.Attributes)
+		}
+	}
+	return out
+}
+
+// TestNetworkProtocolVersion exercises the proto-string normalization
+// directly: HTTP/2.0 collapses to "2" per OTel convention; HTTP/1.1 stays
+// as "1.1"; empty or unrecognized inputs return "" so finalizeSpan can
+// skip emitting the attribute rather than sending a confusing value.
+func TestNetworkProtocolVersion(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"HTTP/1.0", "1.0"},
+		{"HTTP/1.1", "1.1"},
+		{"HTTP/2.0", "2"},
+		{"HTTP/3", "3"},
+		{"", ""},
+		{"GIBBERISH", ""},
+	}
+	for _, c := range cases {
+		if got := networkProtocolVersion(c.in); got != c.want {
+			t.Errorf("networkProtocolVersion(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 

@@ -9,9 +9,16 @@
 //     which is where injection belongs.
 //   - Starts a server span around each handler, named via SpanNameFunc
 //     (default: "<METHOD> <RoutePattern>").
-//   - Sets HTTP semantic-convention attributes on the span (http.method,
-//     http.target, http.status_code, http.user_agent, net.peer.ip,
-//     plus request_id when available).
+//   - Sets HTTP semantic-convention attributes on the span. The plugin
+//     emits the modern semconv v1.37.0 keys
+//     (http.request.method, url.path, http.route,
+//     http.response.status_code, user_agent.original, client.address,
+//     network.protocol.version) and, for one transitional minor release,
+//     the legacy keys it used to emit exclusively
+//     (http.method, http.target, http.status_code, http.user_agent,
+//     net.peer.ip). request_id is emitted when available; it is an
+//     aarv-specific addition with no semconv rename. The legacy
+//     emissions are removed in the release after the dual-emit minor.
 //   - Marks 5xx responses as span Status Error.
 //   - Emits per-request counter / duration / size metrics via the configured
 //     MeterProvider unless SuppressMetrics is set.
@@ -410,16 +417,37 @@ func (s *state) recordHTTPMetrics(ctx interface{ Done() <-chan struct{} }, metho
 	if s.requestCount == nil {
 		return
 	}
-	target := pattern
-	if target == "" {
-		target = path
+	// legacyTarget preserves the pre-migration http.target metric label
+	// shape: the matched route pattern when known, raw path otherwise.
+	// Kept for one transitional minor so dashboards keyed on the old
+	// label continue to work; the next release drops the legacy emit.
+	legacyTarget := pattern
+	if legacyTarget == "" {
+		legacyTarget = path
 	}
-	attrs := metric.WithAttributes(
-		attribute.String("http.method", method),
-		attribute.String("http.target", target),
-		attribute.Int("http.status_code", status),
+
+	// Modern semconv v1.37.0 metric attributes. Per the HTTP server
+	// metrics conventions, the low-cardinality dimension on metrics is
+	// http.route — url.path belongs on spans (where high cardinality is
+	// the desired behavior) but NOT on metrics, where per-URL labels
+	// would explode TSDB cardinality. We therefore emit http.route here
+	// and intentionally do NOT emit url.path on the metric attribute set.
+	attrSet := []attribute.KeyValue{
+		// Modern.
+		attribute.String(attrHTTPRequestMethod, method),
+		attribute.Int(attrHTTPResponseStatusCode, status),
+		// Legacy.
+		attribute.String(legacyAttrHTTPMethod, method),
+		attribute.String(legacyAttrHTTPTarget, legacyTarget),
+		attribute.Int(legacyAttrHTTPStatusCode, status),
+		// http.status_class is an aarv-specific addition; no semconv
+		// rename, kept as-is.
 		attribute.String("http.status_class", strconv.Itoa(status/100)+"xx"),
-	)
+	}
+	if pattern != "" {
+		attrSet = append(attrSet, attribute.String(attrHTTPRoute, pattern))
+	}
+	attrs := metric.WithAttributes(attrSet...)
 	// We pass context.Background-equivalent to avoid leaking the OTel
 	// span context into metric attributes (Meter SDKs derive exemplars
 	// from the active span; the scope of this is metric.AddOption tuning

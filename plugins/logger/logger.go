@@ -32,60 +32,27 @@ func DefaultConfig() Config {
 	}
 }
 
-// responseWriter wraps http.ResponseWriter to capture the status code and bytes written.
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode   int
-	bytesWritten int64
-	written      bool
-}
-
+// responseWriterPool keeps the per-request status/bytes recorders off the
+// allocator on the hot path. Each pooled recorder is the public
+// aarv.StatusRecorder; Reset re-binds it to the next request's writer.
 var responseWriterPool = sync.Pool{
 	New: func() any {
-		return &responseWriter{}
+		return aarv.NewStatusRecorder(nil)
 	},
 }
 
-func newResponseWriter(w http.ResponseWriter) *responseWriter {
-	rw := responseWriterPool.Get().(*responseWriter)
-	rw.ResponseWriter = w
-	rw.statusCode = http.StatusOK
-	rw.bytesWritten = 0
-	rw.written = false
+func acquireRecorder(w http.ResponseWriter) *aarv.StatusRecorder {
+	rw := responseWriterPool.Get().(*aarv.StatusRecorder)
+	rw.Reset(w)
 	return rw
 }
 
-func releaseResponseWriter(rw *responseWriter) {
+func releaseRecorder(rw *aarv.StatusRecorder) {
 	if rw == nil {
 		return
 	}
-	rw.ResponseWriter = nil
-	rw.statusCode = http.StatusOK
-	rw.bytesWritten = 0
-	rw.written = false
+	rw.Reset(nil)
 	responseWriterPool.Put(rw)
-}
-
-func (rw *responseWriter) WriteHeader(code int) {
-	if !rw.written {
-		rw.statusCode = code
-		rw.written = true
-	}
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-func (rw *responseWriter) Write(b []byte) (int, error) {
-	if !rw.written {
-		rw.written = true
-	}
-	n, err := rw.ResponseWriter.Write(b)
-	rw.bytesWritten += int64(n)
-	return n, err
-}
-
-// Unwrap returns the underlying http.ResponseWriter for interface checks.
-func (rw *responseWriter) Unwrap() http.ResponseWriter {
-	return rw.ResponseWriter
 }
 
 // clientIP extracts the client IP from the request, respecting proxy headers.
@@ -133,8 +100,8 @@ func New(config ...Config) aarv.Middleware {
 			}
 
 			start := time.Now()
-			rw := newResponseWriter(c.Response())
-			defer releaseResponseWriter(rw)
+			rw := acquireRecorder(c.Response())
+			defer releaseRecorder(rw)
 
 			orig := c.Response()
 			c.SetResponse(rw)
@@ -145,11 +112,11 @@ func New(config ...Config) aarv.Middleware {
 			baseLogger.LogAttrs(c.Context(), cfg.Level, "request",
 				slog.String("method", c.Method()),
 				slog.String("path", path),
-				slog.Int("status", rw.statusCode),
+				slog.Int("status", rw.Status()),
 				slog.Duration("latency", latency),
 				slog.String("client_ip", c.RealIP()),
 				slog.String("user_agent", c.Header("User-Agent")),
-				slog.Int64("bytes_out", rw.bytesWritten),
+				slog.Int64("bytes_out", rw.BytesWritten()),
 				slog.String("request_id", c.RequestID()),
 			)
 			return err
@@ -169,8 +136,8 @@ func New(config ...Config) aarv.Middleware {
 			}
 
 			start := time.Now()
-			rw := newResponseWriter(w)
-			defer releaseResponseWriter(rw)
+			rw := acquireRecorder(w)
+			defer releaseRecorder(rw)
 
 			next.ServeHTTP(rw, r)
 
@@ -187,11 +154,11 @@ func New(config ...Config) aarv.Middleware {
 			baseLogger.LogAttrs(r.Context(), cfg.Level, "request",
 				slog.String("method", r.Method),
 				slog.String("path", path),
-				slog.Int("status", rw.statusCode),
+				slog.Int("status", rw.Status()),
 				slog.Duration("latency", latency),
 				slog.String("client_ip", clientIP(r)),
 				slog.String("user_agent", userAgent),
-				slog.Int64("bytes_out", rw.bytesWritten),
+				slog.Int64("bytes_out", rw.BytesWritten()),
 				slog.String("request_id", requestID),
 			)
 		})

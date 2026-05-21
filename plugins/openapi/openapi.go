@@ -97,9 +97,20 @@ type Config struct {
 	License *License
 
 	// Include, when non-nil, is the SOLE filter applied to routes:
-	// Exclude is ignored. When nil, every route passes unless its
-	// Pattern is prefix-matched by an entry in Exclude.
+	// Exclude and Tags are ignored. When nil, Tags is applied first
+	// (when set) and Exclude is applied to whatever survives.
 	Include func(aarv.RouteInfo) bool
+
+	// Tags filters routes by their RouteInfo.Tags (set via aarv.WithTags
+	// at route registration). When non-empty, only routes carrying at
+	// least one of the listed tags are included in the spec; routes
+	// with no tags are excluded. Useful for splitting a multi-section
+	// API into per-tag specs (e.g. one spec for "public", another for
+	// "internal") without writing a custom Include closure.
+	//
+	// Tags is ignored when Include is non-nil — Include remains the
+	// override hatch for arbitrary filter logic.
+	Tags []string
 
 	// Exclude is a list of path-prefixes; any route whose Pattern
 	// starts with one of these is omitted from the spec. The defaults
@@ -418,9 +429,11 @@ func (g *generator) build() *Spec {
 	return spec
 }
 
-// filterRoutes applies the Include/Exclude rules. Include, when set, is
-// the sole filter (Exclude is ignored). When Include is nil, Exclude is
-// applied as a path-prefix match.
+// filterRoutes applies the Include/Tags/Exclude rules. Include, when
+// set, is the sole filter (Tags and Exclude are ignored). When Include
+// is nil: Tags is applied first (when set) — only routes carrying at
+// least one of the listed tags survive; Exclude is then applied to the
+// remainder as a path-prefix match.
 func filterRoutes(routes []aarv.RouteInfo, cfg Config) []aarv.RouteInfo {
 	out := routes[:0:0]
 	if cfg.Include != nil {
@@ -431,13 +444,48 @@ func filterRoutes(routes []aarv.RouteInfo, cfg Config) []aarv.RouteInfo {
 		}
 		return out
 	}
+	tagFilter := buildTagSet(cfg.Tags)
 	for _, r := range routes {
+		if tagFilter != nil && !routeHasAnyTag(r, tagFilter) {
+			continue
+		}
 		if matchesAnyPrefix(r.Pattern, cfg.Exclude) {
 			continue
 		}
 		out = append(out, r)
 	}
 	return out
+}
+
+// buildTagSet returns a lookup set for the configured tag filter, or
+// nil when no tag filter is configured. nil signals "do not filter by
+// tag" so a missing Tags field passes everything through.
+func buildTagSet(tags []string) map[string]struct{} {
+	if len(tags) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(tags))
+	for _, t := range tags {
+		if t == "" {
+			continue
+		}
+		set[t] = struct{}{}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
+}
+
+// routeHasAnyTag reports whether r carries at least one tag from set.
+// Routes with no tags never match — empty intersects nothing.
+func routeHasAnyTag(r aarv.RouteInfo, set map[string]struct{}) bool {
+	for _, t := range r.Tags {
+		if _, ok := set[t]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesAnyPrefix(pattern string, prefixes []string) bool {

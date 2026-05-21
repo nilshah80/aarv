@@ -845,7 +845,7 @@ Prerequisite work in the root module to unblock cardinality control on metrics l
 
 ---
 
-## Phase 12.6: ALP-Driven Plugin Work (M12.6) ✅ COMPLETE
+## Phase 12.6: ALP-Driven Plugin Work (M12.6)
 
 > **Why now:** ALP has completed Track 1 on `aarv@v0.7.0` and identified the reusable framework pieces needed for Tracks 3, 4, and 6. Current Aarv already has `ratelimit`, `idempotency`, `pprof`, `openapi`, `openapi-ui`, `h2c`, TLS helpers, and the observability plugins; the remaining Aarv work is narrower: signed-request auth, Redis-backed stores, and a few idempotency hardening refinements.
 
@@ -959,12 +959,12 @@ Prerequisite work in the root module to unblock cardinality control on metrics l
 - [x] Tests: first request lock/save/replay, duplicate while in flight, TTL expiry, payload mismatch, Redis outage, context cancellation, malformed cached payload handling
 - [x] README with ALP `POST /v1/links` wiring example
 
-### 12.6.7 ALP observability feedback loop — DEFERRED until ALP Track 6 lands
-- [ ] After ALP Track 6 RED audit, review whether `plugins/prometheus` needs custom default buckets for sub-ms redirect paths
-- [ ] After ALP Track 6 RED audit, review whether `plugins/prometheus` needs safe optional labels such as authenticated client class; avoid high-cardinality defaults
-- [ ] After ALP Trace audit, review whether `plugins/otel` needs additional context propagation or span/log correlation hooks
-- [ ] Track every ALP-discovered rough edge as an Aarv issue or PR and mirror it in ALP's `AARV_FEEDBACK.md`
-- [ ] Do not change `plugins/prometheus` or `plugins/otel` preemptively; build only concrete deltas observed under ALP
+### 12.6.7 ALP observability feedback loop — ALP Track 6 audit shipped
+- [x] After ALP Track 6 RED audit, review whether `plugins/prometheus` needs custom default buckets for sub-ms redirect paths — shipped as `SubMillisecondBuckets` preset (see §12.6.9)
+- [ ] After ALP Track 6 RED audit, review whether `plugins/prometheus` needs safe optional labels such as authenticated client class; avoid high-cardinality defaults — not in this batch; revisit when ALP requests it concretely
+- [x] After ALP Trace audit, review whether `plugins/otel` needs additional context propagation or span/log correlation hooks — shipped as semconv v1.37.0 migration with `http.route`, `network.protocol.version`, and per-attribute corrections (see §12.6.9)
+- [x] Track every ALP-discovered rough edge as an Aarv issue or PR and mirror it in ALP's `AARV_FEEDBACK.md` — AARV_FEEDBACK P1 #1/#2/#3 + P2 #4/#5/#6/#7 + P3 #10 addressed; see §12.6.9 for the per-item mapping
+- [x] Do not change `plugins/prometheus` or `plugins/otel` preemptively; build only concrete deltas observed under ALP — process rule, honored throughout the batch
 
 ### 12.6.8 Release and ALP consumption
 - [ ] Run root tests: `go test -race ./...`
@@ -975,6 +975,76 @@ Prerequisite work in the root module to unblock cardinality control on metrics l
 - [ ] Verify from outside the repo that `go list -m` resolves the new tags for root and submodules
 - [ ] Add ALP follow-up note: replace internal HMAC, rate-limit, and idempotency implementations with Aarv imports once tags resolve
 - [ ] Add ALP follow-up note: evaluate `BindRoute` + `plugins/openapi` + `plugins/openapi-ui` for management API drift detection after ALP bumps from `v0.7.0`
+
+### 12.6.9 ALP feedback batch — shipped (M12.6 final pre-tag)
+
+> Tracks the AARV_FEEDBACK P1/P2/P3 items shipped after ALP Track 6's observability audit. Cross-reference: [`CHANGELOG.md`](../CHANGELOG.md) `[Unreleased]` section carries the customer-facing version of every entry below, including the otel dashboard-migration note.
+
+#### Public API additions (root module)
+
+- [x] `aarv.StatusRecorder` ([recorder.go](../recorder.go)) — public `http.ResponseWriter` wrapper capturing status code + total body bytes. Constructor `NewStatusRecorder(w)` is unpooled; `Reset(w)` is exposed for callers that pool privately. Implements `Unwrap() http.ResponseWriter` so `http.ResponseController` walks through to `Flusher` / `Hijacker` / `Pusher`. Pooling is intentionally NOT exposed through the constructor (see [memory rule](../../../.claude/projects/-Users-nilayshah-Documents-PoC-aarv/memory/feedback_pool_api_contract.md)): public pooling means public lifecycle rules and misuse risk rarely worth the GC savings on the request hot path. Closes AARV_FEEDBACK P2 #4. Covered by 7 tests in [recorder_test.go](../recorder_test.go) including short-write byte accounting and pool-Reset state isolation.
+- [x] `aarv.SkipPaths(paths []string, mw Middleware) Middleware` ([skippaths.go](../skippaths.go)) — top-level helper for excluding paths from a wrapped middleware. **Stdlib-only in this release** — see §12.6.9's "Known limitation" subsection below and §12.6.10's registry-keying follow-up. Empty paths returns `mw` unchanged; nil `mw` returns nil. Closes AARV_FEEDBACK P2 #5 with the caveat captured in the customer-facing CHANGELOG entry.
+
+#### Plugin additions and changes
+
+- [x] `plugins/hmacauth` `Config.Observer` hook with `Outcome` / `Event` types ([observer.go](../plugins/hmacauth/observer.go), [hmacauth.go](../plugins/hmacauth/hmacauth.go)). Fires once per verification attempt (after Skipper bypass) carrying the canonical `Outcome` enum (`OutcomeOK`, `OutcomeUnauthorized`, `OutcomeClockSkew`, `OutcomeSignatureInvalid`, `OutcomeReplayDetected`, `OutcomeBodyTooLarge`), the client ID, the response status, the absolute drift in seconds (clock-skew only), and the wall-clock duration. Zero-overhead nil contract: when `Observer == nil`, the verify path makes no extra `Now` calls and constructs no `Event`. Outcome distinctions matter operationally — nonce-store transport errors report `OutcomeUnauthorized` not `OutcomeReplayDetected` so a Redis outage does not look like a flood of replay attempts; body-read transport errors report `OutcomeUnauthorized` not `OutcomeBodyTooLarge` since their actual status is 401 not 413. Designed so OTel/Prometheus adapters live in companion submodules — root stays zero-dep (see [memory rule](../../../.claude/projects/-Users-nilayshah-Documents-PoC-aarv/memory/feedback_root_plugin_observability.md)). Closes AARV_FEEDBACK P1 #2. Covered by 11 tests in [observer_test.go](../plugins/hmacauth/observer_test.go) including the zero-overhead `Now` call counter and the two outcome-distinction regression guards.
+- [x] `plugins/otel` HTTP semconv migration to OTel v1.37.0 ([attributes.go](../plugins/otel/attributes.go), [otel.go](../plugins/otel/otel.go), [otel_test.go](../plugins/otel/otel_test.go)). Modern keys: `http.request.method`, `url.path` (raw path), `http.route` (matched pattern), `http.response.status_code`, `user_agent.original`, `client.address`, `network.protocol.version`. Legacy keys (`http.method`, `http.target`, `http.status_code`, `http.user_agent`, `net.peer.ip`) dual-emitted for one transitional minor — legacy `http.target` keeps its pre-migration shape (pattern when matched, raw path otherwise) and must not be conflated with modern `url.path`. Metrics deliberately omit `url.path` (TSDB cardinality guard) and use `http.route` only — locked in by `TestSemconv_MetricsUseRouteNotURLPath`. Closes AARV_FEEDBACK P1 #1.
+- [x] `plugins/prometheus` `SubMillisecondBuckets` preset ([prometheus.go](../plugins/prometheus/prometheus.go)) — `100µs..5s` for services whose p50 falls below `DefaultBuckets`' 1ms first bucket. Closes AARV_FEEDBACK P2 #6. Covered by 2 tests including a config-level integration check that the histogram receives the right bucket boundaries.
+- [x] `plugins/openapi` `Config.Tags` declarative filter ([openapi.go](../plugins/openapi/openapi.go)). When non-empty, only routes carrying at least one of the listed tags (set via `aarv.WithTags(...)`) survive; ignored when `Include` is set; applied before `Exclude`. Empty / all-blank `Tags` is treated as unset. Closes AARV_FEEDBACK P3 #10 earlier than expected — ALP Tracks 5/8 will benefit directly when they add their endpoint groups. Covered by 6 tests including tag-union semantics, ignored-when-Include-set, and ordering against Exclude.
+- [x] `plugins/logger` internal `responseWriter` ([logger.go](../plugins/logger/logger.go)) migrated to `aarv.StatusRecorder` (still pool-backed privately via `sync.Pool` with `Reset`-based recycling). No behavior change; ~50 LOC of duplication dropped. Updates [logger_test.go](../plugins/logger/logger_test.go) to use the new accessors. Submodule plugins (`plugins/prometheus`, `plugins/otel`) defer the same migration to §12.6.10 (pin bump required).
+
+#### Documentation
+
+- [x] [`docs/middleware.md`](middleware.md) — new "Wrapping a middleware to add observability" recipe added with three options (stdlib-only wrapper, native-only wrapper, both forms via `RegisterNativeMiddleware`) and a worked example covering `c.SetContext` / `c.BindRequest` / `RegisterNativeMiddleware`. Closes AARV_FEEDBACK P2 #7 AND resolves P1 #3's doc gap in a single page — no separate doc needed.
+- [x] [`docs/openapi.md`](openapi.md) — filtering table updated with `Config.Tags` row, plus a worked example showing per-tag spec splitting.
+- [x] [`plugins/otel/README.md`](../plugins/otel/README.md) and [`plugins/prometheus/README.md`](../plugins/prometheus/README.md) updated with the new symbols, dual-emit caveat, and bucket-preset selection guidance.
+- [x] [`CHANGELOG.md`](../CHANGELOG.md) `[Unreleased]` populated with `Added` / `Changed` / `Migration` / `Internal` sections covering every entry above. The Migration section spells out the otel dashboard-query update path explicitly so dashboard owners can plan before the legacy attributes are dropped in the next-next release.
+
+#### Known limitation captured for follow-up
+
+- [ ] `nativeMiddlewareRegistry` keys on `reflect.ValueOf(m).Pointer()` ([middleware.go](../middleware.go)), which returns the *code* pointer for func values — closures from the same source function literal share a registry slot. Affects every wrapper-style helper (existing `aarv.WrapMiddleware`, the new `aarv.SkipPaths`); silently corrupts the native chain when two distinct registrations of the same wrapper run in one App. The new `SkipPaths` works around it by skipping native registration entirely; `WrapMiddleware`'s exposure is unchanged from prior releases (the helper has always been constructed-once-and-reused in practice). No existing plugin is affected because each plugin's `New(...)` returns a closure with a unique source-level inner function — per-plugin native pairs are registered exactly once per plugin module. This is the gating item for re-introducing native-aware wrapper helpers; see §12.6.10. Captured as memory rule [`feedback_native_middleware_registry_keying.md`](../../../.claude/projects/-Users-nilayshah-Documents-PoC-aarv/memory/feedback_native_middleware_registry_keying.md).
+
+#### Deferred (intentionally) — handled in §12.6.10
+
+- [ ] `plugins/prometheus` and `plugins/otel` internal `recordingWriter` migration to `aarv.StatusRecorder`. Blocked on bumping each submodule's aarv pin to the next root tag. Drops ~60 LOC per submodule.
+- [ ] `plugins/hmacauth-otel` companion submodule. Subscribes to the `Observer` hook and emits the `auth.HMAC.verify` span with `auth.client_id` / `auth.outcome` / `auth.response_status` / `auth.skew_seconds` attributes. Blocked on tagging hmacauth's new symbols.
+
+### 12.6.10 Post-tag follow-ups
+
+> Cleanup that becomes possible once §12.6.9's symbols are tagged in a root release. Each item is gated on a specific upstream condition; nothing here runs autonomously. See [memory rule on tagging cadence](../../../.claude/projects/-Users-nilayshah-Documents-PoC-aarv/memory/feedback_no_coauthor.md) for commit conventions.
+
+#### Tag and bump
+
+- [ ] Cut the next aarv root release (likely `v0.9.0` or `v0.8.1`) containing §12.6.9's new symbols. Run the §12.6.8 release checklist end-to-end (root tests, lint, govulncheck, tag, `go list -m` verification from outside the repo).
+- [ ] Update each affected submodule's `go.mod` (`plugins/prometheus`, `plugins/otel`, `plugins/hmacauth`, `plugins/logger`, `plugins/openapi`) to require the new root tag. Run `go mod tidy` inside each submodule, never from root.
+- [ ] Verify each submodule still passes `go test -race ./...` against the bumped pin.
+
+#### Subsumed cleanup (StatusRecorder adoption in submodule plugins)
+
+- [ ] Migrate `plugins/prometheus`'s internal `recordingWriter` ([prometheus.go](../plugins/prometheus/prometheus.go), lines ~331-385) to wrap `aarv.StatusRecorder`. Keep the local `sync.Pool` private; `aarv.StatusRecorder.Reset(w)` lets pooled instances re-bind without reallocation. Net delta: ~−60 LOC.
+- [ ] Migrate `plugins/otel`'s internal `recordingWriter` ([otel.go](../plugins/otel/otel.go), lines ~349-411) the same way. Net delta: ~−60 LOC.
+- [ ] Tag updated `plugins/prometheus` and `plugins/otel` submodule releases.
+
+#### `plugins/hmacauth-otel` companion submodule
+
+- [ ] Create `plugins/hmacauth-otel/` with its own `go.mod` that depends on `plugins/hmacauth` (post-bump pin) and `go.opentelemetry.io/otel`. The companion's job: subscribe to `hmacauth.Config.Observer` and emit an `auth.HMAC.verify` span per verification attempt.
+- [ ] Span attribute schema: `auth.client_id` (Event.ClientID), `auth.outcome` (string(Event.Outcome)), `auth.response_status` (Event.Status when non-zero), `auth.skew_seconds` (Event.SkewSeconds when non-zero). Span status = error on non-OK outcomes so Tempo / Honeycomb filters like `{ name = "auth.HMAC.verify" && status = error }` work directly.
+- [ ] Provide a convenience `hmacauthotel.NewObserver(opts) hmacauth.Observer` so consumers can wire it via `cfg.Observer = hmacauthotel.NewObserver(...)` without rewriting boilerplate. The TracerProvider should default to `otel.GetTracerProvider()` so users with a configured global don't need to thread it through.
+- [ ] Unit tests with `sdktrace.NewTracerProvider(sdktrace.WithSyncer(recorder))` to capture spans; assert one span per verification attempt, attribute schema is exact, status = error iff outcome != OK. Mirror the test style of `plugins/otel`.
+- [ ] README with a wiring example that mirrors `plugins/otel/README.md`'s "Bring your own Provider" section.
+- [ ] Tag `plugins/hmacauth-otel/v0.1.0`. Mirror the submodule release sequence used in §12.6.3.
+- [ ] After this lands, ALP can replace its `traceHMAC` Observer adapter (or local wrapper) with `hmacauthotel.NewObserver(...)` — the cleanest version of the AARV_FEEDBACK P1 #2 closeout.
+
+#### Registry-keying fix (gating item for native-aware wrapper helpers)
+
+> See the "Known limitation" subsection in §12.6.9 and the captured memory rule. This is the architectural follow-up that re-enables native-aware wrappers like `SkipPaths` to preserve the framework's fast path.
+
+- [ ] Investigate the registry redesign. Likely shape: replace the `sync.Map` keyed by `reflect.ValueOf(m).Pointer()` with a wrapper struct that the chain builder type-switches on. The struct carries both the stdlib `Middleware` and its native `MiddlewareFunc` inline, eliminating the lookup entirely. `Middleware`'s type signature stays as `func(http.Handler) http.Handler` for backward compatibility; only the internal `App.middleware` slice and `buildNativeChain` learn to recognize the wrapper.
+- [ ] Audit every existing `RegisterNativeMiddleware` call site (every plugin's `New(...)`) to confirm the redesign is source-compatible — the call signature stays `RegisterNativeMiddleware(stdlib, native) Middleware`, only the return value's concrete type changes.
+- [ ] Ship a unified test in the root module that fails if any wrapper helper (`WrapMiddleware`, `SkipPaths`, plus any new helper) regresses the "distinct registrations preserve distinct native pairs" property. Test should construct two distinct wrappers in one App, walk the resolved native chain, and assert each wrapper's behavior fires for its own routes.
+- [ ] Re-introduce `aarv.SkipPaths`'s native variant (no public API change). Add a test that locks in the native fast-path preservation under multiple SkipPaths instances. Drop the `TestSkipPaths_DoesNotRegisterNativePair` regression guard since the constraint goes away.
+- [ ] Update [`CHANGELOG.md`](../CHANGELOG.md) for that release: "`aarv.SkipPaths` regains its native fast path — no API change for consumers; routes that include a `SkipPaths`-wrapped middleware run on the native chain again."
+- [ ] Update [`skippaths.go`](../skippaths.go) doc comment and [`docs/middleware.md`](middleware.md) recipe to drop the "stdlib-only" caveat. The recipe still recommends per-plugin `SkipPaths` config for plugins that ship one — that guidance is independent of the registry fix.
 
 ---
 

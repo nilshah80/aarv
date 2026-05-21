@@ -4,7 +4,7 @@ OpenTelemetry tracing and metrics middleware for [aarv](https://github.com/nilsh
 
 - W3C `traceparent` / `tracestate` / `baggage` **extract** from incoming request headers via the configured Propagator. The plugin does not call `Propagator.Inject`; outbound calls from inside a handler should propagate context themselves (e.g. `otelhttp.NewTransport` wrapping the outbound client, which uses the same Propagator).
 - One server span per request, named `<METHOD> <RoutePattern>` (low-cardinality)
-- HTTP semantic-convention attributes: `http.method`, `http.target`, `http.status_code`, `http.user_agent`, `net.peer.ip`, plus `request_id` when available
+- HTTP semantic-convention attributes — modern (`semconv v1.37.0`) keys: `http.request.method`, `url.path`, `http.route`, `http.response.status_code`, `user_agent.original`, `client.address`, `network.protocol.version`; plus `request_id` when available (aarv-specific). The legacy keys (`http.method`, `http.target`, `http.status_code`, `http.user_agent`, `net.peer.ip`) are dual-emitted for one transitional minor release so dashboards keyed on the old names keep working; the next release after the dual-emit minor drops them. Migrate any TraceQL / dashboard queries to the modern keys at your earliest convenience.
 - 5xx responses set the span status to `Error`
 - The four standard HTTP server metrics via the configured MeterProvider
 - Trace-correlated `slog` logger: `trace_id` and `span_id` injected into `aarv.Context.Logger()`

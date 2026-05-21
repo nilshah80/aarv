@@ -146,6 +146,124 @@ Plugins that receive an upstream-mutated `*http.Request` and then need
 `*aarv.Context` should call `c.BindRequest(r)` before reading from `c`.
 The `bearer`, `rbac`, and `session` plugins use this pattern.
 
+## Wrapping a middleware to add observability
+
+A common task is to layer a tracing span (or metrics, or audit log) over
+an existing middleware that doesn't emit one — for example, putting a
+`auth.verify` span around an authentication middleware so traces show
+where time was spent.
+
+The right shape depends on what the inner middleware and downstream
+handlers read from the request context. Three options, in increasing
+order of correctness for the general case:
+
+### Option 1: stdlib-only wrapper
+
+```go
+func traceAuth(inner http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        ctx, span := tracer.Start(r.Context(), "auth.verify")
+        defer span.End()
+        inner.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+```
+
+This works **only when neither the inner middleware nor any downstream
+handler reads from `*aarv.Context.Context()`**. Aarv keeps
+`c.Context()` distinct from `r.Context()`; an upstream `r.WithContext`
+is invisible to handlers that read `c.Context()`. In aarv-native apps
+this is rare — most plugins and handler conventions go through
+`c.Context()`, so the wrapped span will not be the parent of any child
+spans those handlers create.
+
+### Option 2: native-only wrapper
+
+```go
+func traceAuthNative(next aarv.HandlerFunc) aarv.HandlerFunc {
+    return func(c *aarv.Context) error {
+        ctx, span := tracer.Start(c.Context(), "auth.verify")
+        defer span.End()
+        c.SetContext(ctx)
+        return next(c)
+    }
+}
+
+app.Use(aarv.WrapMiddleware(traceAuthNative))
+```
+
+`c.SetContext(ctx)` updates the framework context so downstream code
+that reads `c.Context()` sees the new parent span. Works correctly on
+the native fast path. **Requires every middleware in the chain to be
+registered as native** — if any middleware lacks a native pair, aarv
+downgrades to the stdlib chain and the wrapper above does nothing on
+the stdlib path.
+
+### Option 3: register both forms (the safe default)
+
+```go
+stdlib := func(inner http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        ctx, span := tracer.Start(r.Context(), "auth.verify")
+        defer span.End()
+        // Bridge the new context onto the framework context so
+        // downstream c.Context() reads see the new parent span.
+        if c, ok := aarv.FromRequest(r); ok {
+            c.SetContext(ctx)
+        }
+        inner.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+
+native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {
+    return func(c *aarv.Context) error {
+        ctx, span := tracer.Start(c.Context(), "auth.verify")
+        defer span.End()
+        c.SetContext(ctx)
+        return next(c)
+    }
+})
+
+app.Use(aarv.RegisterNativeMiddleware(stdlib, native))
+```
+
+This is correct regardless of whether the chain runs on the stdlib path
+(missing or non-native sibling middleware) or the native fast path. Use
+it for any wrapper that mutates the request context and is consumed by
+code you don't control.
+
+### Skipping the wrap on observability paths
+
+When the wrapper is broadly applied, exclude the observability endpoints
+themselves so probe traffic does not generate spans / metrics:
+
+```go
+app.Use(aarv.SkipPaths(
+    []string{"/health", "/ready", "/live", "/metrics"},
+    aarv.RegisterNativeMiddleware(stdlib, native),
+))
+```
+
+`aarv.SkipPaths` is currently stdlib-only — any route whose chain
+includes a SkipPaths-wrapped middleware downgrades from the native
+fast path to the stdlib chain. If you need the native fast path on
+hot routes, prefer the per-plugin `SkipPaths` config (e.g.
+`prometheus.Config.SkipPaths`, `compress.Config.SkipPaths`) which
+performs the skip inside the plugin without leaving the native
+chain. The wrapper-level helper will regain its native variant once
+the framework's middleware registry is fixed; the API stays the same.
+
+### Adding observability to plugins that already provide a hook
+
+Some plugins expose a `Config.Observer` (or similar callback). When
+present, prefer the hook over wrapping — it runs inside the plugin's
+own decision logic with strictly typed event data and avoids the
+context-bridging dance entirely. For example, `plugins/hmacauth` sets
+an `Observer(c, Event)` callback after every verification attempt with
+the canonical `Outcome` enum, the client ID, the response status, and
+the wall-clock duration; an OpenTelemetry adapter can convert each
+event into a span without touching the request pipeline.
+
 ## Buffering and streaming
 
 Middleware can change memory behavior:
