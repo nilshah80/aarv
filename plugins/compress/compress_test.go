@@ -59,7 +59,7 @@ func TestNewGzipCompressionAndWriterHelpers(t *testing.T) {
 	handler := New(Config{
 		Level:   999,
 		MinSize: 0,
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(body[:1000]))
@@ -120,7 +120,7 @@ func TestNewDeflateCompression(t *testing.T) {
 	handler := New(Config{
 		MinSize:    1,
 		PreferGzip: false,
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte(body))
 		_, _ = w.Write([]byte("tail"))
@@ -180,7 +180,7 @@ func TestNewSkipsCompressionWhenNotEligible(t *testing.T) {
 	handler := New(Config{
 		MinSize:       10,
 		ExcludedTypes: []string{"image/"},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write([]byte("small"))
 	}))
@@ -193,7 +193,7 @@ func TestNewSkipsCompressionWhenNotEligible(t *testing.T) {
 		t.Fatalf("expected uncompressed excluded response, headers=%v body=%q", rec.Header(), rec.Body.String())
 	}
 
-	noAccept := New()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	noAccept := New().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("plain"))
 	}))
 	rec = httptest.NewRecorder()
@@ -202,7 +202,7 @@ func TestNewSkipsCompressionWhenNotEligible(t *testing.T) {
 		t.Fatalf("expected plain response, headers=%v body=%q", rec.Header(), rec.Body.String())
 	}
 
-	alreadyEncoded := New()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	alreadyEncoded := New().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("kept"))
 	}))
 	req = httptest.NewRequest("GET", "/", nil)
@@ -300,7 +300,7 @@ func TestWriterBranchesForErrorsAndExcludedTypes(t *testing.T) {
 	exactExcluded := New(Config{
 		MinSize:       1,
 		ExcludedTypes: []string{"application/pdf"},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf; charset=utf-8")
 		_, _ = w.Write([]byte("pdf"))
 	}))
@@ -317,7 +317,7 @@ func TestExcludedContentTypePassthroughAcrossMultipleWrites(t *testing.T) {
 	handler := New(Config{
 		MinSize:       1,
 		ExcludedTypes: []string{"image/"},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write([]byte("first"))
 		_, _ = w.Write([]byte("second"))
@@ -601,7 +601,7 @@ func TestDeflateExcludedTypeMultiWrite(t *testing.T) {
 		MinSize:       1,
 		PreferGzip:    false,
 		ExcludedTypes: []string{"image/"},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/jpeg")
 		_, _ = w.Write([]byte("first"))
 		_, _ = w.Write([]byte("second"))
@@ -653,7 +653,7 @@ func BenchmarkSelectEncoding_QValues(b *testing.B) {
 
 func BenchmarkCompress_Stdlib_Gzip(b *testing.B) {
 	body := strings.Repeat("compressible payload ", 128)
-	handler := New(Config{MinSize: 256})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{MinSize: 256}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte(body))
 	}))
@@ -669,7 +669,7 @@ func BenchmarkCompress_Stdlib_Gzip(b *testing.B) {
 
 func BenchmarkCompress_Stdlib_Passthrough(b *testing.B) {
 	body := strings.Repeat("compressible payload ", 128)
-	handler := New(Config{MinSize: 256})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{MinSize: 256}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte(body))
 	}))

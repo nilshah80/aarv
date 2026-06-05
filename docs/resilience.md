@@ -118,7 +118,7 @@ app.OnShutdown(func(ctx interface{ Done() <-chan struct{} }) error {
 Use `plugins/ratelimit-redis` for distributed limits across instances.
 
 ```bash
-go get github.com/nilshah80/aarv/plugins/ratelimit-redis@v0.8.0
+go get github.com/nilshah80/aarv/plugins/ratelimit-redis@v0.9.0
 ```
 
 Prefer authenticated client IDs as keys when available, with IP fallback.
@@ -158,7 +158,7 @@ app.Post("/payments", createPayment,
 Use `plugins/idempotency-redis` for multi-instance deployments.
 
 ```bash
-go get github.com/nilshah80/aarv/plugins/idempotency-redis@v0.8.0
+go get github.com/nilshah80/aarv/plugins/idempotency-redis@v0.9.0
 ```
 
 ## Redis-backed stores
@@ -167,9 +167,9 @@ Redis-backed rate limiting, HMAC nonce storage, and idempotency storage are
 submodules:
 
 ```bash
-go get github.com/nilshah80/aarv/plugins/hmacauth-redis@v0.8.0
-go get github.com/nilshah80/aarv/plugins/idempotency-redis@v0.8.0
-go get github.com/nilshah80/aarv/plugins/ratelimit-redis@v0.8.0
+go get github.com/nilshah80/aarv/plugins/hmacauth-redis@v0.9.0
+go get github.com/nilshah80/aarv/plugins/idempotency-redis@v0.9.0
+go get github.com/nilshah80/aarv/plugins/ratelimit-redis@v0.9.0
 ```
 
 Use key prefixes per service or environment so staging, production, and

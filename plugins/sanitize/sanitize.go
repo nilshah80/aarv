@@ -94,7 +94,7 @@ type normalized struct {
 }
 
 // New constructs the sanitizer middleware.
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	n := normalize(cfg)
 
 	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {

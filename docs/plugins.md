@@ -9,7 +9,7 @@ submodule plugins carry third-party dependencies behind separate
 
 | Layer | Examples | Install |
 |---|---|---|
-| Core/root features | routing, binding, validation, hooks, TLS, codecs | `go get github.com/nilshah80/aarv@v0.8.0` |
+| Core/root features | routing, binding, validation, hooks, TLS, codecs | `go get github.com/nilshah80/aarv@v0.9.0` |
 | Root plugins | `jwt`, `bearer`, `session`, `problem`, `rbac`, `idempotency`, `requestid`, `recover`, `secure` | included with root module |
 | Submodule plugins | `prometheus`, `otel`, `openapi`, `openapi-ui`, `autocert`, `sanitize`, Redis stores | separate `go get` per module |
 
@@ -17,15 +17,20 @@ Submodules keep optional dependencies out of the root module. Add them
 only when you use them:
 
 ```bash
-go get github.com/nilshah80/aarv/plugins/openapi@v0.8.0
-go get github.com/nilshah80/aarv/plugins/openapi-ui@v0.8.0
-go get github.com/nilshah80/aarv/plugins/prometheus@v0.8.0
+go get github.com/nilshah80/aarv/plugins/openapi@v0.9.0
+go get github.com/nilshah80/aarv/plugins/openapi-ui@v0.9.0
+go get github.com/nilshah80/aarv/plugins/prometheus@v0.9.0
 ```
 
 ## Using middleware plugins
 
 Most plugins expose `New(Config)` or `New(...)` and return
-`aarv.Middleware`.
+`aarv.NativeMiddleware` — a struct bundling the stdlib middleware path
+with its aarv-native counterpart. `App.Use(...)` accepts the value
+directly. The only stdlib-only outlier in the root tree is
+`plugins/timeout.New(d)`, which returns `aarv.Middleware` because its
+per-request goroutine implementation has no native-path analog (its
+sibling `timeout.Context(d)` returns `aarv.NativeMiddleware`).
 
 ```go
 app.Use(
@@ -141,13 +146,13 @@ policy middleware in the root module when they only use the standard library.
 Root plugins ship under the root tag:
 
 ```bash
-go get github.com/nilshah80/aarv@v0.8.0
+go get github.com/nilshah80/aarv@v0.9.0
 ```
 
 Submodule plugins use path-prefixed tags:
 
 ```bash
-go get github.com/nilshah80/aarv/plugins/openapi@v0.8.0
+go get github.com/nilshah80/aarv/plugins/openapi@v0.9.0
 ```
 
 When releasing a new root version, submodule `go.mod` files should be

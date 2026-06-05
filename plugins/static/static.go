@@ -100,7 +100,7 @@ func (w *notFoundInterceptor) copyHeaders() {
 
 // New creates a static file serving middleware with the given configuration.
 // The Config.Root field is required.
-func New(config Config) aarv.Middleware {
+func New(config Config) aarv.NativeMiddleware {
 	if config.Root == "" {
 		panic("static: Root directory is required")
 	}

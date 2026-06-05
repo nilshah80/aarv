@@ -224,7 +224,7 @@ func defaultGroupPath(c *aarv.Context) string {
 // duplicate metric name on the same registerer — fix by passing a fresh
 // prometheus.NewRegistry() per app or by avoiding multiple New calls
 // against DefaultRegisterer).
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	m := buildMetrics(cfg)
 
 	stdlib := func(next http.Handler) http.Handler {
@@ -236,7 +236,7 @@ func New(cfg Config) aarv.Middleware {
 			start := time.Now()
 			// Defer Dec and release immediately after acquiring resources
 			// so a panic in next.ServeHTTP cannot permanently skew
-			// http_requests_in_flight or leak a pooled recordingWriter.
+			// http_requests_in_flight or leak a pooled StatusRecorder.
 			// LIFO defer order: SetResponse(orig) restores c.res first,
 			// then releaseRecordingWriter returns the writer to the pool,
 			// then inFlight.Dec adjusts the gauge.
@@ -264,10 +264,10 @@ func New(cfg Config) aarv.Middleware {
 			if path == "" {
 				return
 			}
-			status := strconv.Itoa(rw.statusCode)
+			status := strconv.Itoa(rw.Status())
 			m.requests.WithLabelValues(r.Method, path, status).Inc()
 			m.duration.WithLabelValues(r.Method, path, status).Observe(time.Since(start).Seconds())
-			m.respSize.WithLabelValues(r.Method, path, status).Observe(float64(rw.bytesWritten))
+			m.respSize.WithLabelValues(r.Method, path, status).Observe(float64(rw.BytesWritten()))
 		})
 	}
 
@@ -293,10 +293,10 @@ func New(cfg Config) aarv.Middleware {
 			if path == "" {
 				return err
 			}
-			status := strconv.Itoa(rw.statusCode)
+			status := strconv.Itoa(rw.Status())
 			m.requests.WithLabelValues(c.Method(), path, status).Inc()
 			m.duration.WithLabelValues(c.Method(), path, status).Observe(time.Since(start).Seconds())
-			m.respSize.WithLabelValues(c.Method(), path, status).Observe(float64(rw.bytesWritten))
+			m.respSize.WithLabelValues(c.Method(), path, status).Observe(float64(rw.BytesWritten()))
 			return err
 		}
 	})
@@ -344,60 +344,24 @@ func pathLabel(c *aarv.Context, r *http.Request, groupPath func(c *aarv.Context)
 	return r.URL.Path
 }
 
-// recordingWriter intercepts WriteHeader and Write to track the response
-// status code and total bytes written. It implements http.ResponseWriter
-// and forwards transparently. Pooled to avoid per-request allocation.
-type recordingWriter struct {
-	http.ResponseWriter
-	statusCode   int
-	bytesWritten int64
-	wroteHeader  bool
-}
-
+// recordingWriterPool pools *aarv.StatusRecorder instances so the metrics
+// middleware doesn't allocate one per request on hot paths. StatusRecorder
+// is the framework's canonical status/byte observer; its Reset(w) method
+// is the explicit re-bind contract pools depend on.
 var recordingWriterPool = sync.Pool{
-	New: func() any { return &recordingWriter{} },
+	New: func() any { return aarv.NewStatusRecorder(nil) },
 }
 
-func acquireRecordingWriter(w http.ResponseWriter) *recordingWriter {
-	rw := recordingWriterPool.Get().(*recordingWriter)
-	rw.ResponseWriter = w
-	rw.statusCode = http.StatusOK
-	rw.bytesWritten = 0
-	rw.wroteHeader = false
+func acquireRecordingWriter(w http.ResponseWriter) *aarv.StatusRecorder {
+	rw := recordingWriterPool.Get().(*aarv.StatusRecorder)
+	rw.Reset(w)
 	return rw
 }
 
-func releaseRecordingWriter(rw *recordingWriter) {
+func releaseRecordingWriter(rw *aarv.StatusRecorder) {
 	if rw == nil {
 		return
 	}
-	rw.ResponseWriter = nil
+	rw.Reset(nil)
 	recordingWriterPool.Put(rw)
-}
-
-func (rw *recordingWriter) WriteHeader(code int) {
-	if !rw.wroteHeader {
-		rw.statusCode = code
-		rw.wroteHeader = true
-	}
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-func (rw *recordingWriter) Write(b []byte) (int, error) {
-	if !rw.wroteHeader {
-		rw.wroteHeader = true
-	}
-	n, err := rw.ResponseWriter.Write(b)
-	rw.bytesWritten += int64(n)
-	return n, err
-}
-
-// Unwrap returns the underlying ResponseWriter so http.ResponseController
-// (and middleware like flushers, hijackers, and HTTP/2 pushers) can reach
-// past the recording wrapper to interact with the original writer. Without
-// this method, ResponseController would refuse to delegate and downstream
-// streaming or hijacking would silently fail under the prometheus
-// middleware.
-func (rw *recordingWriter) Unwrap() http.ResponseWriter {
-	return rw.ResponseWriter
 }

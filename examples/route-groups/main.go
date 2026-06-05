@@ -7,7 +7,7 @@ import (
 	"github.com/nilshah80/aarv"
 )
 
-func apiVersion(version string) aarv.Middleware {
+func apiVersion(version string) aarv.NativeMiddleware {
 	return aarv.WrapMiddleware(func(next aarv.HandlerFunc) aarv.HandlerFunc {
 		return func(c *aarv.Context) error {
 			c.SetHeader("X-API-Version", version)

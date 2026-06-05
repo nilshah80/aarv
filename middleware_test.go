@@ -231,7 +231,7 @@ func TestWrapMiddlewareErrorPath(t *testing.T) {
 			return errors.New("middleware fail")
 		}
 	})
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler should not run")
 	})).ServeHTTP(rec, ctx.Request())
 
@@ -273,7 +273,7 @@ func TestMiddlewareBranchCoverage(t *testing.T) {
 			c.Set("wrapped", true)
 			return next(c)
 		}
-	})(next)
+	}).Stdlib(next)
 	rec := httptest.NewRecorder()
 	wrapped.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Code != http.StatusNoContent {
@@ -289,7 +289,7 @@ func TestMiddlewareBranchCoverage(t *testing.T) {
 	app.Get("/mw-error", func(c *Context) error { return c.NoContent(http.StatusOK) })
 	NewTestClient(app).Get("/mw-error").AssertStatus(t, http.StatusInternalServerError)
 
-	recovered := Recovery()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	recovered := Recovery().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("boom")
 	}))
 	rec = httptest.NewRecorder()
@@ -340,7 +340,7 @@ func TestMiddlewareNilAndPanicRecoveryPaths(t *testing.T) {
 }
 
 func TestMiddlewareAdditionalCoverage(t *testing.T) {
-	t.Run("register native middleware stores mapping", func(t *testing.T) {
+	t.Run("register native middleware returns paired NativeMiddleware", func(t *testing.T) {
 		m := RegisterNativeMiddleware(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				next.ServeHTTP(w, r)
@@ -349,8 +349,8 @@ func TestMiddlewareAdditionalCoverage(t *testing.T) {
 			return func(c *Context) error { return next(c) }
 		})
 
-		if _, ok := nativeMiddlewareFunc(m); !ok {
-			t.Fatal("expected native middleware mapping to be registered")
+		if m.Stdlib == nil || m.Native == nil {
+			t.Fatal("RegisterNativeMiddleware must populate both Stdlib and Native")
 		}
 	})
 
@@ -361,7 +361,7 @@ func TestMiddlewareAdditionalCoverage(t *testing.T) {
 				t.Fatal("middleware should not receive aarv context on plain request")
 				return nil
 			}
-		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			called = true
 			w.WriteHeader(http.StatusAccepted)
 		}))
@@ -375,7 +375,7 @@ func TestMiddlewareAdditionalCoverage(t *testing.T) {
 
 	t.Run("logger middleware works without aarv context", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		Logger()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		Logger().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plain", nil))
 
@@ -399,7 +399,7 @@ func TestMiddlewareAdditionalCoverage(t *testing.T) {
 				c.Set("wrapped", "yes")
 				return next(c)
 			}
-		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if got, _ := ctx.Get("wrapped"); got != "yes" {
 				t.Fatalf("expected wrapped marker, got %#v", got)
 			}
@@ -411,7 +411,7 @@ func TestMiddlewareAdditionalCoverage(t *testing.T) {
 		}
 
 		rec = httptest.NewRecorder()
-		Logger()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		Logger().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusAccepted)
 		})).ServeHTTP(rec, req)
 		if rec.Code != http.StatusAccepted {

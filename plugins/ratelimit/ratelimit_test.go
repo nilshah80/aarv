@@ -14,7 +14,7 @@ import (
 	"github.com/nilshah80/aarv"
 )
 
-func makeApp(t *testing.T, mw aarv.Middleware) *aarv.App {
+func makeApp(t *testing.T, mw any) *aarv.App {
 	t.Helper()
 	app := aarv.New()
 	app.Use(mw)
@@ -423,7 +423,7 @@ func TestStdlibPath_HandlerErrorFallback(t *testing.T) {
 func TestStdlibPath_NoContext(t *testing.T) {
 	// Drive the stdlib middleware directly with no aarv.Context.
 	mw := New(Config{Limit: 1, Window: time.Minute})
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

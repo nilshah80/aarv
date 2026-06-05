@@ -12,7 +12,7 @@ import (
 
 type client struct{ name string }
 
-func newApp(t *testing.T, mw aarv.Middleware) *aarv.App {
+func newApp(t *testing.T, mw any) *aarv.App {
 	t.Helper()
 	app := aarv.New(aarv.WithBanner(false))
 	app.Use(mw)
@@ -502,7 +502,7 @@ func TestNew_StdlibPath_NoAarvContext(t *testing.T) {
 	})
 	// Mount the middleware on plain net/http — no aarv.App means
 	// aarv.FromRequest(r) returns false, exercising the else branch.
-	h := New(cfg)(next)
+	h := New(cfg).Stdlib(next)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/anything", nil)

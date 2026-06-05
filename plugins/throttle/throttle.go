@@ -67,7 +67,7 @@ type throttle struct {
 }
 
 // New constructs throttle middleware. Panics on MaxConcurrent <= 0.
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	if cfg.MaxConcurrent <= 0 {
 		panic("throttle: MaxConcurrent must be > 0")
 	}

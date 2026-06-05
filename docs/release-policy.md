@@ -109,8 +109,8 @@ done
 External module resolution check:
 
 ```bash
-go list -m github.com/nilshah80/aarv@v0.8.0
-go list -m github.com/nilshah80/aarv/plugins/openapi@v0.8.0
+go list -m github.com/nilshah80/aarv@v0.9.0
+go list -m github.com/nilshah80/aarv/plugins/openapi@v0.9.0
 go list -m github.com/nilshah80/aarv/codec/segmentio@v0.8.0
 ```
 

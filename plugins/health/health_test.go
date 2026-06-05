@@ -23,7 +23,7 @@ func TestNewServesHealthEndpointsAndPassesThrough(t *testing.T) {
 		LivePath:   "",
 		ReadyCheck: func() bool { return false },
 		LiveCheck:  func() bool { return false },
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 		_, _ = w.Write([]byte("next"))
 	}))
@@ -63,7 +63,7 @@ func TestNewSupportsCustomPathsAndHealthyChecks(t *testing.T) {
 		LivePath:   "/status/live",
 		ReadyCheck: func() bool { return true },
 		LiveCheck:  func() bool { return true },
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 
@@ -85,7 +85,7 @@ func TestNewInfoIncludedInResponse(t *testing.T) {
 			"version": "1.2.3",
 			"commit":  "abc123",
 		},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 
@@ -113,7 +113,7 @@ func TestNewInfoOnUnavailableStdlibPath(t *testing.T) {
 			"version": "3.0.0",
 		},
 		ReadyCheck: func() bool { return false },
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 
@@ -134,7 +134,7 @@ func TestNewInfoStatusCannotBeOverridden(t *testing.T) {
 			"status": "lying",
 		},
 		ReadyCheck: func() bool { return false },
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 

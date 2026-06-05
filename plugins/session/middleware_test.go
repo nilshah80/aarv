@@ -41,7 +41,7 @@ func (i *instrumentedStore) Delete(id string) error {
 	return i.MemoryStore.Delete(id)
 }
 
-func newApp(mw aarv.Middleware) *aarv.App {
+func newApp(mw any) *aarv.App {
 	app := aarv.New()
 	app.Use(mw)
 	return app

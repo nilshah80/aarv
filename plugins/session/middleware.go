@@ -146,7 +146,7 @@ func validateIDLength(n int) {
 // New returns middleware backed by a server-side Store. Panics if
 // cfg.Store is nil or cfg.IDLength is in (0, MinIDLength); both
 // surface at app boot rather than first request.
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	if cfg.Store == nil {
 		panic(ErrStoreRequired)
 	}
@@ -159,7 +159,7 @@ func New(cfg Config) aarv.Middleware {
 // NewCookie returns middleware backed by an encrypted-cookie store.
 // Panics on invalid Key (must be 32 bytes) or IDLength in
 // (0, MinIDLength), so misconfiguration surfaces at app boot.
-func NewCookie(cfg CookieConfig) aarv.Middleware {
+func NewCookie(cfg CookieConfig) aarv.NativeMiddleware {
 	validateIDLength(cfg.IDLength)
 	cs, err := NewCookieStore(cfg.Key)
 	if err != nil {
@@ -450,7 +450,7 @@ func (s swHijackerPusher) Push(target string, opts *http.PushOptions) error {
 
 // --- middleware glue ---
 
-func buildMiddleware(backend sessionBackend, cfg *normalized) aarv.Middleware {
+func buildMiddleware(backend sessionBackend, cfg *normalized) aarv.NativeMiddleware {
 	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {
 		return func(c *aarv.Context) error {
 			if cfg.skipper != nil && cfg.skipper(c) {

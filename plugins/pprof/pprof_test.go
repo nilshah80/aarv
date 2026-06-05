@@ -151,7 +151,7 @@ func TestNew_PassesThroughForNonPrefixedPaths(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/users", nil)
-	mw(next).ServeHTTP(rec, req)
+	mw.Stdlib(next).ServeHTTP(rec, req)
 	if !called {
 		t.Fatal("next not called for non-pprof path")
 	}
@@ -167,7 +167,7 @@ func TestNew_HandlesPprofPaths(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, DefaultPrefix+"/cmdline", nil)
-	mw(next).ServeHTTP(rec, req)
+	mw.Stdlib(next).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: want 200, got %d", rec.Code)
 	}

@@ -20,7 +20,7 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestNewPassThroughWithoutPanic(t *testing.T) {
-	handler := New()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -39,7 +39,7 @@ func TestNewRecoversAndLogsStack(t *testing.T) {
 		slog.SetDefault(old)
 	})
 
-	handler := New(Config{StackSize: 0})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{StackSize: 0}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("boom")
 	}))
 
@@ -73,7 +73,7 @@ func TestNewRecoversWithoutStackLogging(t *testing.T) {
 	handler := New(Config{
 		DisablePrintStack: true,
 		DisableStackAll:   true,
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("quiet-boom")
 	}))
 
@@ -149,7 +149,7 @@ func TestNewCustomPanicHandler(t *testing.T) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte("custom: " + fmt.Sprintf("%v", err)))
 		},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("custom-boom")
 	}))
 
@@ -207,7 +207,7 @@ func TestNewNestedPanicInCustomHandlerStdlib(t *testing.T) {
 		Handler: func(w http.ResponseWriter, r *http.Request, err any, stack []byte) {
 			panic("handler-boom")
 		},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("original-boom")
 	}))
 
@@ -269,7 +269,7 @@ func TestNewPartialWriteThenPanicStdlib(t *testing.T) {
 			_, _ = w.Write([]byte("partial"))
 			panic("mid-write-boom")
 		},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("original")
 	})))
 

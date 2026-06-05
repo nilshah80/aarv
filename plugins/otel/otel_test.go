@@ -508,7 +508,7 @@ func TestNew_StdlibPath(t *testing.T) {
 	// stdlib path branch (no aarv Context).
 	tp, rec := newTraceRecorder()
 	mw := New(Config{TracerProvider: tp})
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -727,7 +727,7 @@ func TestNew_PanicInNextStillEndsSpan(t *testing.T) {
 	t.Run("stdlib path", func(t *testing.T) {
 		tp, rec := newTraceRecorder()
 		mw := New(Config{TracerProvider: tp})
-		handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			panic("boom")
 		}))
 		func() {
@@ -766,7 +766,7 @@ func TestNew_StdlibPath_SkipPathsExcluded(t *testing.T) {
 	tp, rec := newTraceRecorder()
 	mw := New(Config{TracerProvider: tp, SkipPaths: []string{"/skipme"}})
 	called := false
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -920,14 +920,14 @@ func TestRecordingWriter_Pool(t *testing.T) {
 	rw := acquireRecordingWriter(httptest.NewRecorder())
 	rw.WriteHeader(http.StatusCreated)
 	rw.WriteHeader(http.StatusInternalServerError)
-	if rw.statusCode != http.StatusCreated {
-		t.Fatalf("status not preserved: %d", rw.statusCode)
+	if rw.Status() != http.StatusCreated {
+		t.Fatalf("status not preserved: %d", rw.Status())
 	}
 	if _, err := rw.Write([]byte("xy")); err != nil {
 		t.Fatal(err)
 	}
-	if rw.bytesWritten != 2 {
-		t.Fatalf("bytesWritten: want 2, got %d", rw.bytesWritten)
+	if rw.BytesWritten() != 2 {
+		t.Fatalf("BytesWritten: want 2, got %d", rw.BytesWritten())
 	}
 	releaseRecordingWriter(rw)
 	releaseRecordingWriter(nil) // must not panic

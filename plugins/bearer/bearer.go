@@ -133,7 +133,7 @@ func DefaultConfig() Config {
 // cfg.Validator is nil (silent passthrough on misconfiguration is unsafe for
 // an auth plugin), if both Header and Query are empty, or if cfg.Realm
 // contains characters that would produce a malformed WWW-Authenticate header.
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	if cfg.Validator == nil {
 		panic("bearer: Config.Validator is required")
 	}

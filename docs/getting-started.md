@@ -8,7 +8,7 @@ module, typed handlers, validation, middleware, and clean shutdown.
 
 ```bash
 go mod init example.com/users-api
-go get github.com/nilshah80/aarv@v0.8.0
+go get github.com/nilshah80/aarv@v0.9.0
 ```
 
 Submodule plugins such as `prometheus`, `otel`, `openapi`, `openapi-ui`,
@@ -179,11 +179,11 @@ The root module intentionally stays stdlib-only. Add separate module
 plugins when you need their third-party dependencies:
 
 ```bash
-go get github.com/nilshah80/aarv/plugins/openapi@v0.8.0
-go get github.com/nilshah80/aarv/plugins/openapi-ui@v0.8.0
-go get github.com/nilshah80/aarv/plugins/prometheus@v0.8.0
-go get github.com/nilshah80/aarv/plugins/otel@v0.8.0
+go get github.com/nilshah80/aarv/plugins/openapi@v0.9.0
+go get github.com/nilshah80/aarv/plugins/openapi-ui@v0.9.0
+go get github.com/nilshah80/aarv/plugins/prometheus@v0.9.0
+go get github.com/nilshah80/aarv/plugins/otel@v0.9.0
 ```
 
-Keep root-module features on `github.com/nilshah80/aarv@v0.8.0`; they do
+Keep root-module features on `github.com/nilshah80/aarv@v0.9.0`; they do
 not need a separate `go get`.

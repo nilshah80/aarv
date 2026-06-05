@@ -62,7 +62,7 @@ func TestCaptureWriterAndHelpers(t *testing.T) {
 
 func TestNewPassThroughAndNoETagCases(t *testing.T) {
 	nonGetCalled := false
-	nonGet := New()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	nonGet := New().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nonGetCalled = true
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte("no-etag"))
@@ -73,7 +73,7 @@ func TestNewPassThroughAndNoETagCases(t *testing.T) {
 		t.Fatalf("expected non-get pass-through without etag, headers=%v", rec.Header())
 	}
 
-	noBody := New()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	noBody := New().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	rec = httptest.NewRecorder()
@@ -82,7 +82,7 @@ func TestNewPassThroughAndNoETagCases(t *testing.T) {
 		t.Fatalf("expected 204 without etag, got status=%d headers=%v", rec.Code, rec.Header())
 	}
 
-	errorResp := New()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	errorResp := New().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte("missing"))
 	}))
@@ -94,7 +94,7 @@ func TestNewPassThroughAndNoETagCases(t *testing.T) {
 }
 
 func TestNewSetsAndMatchesETag(t *testing.T) {
-	handler := New()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("hello"))
 	}))
@@ -117,7 +117,7 @@ func TestNewSetsAndMatchesETag(t *testing.T) {
 		t.Fatalf("expected 304, got %d", rec.Code)
 	}
 
-	weak := New(Config{Weak: true})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	weak := New(Config{Weak: true}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("weak"))
 	}))
 	rec = httptest.NewRecorder()
@@ -224,7 +224,7 @@ func TestNewCustomHashFunction(t *testing.T) {
 	// Custom hash that always returns 0xDEADBEEF
 	customHash := func(data []byte) uint32 { return 0xDEADBEEF }
 
-	handler := New(Config{Hash: customHash})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{Hash: customHash}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("custom-hash-body"))
 	}))
 
@@ -240,7 +240,7 @@ func TestNewCustomHashFunction(t *testing.T) {
 func TestNewCustomHashFunctionWeakStdlibPath(t *testing.T) {
 	customHash := func(data []byte) uint32 { return 0xCAFEBABE }
 
-	handler := New(Config{Hash: customHash, Weak: true})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{Hash: customHash, Weak: true}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("weak-stdlib"))
 	}))
 

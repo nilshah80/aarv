@@ -272,7 +272,7 @@ func validateConfig(cfg Config) (normalized, error) {
 // New creates JWT authentication middleware. It panics on any
 // misconfiguration; callers needing non-panicking validation can use
 // Parse (which performs the same validation but returns errors).
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	n, err := validateConfig(cfg)
 	if err != nil {
 		panic("jwt: " + err.Error())

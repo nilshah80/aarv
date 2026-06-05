@@ -73,7 +73,7 @@ func mustEd25519(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 
 // makeApp builds an aarv app with the JWT middleware installed and a single
 // handler at / that returns 200 plus the claims as JSON.
-func makeApp(t *testing.T, mw aarv.Middleware) *aarv.App {
+func makeApp(t *testing.T, mw any) *aarv.App {
 	t.Helper()
 	app := aarv.New(aarv.WithBanner(false))
 	app.Use(mw)
@@ -92,7 +92,7 @@ func makeApp(t *testing.T, mw aarv.Middleware) *aarv.App {
 
 // makeStdlibApp installs nonNativeMiddleware before the JWT mw to force the
 // stdlib http.Handler path.
-func makeStdlibApp(t *testing.T, mw aarv.Middleware) *aarv.App {
+func makeStdlibApp(t *testing.T, mw any) *aarv.App {
 	t.Helper()
 	app := aarv.New(aarv.WithBanner(false))
 	app.Use(nonNativeMiddleware(), mw)
@@ -930,7 +930,7 @@ func TestFromContext_StdlibPath(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mw := New(Config{HMACSecret: hs})(mux)
+	mw := New(Config{HMACSecret: hs}).Stdlib(mux)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

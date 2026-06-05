@@ -174,9 +174,17 @@ func (a *App) Any(pattern string, handler any, opts ...RouteOption) *App {
 	return a
 }
 
-// Use appends middleware to the global middleware chain.
-func (a *App) Use(middlewares ...Middleware) *App {
-	a.globalMiddleware = append(a.globalMiddleware, middlewares...)
+// Use appends middleware to the global middleware chain. Accepts
+// Middleware, NativeMiddleware, or func(http.Handler) http.Handler
+// values; mixed types in one call are fine. Panics on nil arguments or
+// unsupported types via coerceSlot.
+//
+// Note: the v0.9.0 widening from `...Middleware` to `...any` breaks the
+// pre-v0.9.0 spread pattern `app.Use(mws...)` where `mws` is
+// `[]aarv.Middleware`. Migrate to `mws := []any{...}` or call
+// `app.Use(mw)` in a loop. See docs/MIGRATION_v0.9.md.
+func (a *App) Use(middlewares ...any) *App {
+	a.globalMiddleware = append(a.globalMiddleware, coerceSlots(middlewares, "App.Use")...)
 	return a
 }
 

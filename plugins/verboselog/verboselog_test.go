@@ -555,7 +555,7 @@ func TestDumpLogger_StdlibSkipPathsAndRedaction(t *testing.T) {
 
 	// Test skip path through stdlib handler
 	rec := httptest.NewRecorder()
-	middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	middleware.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
 	if strings.Contains(logBuf.String(), "http_dump") {
@@ -564,7 +564,7 @@ func TestDumpLogger_StdlibSkipPathsAndRedaction(t *testing.T) {
 
 	// Test request header redaction, query param redaction, body truncation through stdlib handler
 	logBuf.Reset()
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := middleware.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Set-Cookie", "session=secret")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("long-response-body"))
@@ -618,7 +618,7 @@ func TestDumpLogger_StdlibResponseBodyAndQueryLogging(t *testing.T) {
 		MaxBodySize:        1024,
 	})
 
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := middleware.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("response-body-content"))
 	}))
@@ -884,7 +884,7 @@ func TestDumpLogger_StdlibPanicCleansUp(t *testing.T) {
 		MaxBodySize:     1024,
 	})
 
-	handler := recovery(middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := recovery(middleware.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("stdlib panic")
 	})))
 
@@ -968,7 +968,7 @@ func TestDumpLogger_LargeBodyStdlib(t *testing.T) {
 
 	fullBody := "this-is-a-body-that-exceeds-max-body-size"
 	var receivedBody string
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := middleware.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		receivedBody = string(b)
 		w.WriteHeader(200)
@@ -1134,7 +1134,7 @@ func BenchmarkDumpLogger_Stdlib(b *testing.B) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(bytes.NewBuffer(nil), nil)))
 
 	middleware := New()
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := middleware.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body) // consume body so tee captures it
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
@@ -1181,7 +1181,7 @@ func BenchmarkDumpLogger_Stdlib_NoBody(b *testing.B) {
 		LogRequestBody:  false,
 		LogResponseBody: false,
 	})
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := middleware.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{"id":"1"}`))
@@ -1233,7 +1233,7 @@ func BenchmarkDumpLogger_Stdlib_LargeBody(b *testing.B) {
 		RedactSensitive: false,
 		MaxBodySize:     1024,
 	})
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := middleware.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body) // consume body
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("ok"))
@@ -1502,7 +1502,7 @@ func TestSink_StdlibPath(t *testing.T) {
 	}
 
 	mw := New(cfg)
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))

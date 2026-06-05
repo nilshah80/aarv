@@ -113,7 +113,7 @@ Keep both endpoints cheap.
 Install the submodule:
 
 ```bash
-go get github.com/nilshah80/aarv/plugins/prometheus@v0.8.0
+go get github.com/nilshah80/aarv/plugins/prometheus@v0.9.0
 ```
 
 Mount `/metrics` as a route, not with `App.Mount`, to avoid canonical path
@@ -147,7 +147,7 @@ HTTP attributes and metrics, and injects `trace_id` and `span_id` into
 Install the submodule:
 
 ```bash
-go get github.com/nilshah80/aarv/plugins/otel@v0.8.0
+go get github.com/nilshah80/aarv/plugins/otel@v0.9.0
 ```
 
 The plugin does not configure exporters. Build your own providers and pass

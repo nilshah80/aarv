@@ -53,7 +53,7 @@ func TestDirectoryWithoutIndexFallsThroughHTTPAndNative(t *testing.T) {
 
 	t.Run("http middleware", func(t *testing.T) {
 		called := false
-		handler := New(Config{Root: root})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := New(Config{Root: root}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			called = true
 			w.WriteHeader(http.StatusAccepted)
 		}))
@@ -113,7 +113,7 @@ func TestNewServesFilesAndPassesThroughUnsupportedMethods(t *testing.T) {
 	handler := New(Config{
 		Root:   root,
 		MaxAge: 60,
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled++
 		w.WriteHeader(http.StatusTeapot)
 	}))
@@ -145,7 +145,7 @@ func TestNewHandlesPrefixSPAAndPassThroughCases(t *testing.T) {
 		Root:   root,
 		Prefix: "/static",
 		SPA:    true,
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled++
 		w.WriteHeader(http.StatusTeapot)
 	}))
@@ -183,7 +183,7 @@ func TestNewHandlesDirectoryBrowseAndNoIndexPassThrough(t *testing.T) {
 		Root:   root,
 		Browse: true,
 		MaxAge: 30,
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 	rec := httptest.NewRecorder()
@@ -192,7 +192,7 @@ func TestNewHandlesDirectoryBrowseAndNoIndexPassThrough(t *testing.T) {
 		t.Fatalf("expected browse listing, got status=%d body=%q", rec.Code, rec.Body.String())
 	}
 
-	noBrowse := New(Config{Root: root})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	noBrowse := New(Config{Root: root}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 	rec = httptest.NewRecorder()
@@ -201,7 +201,7 @@ func TestNewHandlesDirectoryBrowseAndNoIndexPassThrough(t *testing.T) {
 		t.Fatalf("expected pass-through without browse or spa, got %d", rec.Code)
 	}
 
-	spaDir := New(Config{Root: root, SPA: true})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	spaDir := New(Config{Root: root, SPA: true}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("dir-spa"), 0o644); err != nil {
@@ -238,7 +238,7 @@ func TestNewHandlesMissingFilesWithoutSPAAndPathsWithoutLeadingSlash(t *testing.
 	}
 
 	nextCalled := 0
-	handler := New(Config{Root: root})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{Root: root}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled++
 		w.WriteHeader(http.StatusTeapot)
 	}))
@@ -450,7 +450,7 @@ func TestNewCustomIndexInFastPath(t *testing.T) {
 		Root:  root,
 		Index: "default.htm",
 		// Browse: false (default), SPA: false — exercises the fast/noBrowseFS path
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled++
 		w.WriteHeader(http.StatusTeapot)
 	}))
@@ -485,7 +485,7 @@ func TestNotFoundInterceptorHeaderIsolation(t *testing.T) {
 	handler := New(Config{
 		Root:   root,
 		MaxAge: 3600,
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Fallback handler — should not see Cache-Control from the static middleware
 		if cc := w.Header().Get("Cache-Control"); cc != "" {
 			t.Errorf("fallback handler should not see leaked Cache-Control header, got %q", cc)
@@ -639,7 +639,7 @@ func TestStdlibMissingFileNoSPA(t *testing.T) {
 	root := t.TempDir()
 	nextCalled := 0
 	// Browse=true forces the SPA/browse code path
-	handler := New(Config{Root: root, Browse: true})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{Root: root, Browse: true}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled++
 		w.WriteHeader(http.StatusTeapot)
 	}))
@@ -665,7 +665,7 @@ func TestStdlibDirNoIndexNoBrowseNoSPA(t *testing.T) {
 
 	nextCalled := 0
 	// SPA=true forces the SPA/browse code path but doesn't fallback for dirs
-	handler := New(Config{Root: root, SPA: false, Browse: true})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{Root: root, SPA: false, Browse: true}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled++
 		w.WriteHeader(http.StatusTeapot)
 	}))
@@ -678,7 +678,7 @@ func TestStdlibDirNoIndexNoBrowseNoSPA(t *testing.T) {
 	}
 
 	// Now test without browse — dir without index should pass through
-	handler2 := New(Config{Root: root, SPA: true})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler2 := New(Config{Root: root, SPA: true}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled++
 		w.WriteHeader(http.StatusTeapot)
 	}))
@@ -702,7 +702,7 @@ func TestStdlibFileHitWithCacheControl(t *testing.T) {
 	}
 
 	// SPA=true forces SPA/browse path
-	handler := New(Config{Root: root, SPA: true, MaxAge: 600})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{Root: root, SPA: true, MaxAge: 600}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 
@@ -728,7 +728,7 @@ func TestStdlibDirNoIndexPassThrough(t *testing.T) {
 	nextCalled := 0
 	// SPA=true forces SPA/browse code path, but without SPA fallback for
 	// this specific case we use Browse=true+SPA=false
-	handler := New(Config{Root: root, SPA: false, Browse: false})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{Root: root, SPA: false, Browse: false}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled++
 		w.WriteHeader(http.StatusTeapot)
 	}))
@@ -775,7 +775,7 @@ func TestNewPrefixMissNonSPAStdlibPath(t *testing.T) {
 		Root:   root,
 		Prefix: "/assets",
 		// SPA: false, Browse: false — the fast non-SPA path
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled++
 		w.WriteHeader(http.StatusTeapot)
 	}))
@@ -847,7 +847,7 @@ func benchStaticRoot(b *testing.B) string {
 
 func BenchmarkStatic_Hit(b *testing.B) {
 	root := benchStaticRoot(b)
-	handler := New(Config{Root: root, MaxAge: 60})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{Root: root, MaxAge: 60}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 	req := httptest.NewRequest("GET", "/app.js", nil)
@@ -860,7 +860,7 @@ func BenchmarkStatic_Hit(b *testing.B) {
 
 func BenchmarkStatic_Miss(b *testing.B) {
 	root := benchStaticRoot(b)
-	handler := New(Config{Root: root})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{Root: root}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	req := httptest.NewRequest("GET", "/missing.js", nil)
@@ -873,7 +873,7 @@ func BenchmarkStatic_Miss(b *testing.B) {
 
 func BenchmarkStatic_DirWithIndex(b *testing.B) {
 	root := benchStaticRoot(b)
-	handler := New(Config{Root: root, MaxAge: 60})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{Root: root, MaxAge: 60}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 	req := httptest.NewRequest("GET", "/docs/", nil)
@@ -886,7 +886,7 @@ func BenchmarkStatic_DirWithIndex(b *testing.B) {
 
 func BenchmarkStatic_SPAFallback(b *testing.B) {
 	root := benchStaticRoot(b)
-	handler := New(Config{Root: root, SPA: true})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{Root: root, SPA: true}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 	req := httptest.NewRequest("GET", "/app/dashboard", nil)

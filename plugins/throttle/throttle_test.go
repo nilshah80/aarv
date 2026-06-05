@@ -12,7 +12,7 @@ import (
 	"github.com/nilshah80/aarv"
 )
 
-func makeApp(t *testing.T, mw aarv.Middleware, handler aarv.HandlerFunc) *aarv.App {
+func makeApp(t *testing.T, mw any, handler aarv.HandlerFunc) *aarv.App {
 	t.Helper()
 	app := aarv.New()
 	app.Use(mw)
@@ -484,7 +484,7 @@ func TestStdlibPath_NoContext(t *testing.T) {
 	mw := New(Config{MaxConcurrent: 1})
 
 	first := make(chan struct{})
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		first <- struct{}{}
 		<-hold
 		w.WriteHeader(http.StatusOK)

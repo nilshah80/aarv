@@ -231,7 +231,7 @@ func defaultSpanName(method, path string) string {
 
 // New returns aarv middleware that records OpenTelemetry traces and metrics
 // for every request. Apply once via app.Use().
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	s := build(cfg)
 
 	stdlib := func(next http.Handler) http.Handler {
@@ -306,8 +306,8 @@ func (s *state) handleStdlib(w http.ResponseWriter, r *http.Request, next http.H
 	if hasCtx {
 		requestID = c.RequestID()
 	}
-	finalizeSpan(span, method, path, pattern, rw.statusCode, r, requestID, nil, s.recordErrors, s.defaultSpanNamer)
-	s.recordHTTPMetrics(ctx, method, pattern, path, rw.statusCode, r.ContentLength, rw.bytesWritten, duration)
+	finalizeSpan(span, method, path, pattern, rw.Status(), r, requestID, nil, s.recordErrors, s.defaultSpanNamer)
+	s.recordHTTPMetrics(ctx, method, pattern, path, rw.Status(), r.ContentLength, rw.BytesWritten(), duration)
 }
 
 // handleNative serves a request through the aarv native HandlerFunc path.
@@ -348,66 +348,31 @@ func (s *state) handleNative(c *aarv.Context, next aarv.HandlerFunc) error {
 	duration := time.Since(start)
 
 	requestID := c.RequestID()
-	finalizeSpan(span, method, path, c.RoutePattern(), rw.statusCode, r, requestID, err, s.recordErrors, s.defaultSpanNamer)
-	s.recordHTTPMetrics(ctx, method, c.RoutePattern(), path, rw.statusCode, r.ContentLength, rw.bytesWritten, duration)
+	finalizeSpan(span, method, path, c.RoutePattern(), rw.Status(), r, requestID, err, s.recordErrors, s.defaultSpanNamer)
+	s.recordHTTPMetrics(ctx, method, c.RoutePattern(), path, rw.Status(), r.ContentLength, rw.BytesWritten(), duration)
 	return err
 }
 
-// recordingWriter intercepts WriteHeader / Write to track status code and
-// bytes written. Implements http.ResponseWriter and forwards transparently.
-// Pooled to avoid per-request allocation.
-type recordingWriter struct {
-	http.ResponseWriter
-	statusCode   int
-	bytesWritten int64
-	wroteHeader  bool
-}
-
+// recordingWriterPool pools *aarv.StatusRecorder instances so the otel
+// middleware doesn't allocate one per request on hot paths. StatusRecorder
+// is the framework's canonical status/byte observer; its Reset(w) method
+// is the explicit re-bind contract pools depend on.
 var recordingWriterPool = sync.Pool{
-	New: func() any { return &recordingWriter{} },
+	New: func() any { return aarv.NewStatusRecorder(nil) },
 }
 
-func acquireRecordingWriter(w http.ResponseWriter) *recordingWriter {
-	rw := recordingWriterPool.Get().(*recordingWriter)
-	rw.ResponseWriter = w
-	rw.statusCode = http.StatusOK
-	rw.bytesWritten = 0
-	rw.wroteHeader = false
+func acquireRecordingWriter(w http.ResponseWriter) *aarv.StatusRecorder {
+	rw := recordingWriterPool.Get().(*aarv.StatusRecorder)
+	rw.Reset(w)
 	return rw
 }
 
-func releaseRecordingWriter(rw *recordingWriter) {
+func releaseRecordingWriter(rw *aarv.StatusRecorder) {
 	if rw == nil {
 		return
 	}
-	rw.ResponseWriter = nil
+	rw.Reset(nil)
 	recordingWriterPool.Put(rw)
-}
-
-func (rw *recordingWriter) WriteHeader(code int) {
-	if !rw.wroteHeader {
-		rw.statusCode = code
-		rw.wroteHeader = true
-	}
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-func (rw *recordingWriter) Write(b []byte) (int, error) {
-	if !rw.wroteHeader {
-		rw.wroteHeader = true
-	}
-	n, err := rw.ResponseWriter.Write(b)
-	rw.bytesWritten += int64(n)
-	return n, err
-}
-
-// Unwrap returns the underlying ResponseWriter so http.ResponseController
-// (and middleware that depends on Flusher / Hijacker / Pusher / etc.) can
-// reach past the recording wrapper. Without Unwrap, ResponseController
-// refuses to delegate and downstream streaming/hijacking silently breaks
-// under the otel middleware.
-func (rw *recordingWriter) Unwrap() http.ResponseWriter {
-	return rw.ResponseWriter
 }
 
 // recordHTTPMetrics emits the four standard HTTP server metrics on the

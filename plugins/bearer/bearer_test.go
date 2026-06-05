@@ -12,7 +12,7 @@ import (
 
 type user struct{ name string }
 
-func newApp(t *testing.T, mw aarv.Middleware) *aarv.App {
+func newApp(t *testing.T, mw any) *aarv.App {
 	t.Helper()
 	app := aarv.New(aarv.WithBanner(false))
 	app.Use(mw)
@@ -818,7 +818,7 @@ func TestNew_StdlibPath_NoAarvContext_FailureOmitsRequestID(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Validator = func(string) (any, error) { return nil, errInvalidToken }
 
-	h := New(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := New(cfg).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("handler must not run on auth failure")
 	}))
 
@@ -856,7 +856,7 @@ func TestNew_StdlibPath_NoAarvContext(t *testing.T) {
 	})
 	// Mount the middleware on plain net/http — no aarv.App means
 	// aarv.FromRequest(r) returns false, exercising the else branch.
-	h := New(cfg)(next)
+	h := New(cfg).Stdlib(next)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/anything", nil)

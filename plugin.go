@@ -82,8 +82,11 @@ func (pc *PluginContext) Delete(pattern string, handler any, opts ...RouteOption
 	return pc
 }
 
-// Use adds middleware scoped to this plugin's routes.
-func (pc *PluginContext) Use(middlewares ...Middleware) *PluginContext {
+// Use adds middleware scoped to this plugin's routes. Accepts Middleware,
+// NativeMiddleware, or func(http.Handler) http.Handler values; mixed
+// types in one call are fine. Panics on nil arguments or unsupported
+// types via coerceSlot (called inside RouteGroup.Use).
+func (pc *PluginContext) Use(middlewares ...any) *PluginContext {
 	pc.group.Use(middlewares...)
 	return pc
 }

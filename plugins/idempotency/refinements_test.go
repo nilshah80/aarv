@@ -13,6 +13,92 @@ import (
 	"github.com/nilshah80/aarv"
 )
 
+// --- Custom ErrorHandler ---
+
+// TestPayloadMismatch_NativeUsesCustomErrorHandler covers
+// errPayloadMismatchNative's `if n.errFn != nil` branch.
+func TestPayloadMismatch_NativeUsesCustomErrorHandler(t *testing.T) {
+	store := NewMemoryStore()
+	var calls atomic.Int32
+	mw := New(Config{
+		Store:           store,
+		TTL:             time.Hour,
+		HashRequestBody: true,
+		ErrorHandler: func(c *aarv.Context, status int, message string) error {
+			calls.Add(1)
+			return aarv.NewError(status, "custom_payload_mismatch", message)
+		},
+	})
+
+	app := aarv.New()
+	app.Use(mw)
+	app.Post("/", func(c *aarv.Context) error { return c.Text(http.StatusCreated, "ok") })
+
+	// First request: succeeds, stores response keyed by hash of body "a".
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(body)))
+		req.Header.Set("Idempotency-Key", "k-native")
+		req.Header.Set("Content-Type", "text/plain")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+		return rec
+	}
+	_ = post("a")
+	r2 := post("DIFFERENT-BODY")
+	if r2.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d; want 422; body=%s", r2.Code, r2.Body)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("custom ErrorHandler not invoked; calls=%d", calls.Load())
+	}
+	if !strings.Contains(r2.Body.String(), "custom_payload_mismatch") {
+		t.Fatalf("expected custom error code in body, got %s", r2.Body)
+	}
+}
+
+// TestPayloadMismatch_StdlibUsesCustomErrorHandler covers
+// errPayloadMismatchStdlib's `if hasCtx && n.errFn != nil` branch.
+func TestPayloadMismatch_StdlibUsesCustomErrorHandler(t *testing.T) {
+	// Force the stdlib path via a non-native sibling middleware.
+	nonNativeMW := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	store := NewMemoryStore()
+	var calls atomic.Int32
+	app := aarv.New()
+	app.Use(nonNativeMW)
+	app.Use(New(Config{
+		Store:           store,
+		TTL:             time.Hour,
+		HashRequestBody: true,
+		ErrorHandler: func(c *aarv.Context, status int, message string) error {
+			calls.Add(1)
+			return aarv.NewError(status, "custom_payload_mismatch_stdlib", message)
+		},
+	}))
+	app.Post("/", func(c *aarv.Context) error { return c.Text(http.StatusCreated, "ok") })
+
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(body)))
+		req.Header.Set("Idempotency-Key", "k-stdlib")
+		req.Header.Set("Content-Type", "text/plain")
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+		return rec
+	}
+	_ = post("a")
+	r2 := post("DIFFERENT-BODY")
+	if r2.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d; want 422; body=%s", r2.Code, r2.Body)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("custom ErrorHandler not invoked on stdlib path; calls=%d", calls.Load())
+	}
+}
+
 // --- CachedHeaders allowlist ---
 
 func TestCachedHeaders_DefaultAllowlistRoundtrip(t *testing.T) {

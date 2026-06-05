@@ -10,7 +10,7 @@ import (
 	"github.com/nilshah80/aarv"
 )
 
-func makeApp(t *testing.T, mw aarv.Middleware) *aarv.App {
+func makeApp(t *testing.T, mw any) *aarv.App {
 	t.Helper()
 	app := aarv.New()
 	app.Use(mw)
@@ -351,7 +351,7 @@ func TestStdlibPath_NoContext_DirectAddr(t *testing.T) {
 	// Drive the stdlib middleware directly, with no aarv.Context wired
 	// into the request. Forces the directIPFromRemoteAddr branch.
 	mw := New(Config{Mode: ModeAllowlist, CIDRs: []string{"10.0.0.0/8"}})
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

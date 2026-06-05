@@ -354,7 +354,7 @@ func TestMiddleware_DecryptRequestLogsBodyCloseFailureWithoutAarvContext(t *test
 	req.ContentLength = int64(len(encrypted))
 
 	rec := httptest.NewRecorder()
-	middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	middleware.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rec, req)
 
@@ -592,7 +592,7 @@ func TestMiddleware_DecryptReadErrorWithoutHandler(t *testing.T) {
 	req.ContentLength = 10
 	req.Header.Set("Content-Type", EncryptedContentType)
 	rec := httptest.NewRecorder()
-	handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rec, req)
@@ -626,7 +626,7 @@ func TestMiddleware_DecryptReadErrorInvokesCallback(t *testing.T) {
 	req.ContentLength = 10
 	req.Header.Set("Content-Type", EncryptedContentType)
 	rec := httptest.NewRecorder()
-	handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler should not run")
 	})).ServeHTTP(rec, req)
 
@@ -648,7 +648,7 @@ func TestMiddleware_DecryptRestoresOriginalContentType(t *testing.T) {
 		EncryptResponse: false,
 		DecryptRequest:  true,
 	})
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := middleware.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedCT = r.Header.Get("Content-Type")
 		body, _ := io.ReadAll(r.Body)
 		receivedBody = string(body)
@@ -674,8 +674,8 @@ func TestMiddleware_DecryptRestoresOriginalContentType(t *testing.T) {
 
 func TestMustNewSuccess(t *testing.T) {
 	key, _ := GenerateKey()
-	if MustNew(key) == nil {
-		t.Fatal("expected middleware instance")
+	if mw := MustNew(key); mw.Stdlib == nil {
+		t.Fatal("expected middleware instance with non-nil Stdlib")
 	}
 }
 
@@ -701,7 +701,7 @@ func TestNewAdditionalBranches(t *testing.T) {
 		}
 
 		rec := httptest.NewRecorder()
-		mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte("plain"))
 		})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skip", nil))
 
@@ -751,7 +751,7 @@ func TestNewAdditionalBranches(t *testing.T) {
 		rec := httptest.NewRecorder()
 
 		var gotCT, gotBody string
-		mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotCT = r.Header.Get("Content-Type")
 			body, _ := io.ReadAll(r.Body)
 			gotBody = string(body)
@@ -902,7 +902,7 @@ func TestNewAdditionalBranches(t *testing.T) {
 		req.Header.Set("Content-Type", EncryptedContentType)
 		req.ContentLength = int64(len("not-valid-encrypted"))
 		rec := httptest.NewRecorder()
-		mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			t.Fatal("handler should not run on stdlib decrypt failure")
 		})).ServeHTTP(rec, req)
 		if callbacks != 1 || rec.Code != http.StatusBadRequest {
@@ -911,7 +911,7 @@ func TestNewAdditionalBranches(t *testing.T) {
 
 		req = httptest.NewRequest(http.MethodGet, "/stdlib-encrypt", nil)
 		rec = httptest.NewRecorder()
-		mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"ok":true}`))
 		})).ServeHTTP(rec, req)

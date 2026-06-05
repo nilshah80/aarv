@@ -22,7 +22,7 @@ func TestNewPassesThroughWithoutOriginAndDisallowedOrigin(t *testing.T) {
 	nextCalled := 0
 	handler := New(Config{
 		AllowOrigins: []string{"https://allowed.example"},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled++
 		w.WriteHeader(204)
 	}))
@@ -69,7 +69,7 @@ func TestNewHandlesAllowedOriginsAndPreflight(t *testing.T) {
 		ExposeHeaders:    []string{"X-Trace-ID"},
 		AllowCredentials: true,
 		MaxAge:           60,
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(202)
 	}))
 
@@ -105,7 +105,7 @@ func TestNewHandlesAllowedOriginsAndPreflight(t *testing.T) {
 }
 
 func TestNewAllowsWildcardAndDynamicOriginFunction(t *testing.T) {
-	wildcard := New()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	wildcard := New().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	}))
 
@@ -125,7 +125,7 @@ func TestNewAllowsWildcardAndDynamicOriginFunction(t *testing.T) {
 		AllowOriginFunc: func(origin string) bool {
 			return origin == "https://dynamic.example"
 		},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	}))
 

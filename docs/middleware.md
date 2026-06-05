@@ -244,14 +244,16 @@ app.Use(aarv.SkipPaths(
 ))
 ```
 
-`aarv.SkipPaths` is currently stdlib-only — any route whose chain
-includes a SkipPaths-wrapped middleware downgrades from the native
-fast path to the stdlib chain. If you need the native fast path on
-hot routes, prefer the per-plugin `SkipPaths` config (e.g.
-`prometheus.Config.SkipPaths`, `compress.Config.SkipPaths`) which
-performs the skip inside the plugin without leaving the native
-chain. The wrapper-level helper will regain its native variant once
-the framework's middleware registry is fixed; the API stays the same.
+`aarv.SkipPaths` preserves the native fast path when the wrapped
+middleware has a native variant — distinct `SkipPaths` instances each
+carry their own native fn, so the chain builder runs the right inner
+on the right routes without falling back to stdlib. For plugins that
+ship a built-in `SkipPaths` config field (`prometheus.Config.SkipPaths`,
+`compress.Config.SkipPaths`, `etag.Config.SkipPaths`,
+`logger.Config.SkipPaths`, `verboselog.Config.SkipPaths`), the
+per-plugin field skips inside the plugin's own dispatch and is
+slightly more efficient than wrapping with `aarv.SkipPaths` — prefer
+it when available.
 
 ### Adding observability to plugins that already provide a hook
 

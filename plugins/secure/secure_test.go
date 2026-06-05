@@ -22,7 +22,7 @@ func TestDefaultAndRelaxedConfig(t *testing.T) {
 }
 
 func TestNewSetsDefaultHeaders(t *testing.T) {
-	handler := New()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -63,7 +63,7 @@ func TestNewRespectsDisabledHeadersAndCustomHSTS(t *testing.T) {
 		CrossOriginOpenerPolicy:   "same-origin-allow-popups",
 		CrossOriginEmbedderPolicy: "require-corp",
 		CrossOriginResourcePolicy: "cross-origin",
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -92,7 +92,7 @@ func TestNewAddsPreloadWhenAllowed(t *testing.T) {
 		HSTSMaxAge:            200,
 		HSTSIncludeSubdomains: true,
 		HSTSPreload:           true,
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

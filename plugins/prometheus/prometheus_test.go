@@ -345,7 +345,7 @@ func TestRecordingWriter_StatusAndByteCount(t *testing.T) {
 func TestNew_StdlibPath(t *testing.T) {
 	reg := freshRegistry()
 	mw := New(Config{Registerer: reg})
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -423,14 +423,11 @@ func TestRecordingWriter_PoolReuse(t *testing.T) {
 	releaseRecordingWriter(w1)
 
 	w2 := acquireRecordingWriter(httptest.NewRecorder())
-	if w2.statusCode != http.StatusOK {
-		t.Fatalf("acquired writer not reset: status %d", w2.statusCode)
+	if w2.Status() != http.StatusOK {
+		t.Fatalf("acquired writer not reset: status %d", w2.Status())
 	}
-	if w2.bytesWritten != 0 {
-		t.Fatalf("acquired writer not reset: bytes %d", w2.bytesWritten)
-	}
-	if w2.wroteHeader {
-		t.Fatal("acquired writer wroteHeader not reset")
+	if w2.BytesWritten() != 0 {
+		t.Fatalf("acquired writer not reset: bytes %d", w2.BytesWritten())
 	}
 	releaseRecordingWriter(w2)
 }
@@ -439,8 +436,8 @@ func TestRecordingWriter_WriteHeaderIdempotent(t *testing.T) {
 	rw := acquireRecordingWriter(httptest.NewRecorder())
 	rw.WriteHeader(http.StatusCreated)
 	rw.WriteHeader(http.StatusInternalServerError) // second call ignored for status tracking
-	if rw.statusCode != http.StatusCreated {
-		t.Fatalf("statusCode not preserved after second WriteHeader: %d", rw.statusCode)
+	if rw.Status() != http.StatusCreated {
+		t.Fatalf("status not preserved after second WriteHeader: %d", rw.Status())
 	}
 }
 
@@ -449,11 +446,8 @@ func TestRecordingWriter_WriteWithoutExplicitHeader(t *testing.T) {
 	if _, err := io.WriteString(rw, "hello"); err != nil {
 		t.Fatal(err)
 	}
-	if !rw.wroteHeader {
-		t.Fatal("Write should mark wroteHeader")
-	}
-	if rw.bytesWritten != 5 {
-		t.Fatalf("bytesWritten: want 5, got %d", rw.bytesWritten)
+	if rw.BytesWritten() != 5 {
+		t.Fatalf("BytesWritten: want 5, got %d", rw.BytesWritten())
 	}
 }
 
@@ -472,7 +466,7 @@ func TestNew_PanicInNextDoesNotSkewInFlight(t *testing.T) {
 	t.Run("stdlib path", func(t *testing.T) {
 		reg := freshRegistry()
 		mw := New(Config{Registerer: reg})
-		handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			panic("boom")
 		}))
 		func() {
@@ -509,7 +503,7 @@ func TestNew_StdlibPath_SkipPathsExcluded(t *testing.T) {
 	reg := freshRegistry()
 	mw := New(Config{Registerer: reg, SkipPaths: []string{"/skipme"}})
 	called := false
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))

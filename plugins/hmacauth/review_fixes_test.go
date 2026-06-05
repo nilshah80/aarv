@@ -85,8 +85,8 @@ func TestNew_DefaultsZeroSkewSeconds(t *testing.T) {
 		Validator: StaticClients(map[string]Client{"x": {Secret: []byte("k")}}),
 		Now:       func() time.Time { return time.Unix(1000, 0) },
 	})
-	if mw == nil {
-		t.Fatal("expected middleware")
+	if mw.Stdlib == nil {
+		t.Fatal("expected middleware with non-nil Stdlib")
 	}
 }
 
@@ -154,7 +154,7 @@ func TestVerify_RejectsValidatorReturningEmptyClientID(t *testing.T) {
 	signRequest(t, req, nil, Client{ClientID: "presented", Secret: []byte("k")}, 1735000000, "n-empty-id")
 
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler reached even though validator returned empty ClientID")
 	})).ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -242,7 +242,7 @@ func TestVerify_RejectsTimestampsAbove2to53(t *testing.T) {
 	req := httptest.NewRequest("GET", "/x", http.NoBody)
 	signRequest(t, req, nil, client, beyond2to53, "n-huge")
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler reached with timestamp past 2^53")
 	})).ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -264,7 +264,7 @@ func TestVerify_AcceptsTimestampAtBoundary(t *testing.T) {
 	signRequest(t, req, nil, client, int64(1)<<53, "n-boundary")
 	rec := httptest.NewRecorder()
 	called := false
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(rec, req)

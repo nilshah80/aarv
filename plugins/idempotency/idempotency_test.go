@@ -19,7 +19,7 @@ import (
 
 // ---------- Test helpers ----------
 
-func makeApp(t *testing.T, mw aarv.Middleware, handler aarv.HandlerFunc) *aarv.App {
+func makeApp(t *testing.T, mw any, handler aarv.HandlerFunc) *aarv.App {
 	t.Helper()
 	app := aarv.New()
 	app.Use(mw)
@@ -864,7 +864,7 @@ func TestStdlibPath_BodyReadError(t *testing.T) {
 		TTL:             time.Hour,
 		HashRequestBody: true,
 	})
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -1460,7 +1460,7 @@ func TestStdlibPath_NoContext_SkipPaths(t *testing.T) {
 		SkipPaths: []string{"/skip"},
 	})
 	hits := 0
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
 		w.WriteHeader(http.StatusOK)
 	}))

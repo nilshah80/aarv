@@ -249,7 +249,7 @@ func DefaultConfig() Config {
 // Validator, negative SkewSeconds, negative NonceTTL, or
 // negative MaxBodyBytes — these are all misconfigurations that
 // would silently weaken auth.
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	n := normalize(cfg)
 
 	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {

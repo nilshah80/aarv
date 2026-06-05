@@ -168,7 +168,7 @@ func TestVectors_VerifyMiddleware(t *testing.T) {
 
 			rec := httptest.NewRecorder()
 			handlerCalled := false
-			h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				handlerCalled = true
 				w.WriteHeader(http.StatusOK)
 			}))

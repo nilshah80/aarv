@@ -121,7 +121,7 @@ correct.
 `golang.org/x/text`.
 
 ```bash
-go get github.com/nilshah80/aarv/plugins/sanitize@v0.8.0
+go get github.com/nilshah80/aarv/plugins/sanitize@v0.9.0
 ```
 
 It sanitizes JSON string values by stripping HTML, normalizing Unicode, and

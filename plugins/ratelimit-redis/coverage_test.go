@@ -118,7 +118,7 @@ func TestStdlibPathNoAarvContext(t *testing.T) {
 	final := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := mw(final)
+	handler := mw.Stdlib(final)
 
 	// Three hits from the same fake remote addr; first 2 admit, 3rd denies.
 	for i, expect := range []int{200, 200, 429} {
@@ -166,19 +166,28 @@ func TestStdlibPathHandlerReturnsErrorFallsBack(t *testing.T) {
 // when 2*windowMs is shorter (i.e. Window < 500ms).
 func TestNewTTLFloor(t *testing.T) {
 	rdb, _ := mustClient(t)
-	// Construction must not panic; this is a smoke test that the
-	// config-time branch fires. The behavioural side-effect (the
-	// Lua TTL applied to the bucket key) is exercised by the
-	// existing miniredis-based limit tests.
-	mw := New(Config{
-		Client:  rdb,
-		Limit:   1,
-		Burst:   1,
-		Window:  100 * time.Millisecond, // 2*100ms = 200ms < 1000ms floor
-		KeyFunc: func(c *aarv.Context) string { return "ttl-floor" },
-	})
-	if mw == nil {
-		t.Fatal("New returned nil middleware")
+	// Construction must not panic; the request-time check below actually
+	// exercises the decide() ttl-floor branch (windowMs*2 = 200ms < 1000ms
+	// floor → ttlMs clamped to 1000).
+	app := aarv.New()
+	app.Use(
+		New(Config{
+			Client:  rdb,
+			Limit:   1,
+			Burst:   1,
+			Window:  100 * time.Millisecond, // 2*100ms = 200ms < 1000ms floor
+			KeyFunc: func(c *aarv.Context) string { return "ttl-floor" },
+		}),
+		stdlibSibling(),
+	)
+	app.Get("/", func(c *aarv.Context) error { return c.JSON(http.StatusOK, "ok") })
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body=%s", rec.Code, rec.Body)
 	}
 }
 

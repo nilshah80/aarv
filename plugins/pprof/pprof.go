@@ -130,7 +130,7 @@ func Handler(cfg Config) http.Handler {
 // the prefix pass through to next unchanged.
 //
 // New panics if Prefix is malformed.
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	cfg = normalize(cfg)
 	pprofHandler := Handler(cfg)
 	prefix := cfg.Prefix

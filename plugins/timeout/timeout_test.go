@@ -275,7 +275,7 @@ func TestNewHeaderMutationRace(t *testing.T) {
 // --- Context (lightweight deadline-propagation) tests ---
 
 func TestContextDefaultDuration(t *testing.T) {
-	handler := Context(0)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Context(0).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		dl, ok := r.Context().Deadline()
 		if !ok {
 			t.Fatal("expected deadline on context")
@@ -296,7 +296,7 @@ func TestContextDefaultDuration(t *testing.T) {
 }
 
 func TestContextStdlibWithoutAarvContext(t *testing.T) {
-	handler := Context(100 * time.Millisecond)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Context(100 * time.Millisecond).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := r.Context().Deadline(); !ok {
 			t.Fatal("expected deadline on plain request context")
 		}
@@ -376,7 +376,7 @@ func TestContextNativeErrorPropagation(t *testing.T) {
 func TestContextDoesNotEnforceTimeout(t *testing.T) {
 	// Context() only propagates the deadline — it does NOT enforce it.
 	// A handler that ignores the context runs to completion and gets a 200.
-	handler := Context(10 * time.Millisecond)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Context(10 * time.Millisecond).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(30 * time.Millisecond)
 		_, _ = w.Write([]byte("completed"))
 	}))

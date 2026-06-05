@@ -121,6 +121,37 @@ func TestWaitFallbackPathExercises(t *testing.T) {
 	_ = mr // keep miniredis alive for the test duration
 }
 
+// TestWait_SubscribeFailsAndKeyMissing covers the branch where
+// pubsub.Receive fails (cancelled ctx) AND the fallback Get returns
+// (nil, nil) — Wait should surface the original subscribe error.
+func TestWait_SubscribeFailsAndKeyMissing(t *testing.T) {
+	s, _, _ := newStore(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel BEFORE Wait so pubsub.Receive returns ctx.Err()
+
+	resp, err := s.Wait(ctx, "neverSaved")
+	if err == nil {
+		t.Fatal("expected error when subscribe fails and key is missing")
+	}
+	if resp != nil {
+		t.Fatalf("expected nil response, got %+v", resp)
+	}
+}
+
+// TestWait_SubscribeFailsAndGetReturnsErr covers the branch where
+// pubsub.Receive fails AND the fallback Get also fails (transport
+// error) — Wait should return the getErr.
+func TestWait_SubscribeFailsAndGetReturnsErr(t *testing.T) {
+	s, mr, _ := newStore(t)
+	mr.Close() // kill backing redis so both Subscribe and Get fail
+
+	_, err := s.Wait(context.Background(), "k")
+	if err == nil {
+		t.Fatal("expected error when both Subscribe and Get fail")
+	}
+}
+
 // TestWaitChannelClosedFinalGetMiss covers the "channel closed
 // without save" branch — Wait observes the pubsub channel close
 // without any save publish, runs a final Get, and returns the

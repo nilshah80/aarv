@@ -1,9 +1,8 @@
 package aarv
 
 import (
+	"fmt"
 	"net/http"
-	"reflect"
-	"sync"
 )
 
 // Middleware is the standard Go middleware signature.
@@ -12,35 +11,42 @@ type Middleware func(http.Handler) http.Handler
 // MiddlewareFunc is a framework-specific middleware with access to Context.
 type MiddlewareFunc func(next HandlerFunc) HandlerFunc
 
-var nativeMiddlewareRegistry sync.Map
-
-func registerNativeMiddleware(m Middleware, fn MiddlewareFunc) Middleware {
-	if fn != nil {
-		nativeMiddlewareRegistry.Store(reflect.ValueOf(m).Pointer(), fn)
-	}
-	return m
+// NativeMiddleware bundles a stdlib Middleware with its aarv-native
+// MiddlewareFunc counterpart. Each value carries its own identity, so
+// multiple instances of the same wrapper helper or plugin do not
+// interfere with each other's native fast-path registration.
+//
+// Plugin constructors that wire both paths return NativeMiddleware via
+// RegisterNativeMiddleware. Users pass the value to App.Use,
+// RouteGroup.Use, PluginContext.Use, WithRouteMiddleware, or SkipPaths
+// — all of which accept any of {Middleware, NativeMiddleware,
+// func(http.Handler) http.Handler}.
+//
+// Stdlib is required; Use-time validation panics on a nil Stdlib so
+// misuse is caught at registration rather than at chain build. Native
+// is optional — a NativeMiddleware with Native == nil registers as
+// stdlib-only and downgrades any route whose chain includes it to the
+// stdlib path.
+type NativeMiddleware struct {
+	Stdlib Middleware
+	Native MiddlewareFunc
 }
 
-// RegisterNativeMiddleware associates an Aarv-native middleware implementation
-// with a standard net/http middleware. It enables the runtime to use a faster
-// native exact-route path when every middleware in the chain provides one.
-func RegisterNativeMiddleware(m Middleware, fn MiddlewareFunc) Middleware {
-	return registerNativeMiddleware(m, fn)
+// RegisterNativeMiddleware bundles a stdlib middleware with its
+// aarv-native counterpart. No global registry is consulted; each call
+// produces an independent NativeMiddleware value.
+func RegisterNativeMiddleware(m Middleware, fn MiddlewareFunc) NativeMiddleware {
+	return NativeMiddleware{Stdlib: m, Native: fn}
 }
 
-func nativeMiddlewareFunc(m Middleware) (MiddlewareFunc, bool) {
-	fn, ok := nativeMiddlewareRegistry.Load(reflect.ValueOf(m).Pointer())
-	if !ok {
-		return nil, false
-	}
-	mf, ok := fn.(MiddlewareFunc)
-	return mf, ok
-}
-
-// WrapMiddleware converts a framework MiddlewareFunc to a stdlib Middleware.
-func WrapMiddleware(fn MiddlewareFunc) Middleware {
+// WrapMiddleware converts a framework MiddlewareFunc into a
+// NativeMiddleware with both paths wired. A nil fn yields a pass-through
+// stdlib middleware with no native variant.
+func WrapMiddleware(fn MiddlewareFunc) NativeMiddleware {
 	if fn == nil {
-		return func(next http.Handler) http.Handler { return next }
+		return NativeMiddleware{
+			Stdlib: func(next http.Handler) http.Handler { return next },
+		}
 	}
 	m := Middleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -58,32 +64,102 @@ func WrapMiddleware(fn MiddlewareFunc) Middleware {
 			}
 		})
 	})
-	return registerNativeMiddleware(m, fn)
+	return NativeMiddleware{Stdlib: m, Native: fn}
 }
 
-// buildChain builds the middleware chain by wrapping the handler.
+// middlewareSlot is the internal storage shape used by App, RouteGroup,
+// and routeConfig in place of the historical []Middleware. A slot with a
+// non-nil native lets buildNativeChain compose the fast path without
+// any lookup. A slot with native == nil forces the chain builder to
+// downgrade to stdlib for any route that includes it.
+type middlewareSlot struct {
+	stdlib Middleware
+	native MiddlewareFunc
+}
+
+// coerceSlot is the type-switch helper shared by App.Use, RouteGroup.Use,
+// PluginContext.Use, WithRouteMiddleware, and SkipPaths. It validates
+// inputs at registration time so misuse is caught loudly, not silently
+// during chain build.
+//
+// Accepted argument types:
+//   - Middleware (or its untyped equivalent func(http.Handler) http.Handler)
+//   - NativeMiddleware
+//
+// Anything else panics with a message naming the caller, the argument
+// index, and the unsupported type.
+func coerceSlot(arg any, call string, index int) middlewareSlot {
+	switch v := arg.(type) {
+	case nil:
+		panic(fmt.Sprintf("aarv: %s: argument %d is nil", call, index))
+	case Middleware:
+		if v == nil {
+			panic(fmt.Sprintf("aarv: %s: argument %d is a nil Middleware", call, index))
+		}
+		return middlewareSlot{stdlib: v}
+	case func(http.Handler) http.Handler:
+		if v == nil {
+			panic(fmt.Sprintf("aarv: %s: argument %d is a nil middleware function", call, index))
+		}
+		return middlewareSlot{stdlib: Middleware(v)}
+	case NativeMiddleware:
+		if v.Stdlib == nil {
+			panic(fmt.Sprintf("aarv: %s: argument %d is NativeMiddleware with nil Stdlib", call, index))
+		}
+		return middlewareSlot{stdlib: v.Stdlib, native: v.Native}
+	default:
+		panic(fmt.Sprintf("aarv: %s: argument %d has unsupported type %T; want Middleware, NativeMiddleware, or func(http.Handler) http.Handler", call, index, arg))
+	}
+}
+
+// coerceSlots applies coerceSlot to a variadic any slice. The returned
+// []middlewareSlot has the same length and order as args.
+func coerceSlots(args []any, call string) []middlewareSlot {
+	slots := make([]middlewareSlot, len(args))
+	for i, a := range args {
+		slots[i] = coerceSlot(a, call, i)
+	}
+	return slots
+}
+
+// buildChain builds the stdlib middleware chain by wrapping the handler.
 // First registered = outermost wrapper.
-func buildChain(handler http.Handler, middlewares []Middleware) http.Handler {
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		handler = middlewares[i](handler)
+func buildChain(handler http.Handler, slots []middlewareSlot) http.Handler {
+	for i := len(slots) - 1; i >= 0; i-- {
+		handler = slots[i].stdlib(handler)
 	}
 	return handler
 }
 
-func buildNativeChain(handler HandlerFunc, middlewares []Middleware) (HandlerFunc, bool) {
+// buildNativeChain builds the framework-native chain. Returns (nil,
+// false) the first time it encounters a slot with a nil native fn — the
+// caller is expected to fall back to the stdlib chain in that case.
+func buildNativeChain(handler HandlerFunc, slots []middlewareSlot) (HandlerFunc, bool) {
 	chain := handler
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		mw, ok := nativeMiddlewareFunc(middlewares[i])
-		if !ok {
+	for i := len(slots) - 1; i >= 0; i-- {
+		if slots[i].native == nil {
 			return nil, false
 		}
-		chain = mw(chain)
+		chain = slots[i].native(chain)
 	}
 	return chain, true
 }
 
-// Recovery returns a middleware that recovers from panics.
-func Recovery() Middleware {
+// allNative reports whether every slot has a non-nil native fn. Used by
+// dispatch.buildRouteChainFast as the gate that decides whether the
+// native fast chain is even worth attempting.
+func allNative(slots []middlewareSlot) bool {
+	for i := range slots {
+		if slots[i].native == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// Recovery returns a middleware that recovers from panics on both the
+// stdlib and aarv-native paths.
+func Recovery() NativeMiddleware {
 	native := MiddlewareFunc(func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
 			defer func() {
@@ -122,11 +198,12 @@ func Recovery() Middleware {
 			next.ServeHTTP(w, r)
 		})
 	})
-	return registerNativeMiddleware(m, native)
+	return NativeMiddleware{Stdlib: m, Native: native}
 }
 
-// Logger returns a middleware that logs requests using slog.
-func Logger() Middleware {
+// Logger returns a middleware that logs each request via the framework
+// slog logger. Wires both the stdlib and aarv-native paths.
+func Logger() NativeMiddleware {
 	native := MiddlewareFunc(func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
 			c.app.logger.Info("request",
@@ -150,5 +227,5 @@ func Logger() Middleware {
 			next.ServeHTTP(w, r)
 		})
 	})
-	return registerNativeMiddleware(m, native)
+	return NativeMiddleware{Stdlib: m, Native: native}
 }

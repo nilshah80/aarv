@@ -17,7 +17,7 @@ import (
 // echoApp returns an app whose POST handler echos the parsed JSON body
 // back as the response body, so tests can read what the handler saw
 // after the sanitizer ran.
-func echoApp(t *testing.T, mw aarv.Middleware) *aarv.App {
+func echoApp(t *testing.T, mw any) *aarv.App {
 	t.Helper()
 	app := aarv.New()
 	app.Use(mw)
@@ -327,7 +327,7 @@ func TestStdlibPath_BodyReadError(t *testing.T) {
 	// Drive the stdlib middleware directly with a body that errors on
 	// Read; expect 400.
 	mw := New(Config{StripHTML: true})
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusOK)
 	}))

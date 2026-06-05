@@ -196,7 +196,7 @@ func New(d time.Duration) aarv.Middleware {
 // than [New].
 //
 // If d is <= 0, the default of 30 seconds is used.
-func Context(d time.Duration) aarv.Middleware {
+func Context(d time.Duration) aarv.NativeMiddleware {
 	if d <= 0 {
 		d = DefaultConfig().Timeout
 	}

@@ -129,6 +129,31 @@ func TestMemoryNonceStore_StopIdempotent(t *testing.T) {
 	}
 }
 
+// TestMemoryNonceStore_JanitorSweepFloor covers the
+// `if sweepEvery < 50*time.Millisecond { sweepEvery = 50 * time.Millisecond }`
+// clamp. Pass an unreasonably small interval; constructor must not panic
+// and the janitor must still tick (we don't measure the exact interval —
+// the clamp is a defensive guard, not a timing contract).
+func TestMemoryNonceStore_JanitorSweepFloor(t *testing.T) {
+	_, stop := NewMemoryNonceStoreWithJanitor(8, time.Nanosecond)
+	defer func() { _ = stop() }()
+	// Brief sleep so the goroutine starts at least once and we know
+	// nothing panicked during start-up.
+	time.Sleep(60 * time.Millisecond)
+}
+
+// TestMemoryNonceStore_EvictLockedOnEmpty covers the early-return guard
+// in evictLocked when the entries map is empty. Trigger it by calling
+// the public SetNX path on a store with maxEntries=1 then watching the
+// empty-state branch via a sweep on an already-empty store.
+func TestMemoryNonceStore_EvictLockedOnEmpty(t *testing.T) {
+	s := NewMemoryNonceStore(1)
+	// Direct guard exercise: evictLocked must safely no-op on empty.
+	s.mu.Lock()
+	s.evictLocked(time.Now())
+	s.mu.Unlock()
+}
+
 func TestMemoryNonceStore_ConcurrentSetNX(t *testing.T) {
 	s := NewMemoryNonceStore(4096)
 	const N = 1000

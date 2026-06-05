@@ -201,7 +201,7 @@ const PayloadMismatchErrorCode = "idempotency_key_reused_with_different_payload"
 const payloadMismatchMessage = "Idempotency-Key reused with a different request payload"
 
 // New constructs idempotency middleware. Panics on invalid configuration.
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	n := normalize(cfg)
 
 	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {

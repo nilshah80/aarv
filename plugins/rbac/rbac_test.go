@@ -17,7 +17,7 @@ func fixedRolesExtractor(roles ...string) RoleExtractor {
 	return func(c *aarv.Context) []string { return roles }
 }
 
-func newApp(t *testing.T, mw aarv.Middleware) *aarv.App {
+func newApp(t *testing.T, mw any) *aarv.App {
 	t.Helper()
 	app := aarv.New(aarv.WithBanner(false))
 	app.Use(mw)
@@ -329,7 +329,7 @@ func TestStdlibPath_NoAarvContext_FailsClosed(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
-	h := authz.RequireRoles("admin")(next)
+	h := authz.RequireRoles("admin").Stdlib(next)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/anything", nil))

@@ -121,7 +121,7 @@ type normalized struct {
 // New constructs CSRF middleware. Panics on TokenLength < 16 (a 16-byte
 // raw token is the minimum that produces a 22-char base64-encoded value;
 // shorter tokens are too easy to brute-force).
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	n := normalize(cfg)
 
 	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {

@@ -31,7 +31,7 @@ func DefaultConfig() Config {
 
 // New creates a body size limit middleware with the given maximum body size.
 // If maxBytes is <= 0, the default of 1 MB is used.
-func New(maxBytes int64) aarv.Middleware {
+func New(maxBytes int64) aarv.NativeMiddleware {
 	if maxBytes <= 0 {
 		maxBytes = DefaultConfig().MaxBytes
 	}
@@ -79,7 +79,7 @@ func New(maxBytes int64) aarv.Middleware {
 // In the native path, it intercepts the framework's auto-generated 500.
 // In the stdlib path, it wraps the request body to detect MaxBytesError
 // and intercepts the response if no headers have been sent yet.
-func NewWithResponse(maxBytes int64) aarv.Middleware {
+func NewWithResponse(maxBytes int64) aarv.NativeMiddleware {
 	if maxBytes <= 0 {
 		maxBytes = DefaultConfig().MaxBytes
 	}

@@ -19,7 +19,7 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestNewUsesDefaultLimit(t *testing.T) {
-	handler := New(0)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(0).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, err := io.ReadAll(r.Body)
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
@@ -66,7 +66,7 @@ func TestNewWithResponseAndWriterHelpers(t *testing.T) {
 	}
 
 	called := false
-	handler := NewWithResponse(0)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewWithResponse(0).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		_, _ = w.Write([]byte("pass"))
 	}))
@@ -153,7 +153,7 @@ func TestNewWithResponseStdlibAutoResponds413(t *testing.T) {
 	middleware := NewWithResponse(16)
 	// Handler reads the body but does NOT check for MaxBytesError —
 	// the middleware should auto-send 413.
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := middleware.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, err := io.ReadAll(r.Body)
 		if err != nil {
 			// Handler sees the error but doesn't handle it

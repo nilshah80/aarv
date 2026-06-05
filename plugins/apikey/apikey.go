@@ -72,7 +72,7 @@ func DefaultConfig() Config {
 // New creates an API key authentication middleware. It panics if cfg.Validator
 // is nil — silently skipping unauthenticated requests is unsafe. Empty Header
 // and Query both being unset is also a misconfiguration and panics.
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	if cfg.Validator == nil {
 		panic("apikey: Config.Validator is required")
 	}

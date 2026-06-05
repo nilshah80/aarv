@@ -298,7 +298,7 @@ func (w *encryptResponseWriter) Unwrap() http.ResponseWriter {
 }
 
 // New creates an encryption middleware with the given key and optional configuration.
-func New(key []byte, config ...Config) (aarv.Middleware, error) {
+func New(key []byte, config ...Config) (aarv.NativeMiddleware, error) {
 	cfg := DefaultConfig()
 	if len(config) > 0 {
 		cfg = config[0]
@@ -306,12 +306,12 @@ func New(key []byte, config ...Config) (aarv.Middleware, error) {
 	cfg.Key = key
 
 	if len(key) != KeySize {
-		return nil, ErrInvalidKey
+		return aarv.NativeMiddleware{}, ErrInvalidKey
 	}
 
 	encryptor, err := NewEncryptor(key)
 	if err != nil {
-		return nil, err
+		return aarv.NativeMiddleware{}, err
 	}
 
 	// Build excluded paths set
@@ -473,7 +473,7 @@ func New(key []byte, config ...Config) (aarv.Middleware, error) {
 }
 
 // MustNew creates an encryption middleware and panics on error.
-func MustNew(key []byte, config ...Config) aarv.Middleware {
+func MustNew(key []byte, config ...Config) aarv.NativeMiddleware {
 	m, err := New(key, config...)
 	if err != nil {
 		panic(err)

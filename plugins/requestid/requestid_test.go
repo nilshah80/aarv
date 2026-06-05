@@ -67,7 +67,7 @@ func TestNewAppliesDefaultHeaderAndStoresAarvContextID(t *testing.T) {
 }
 
 func TestNewUsesIncomingHeaderWithoutAarvContext(t *testing.T) {
-	handler := New(Config{Header: "X-Test-ID"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(Config{Header: "X-Test-ID"}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(FromContext(r.Context())))
 	}))
 
@@ -114,7 +114,7 @@ func TestNewAdditionalBranches(t *testing.T) {
 			Generator: func() string {
 				return "generated-direct"
 			},
-		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(FromContext(r.Context())))
 		}))
 
@@ -225,7 +225,7 @@ func TestNewPrefixStdlibPath(t *testing.T) {
 		Generator: func() string {
 			return "gen456"
 		},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(FromContext(r.Context())))
 	}))
 
@@ -246,7 +246,7 @@ func TestNewPrefixNotAppliedToIncomingIDsStdlibPath(t *testing.T) {
 		Generator: func() string {
 			return "should-not-appear"
 		},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(FromContext(r.Context())))
 	}))
 

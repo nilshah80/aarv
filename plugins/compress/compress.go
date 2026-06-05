@@ -508,7 +508,7 @@ func asciiEqualFold(s, target string) bool {
 // New creates a compression middleware with optional configuration.
 // If no config is provided, DefaultConfig is used.
 // Supports both gzip and deflate compression.
-func New(config ...Config) aarv.Middleware {
+func New(config ...Config) aarv.NativeMiddleware {
 	cfg := DefaultConfig()
 	if len(config) > 0 {
 		cfg = config[0]

@@ -23,13 +23,7 @@ func (a *App) buildHandler() http.Handler {
 }
 
 func (a *App) buildRouteChainFast() {
-	globalNative := true
-	for _, mw := range a.globalMiddleware {
-		if _, ok := nativeMiddlewareFunc(mw); !ok {
-			globalNative = false
-			break
-		}
-	}
+	globalNative := allNative(a.globalMiddleware)
 	if len(a.globalMiddleware) > 0 {
 		for method, routes := range a.routeHandlerFast {
 			if len(routes) == 0 {

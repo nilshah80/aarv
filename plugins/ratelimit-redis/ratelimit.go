@@ -147,7 +147,7 @@ const DefaultKeyPrefix = "aarv:ratelimit:"
 // New constructs the middleware. Panics on missing required fields
 // or on non-positive Limit/Window — these are misconfigurations
 // that would silently disable rate limiting.
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	if cfg.Client == nil {
 		panic("ratelimitredis: Config.Client is required")
 	}

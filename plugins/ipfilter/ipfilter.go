@@ -93,7 +93,7 @@ type normalized struct {
 // New constructs ipfilter middleware. Panics on invalid CIDRs and on an
 // empty CIDRs slice in ModeAllowlist (an empty allowlist would block every
 // request — almost certainly a misconfiguration).
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	n := normalize(cfg)
 
 	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {

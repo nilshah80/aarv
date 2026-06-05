@@ -108,7 +108,7 @@ func New(cfg Config) *Authorizer {
 // role in the argument list is present in the caller's role set (logical
 // AND). Calling with zero roles panics — "no constraint" should be expressed
 // by omitting the middleware, not by registering a no-op.
-func (a *Authorizer) RequireRoles(roles ...string) aarv.Middleware {
+func (a *Authorizer) RequireRoles(roles ...string) aarv.NativeMiddleware {
 	if len(roles) == 0 {
 		panic("rbac: RequireRoles requires at least one role")
 	}
@@ -127,7 +127,7 @@ func (a *Authorizer) RequireRoles(roles ...string) aarv.Middleware {
 // one role in the argument list is present in the caller's role set
 // (logical OR). Calling with zero roles panics for the same reason as
 // RequireRoles.
-func (a *Authorizer) RequireAnyRole(roles ...string) aarv.Middleware {
+func (a *Authorizer) RequireAnyRole(roles ...string) aarv.NativeMiddleware {
 	if len(roles) == 0 {
 		panic("rbac: RequireAnyRole requires at least one role")
 	}
@@ -152,7 +152,7 @@ func (a *Authorizer) RequireAnyRole(roles ...string) aarv.Middleware {
 // paths diverge because the native path flows through the framework's
 // response pipeline (OnError → ErrorHandler → codec) while the stdlib
 // path writes JSON directly.
-func (a *Authorizer) middleware(allow func(have []string) bool) aarv.Middleware {
+func (a *Authorizer) middleware(allow func(have []string) bool) aarv.NativeMiddleware {
 	cfg := a.cfg
 
 	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {

@@ -199,7 +199,7 @@ func getSession(id string) *Session {
 // SecureSessionMiddleware validates signed session cookies using aarv's
 // SecureCookie API. The session ID is HMAC-signed so it cannot be forged
 // or tampered with. Server-side expiry is set to 24 hours.
-func SecureSessionMiddleware() aarv.Middleware {
+func SecureSessionMiddleware() aarv.NativeMiddleware {
 	return aarv.WrapMiddleware(func(next aarv.HandlerFunc) aarv.HandlerFunc {
 		return func(c *aarv.Context) error {
 			sessionID, err := c.SecureCookie("session_id", sessionSecret, 86400)

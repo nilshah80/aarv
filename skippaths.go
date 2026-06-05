@@ -14,52 +14,43 @@ import "net/http"
 //	    compress.New(),
 //	))
 //
-// # Native fast path: not preserved (yet)
+// mw accepts any of:
 //
-// The current implementation is stdlib-only. Any route whose chain
-// includes a SkipPaths-wrapped middleware runs on aarv's stdlib chain,
-// even when every other middleware in the chain has a native pair.
-// Background: aarv's native middleware registry keys on
-// reflect.ValueOf(m).Pointer(), which returns the *code pointer* for
-// func values — closures from the same source function literal share a
-// registry slot. A wrapper helper like SkipPaths produces its stdlib
-// closure from the same source each call, so two SkipPaths
-// registrations in the same App would silently overwrite each other's
-// native variant. Rather than ship that footgun, this version skips
-// native registration entirely; the chain downgrades to stdlib for
-// routes that include SkipPaths.
+//   - aarv.Middleware
+//   - aarv.NativeMiddleware (the return type of every plugin's New
+//     constructor and of aarv.WrapMiddleware / aarv.RegisterNativeMiddleware)
+//   - func(http.Handler) http.Handler (the untyped form of Middleware)
 //
-// If you cannot afford the stdlib downgrade for a specific middleware,
-// many plugins ship a per-instance SkipPaths config field
-// (`prometheus.Config.SkipPaths`, `logger.Config.SkipPaths`,
-// `compress.Config.SkipPaths`, `etag.Config.SkipPaths`,
-// `verboselog.Config.SkipPaths`) that performs the skip on the native
-// path inside the plugin. Prefer those for hot paths until the
-// registry keying is fixed and this helper can re-introduce the
-// native variant.
+// The returned NativeMiddleware preserves the native fast path when the
+// inner middleware supplies one. Distinct SkipPaths instances each
+// carry their own native fn; no global registry is consulted, so
+// multiple SkipPaths-wrapped middlewares in the same App do not
+// collide.
 //
-// Path matching is exact and case-sensitive against r.URL.Path.
-// SkipPaths does not normalize trailing slashes, strip query strings,
-// or apply pattern matching — feed it the canonical paths the rest of
-// your stack uses.
+// Path matching is exact and case-sensitive against r.URL.Path on the
+// stdlib path and c.Path() on the native path. SkipPaths does not
+// normalize trailing slashes, strip query strings, or apply pattern
+// matching — feed it the canonical paths the rest of your stack uses.
 //
-// An empty paths slice returns mw unchanged so SkipPaths can be wired
-// in unconditionally without an empty-set special case at the caller.
-// A nil mw returns nil — the misuse is loud rather than silent.
-func SkipPaths(paths []string, mw Middleware) Middleware {
-	if len(paths) == 0 || mw == nil {
-		return mw
+// An empty paths slice returns the inner unchanged (wrapped into a
+// NativeMiddleware) so SkipPaths can be wired in unconditionally
+// without an empty-set special case at the caller. A nil mw panics
+// immediately — the failure is loud rather than silent.
+func SkipPaths(paths []string, mw any) NativeMiddleware {
+	if mw == nil {
+		panic("aarv.SkipPaths: mw must not be nil")
+	}
+	slot := coerceSlot(mw, "SkipPaths", 0)
+	if len(paths) == 0 {
+		return NativeMiddleware{Stdlib: slot.stdlib, Native: slot.native}
 	}
 	skip := make(map[string]struct{}, len(paths))
 	for _, p := range paths {
 		skip[p] = struct{}{}
 	}
 
-	return Middleware(func(next http.Handler) http.Handler {
-		// Build the wrapped path once; the per-request check just
-		// chooses between `next` (skipped) and `wrapped` (run through
-		// mw and then on to next).
-		wrapped := mw(next)
+	stdlib := Middleware(func(next http.Handler) http.Handler {
+		wrapped := slot.stdlib(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if _, ok := skip[r.URL.Path]; ok {
 				next.ServeHTTP(w, r)
@@ -68,4 +59,21 @@ func SkipPaths(paths []string, mw Middleware) Middleware {
 			wrapped.ServeHTTP(w, r)
 		})
 	})
+
+	if slot.native == nil {
+		// Inner has no native variant — chain downgrades to stdlib for
+		// any route that includes this SkipPaths.
+		return NativeMiddleware{Stdlib: stdlib}
+	}
+
+	native := MiddlewareFunc(func(next HandlerFunc) HandlerFunc {
+		wrapped := slot.native(next)
+		return func(c *Context) error {
+			if _, ok := skip[c.Path()]; ok {
+				return next(c)
+			}
+			return wrapped(c)
+		}
+	})
+	return NativeMiddleware{Stdlib: stdlib, Native: native}
 }

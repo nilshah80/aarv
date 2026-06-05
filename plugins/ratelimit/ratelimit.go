@@ -121,7 +121,7 @@ type rateLimiter struct {
 
 // New constructs ratelimit middleware. Panics on Limit <= 0 or
 // Window <= 0.
-func New(cfg Config) aarv.Middleware {
+func New(cfg Config) aarv.NativeMiddleware {
 	rl := newLimiter(cfg)
 	return rl.middleware()
 }
@@ -133,7 +133,7 @@ func New(cfg Config) aarv.Middleware {
 // gates the close-and-join).
 //
 // The janitor sweeps once per max(Window, 1*time.Minute) by default.
-func NewWithCleanup(cfg Config) (aarv.Middleware, func() error) {
+func NewWithCleanup(cfg Config) (aarv.NativeMiddleware, func() error) {
 	rl := newLimiter(cfg)
 	period := cfg.Window
 	if period < time.Minute {
@@ -245,7 +245,7 @@ func (rl *rateLimiter) decide(key string) (admit bool, snap Snapshot) {
 	return
 }
 
-func (rl *rateLimiter) middleware() aarv.Middleware {
+func (rl *rateLimiter) middleware() aarv.NativeMiddleware {
 	native := aarv.MiddlewareFunc(func(next aarv.HandlerFunc) aarv.HandlerFunc {
 		return func(c *aarv.Context) error {
 			if rl.shouldSkipNative(c) {

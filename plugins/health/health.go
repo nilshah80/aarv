@@ -63,7 +63,7 @@ type statusResponse struct {
 // The middleware intercepts requests to the configured health, ready, and live
 // paths and returns the appropriate status. All other requests are passed through
 // to the next handler.
-func New(config ...Config) aarv.Middleware {
+func New(config ...Config) aarv.NativeMiddleware {
 	cfg := DefaultConfig()
 	if len(config) > 0 {
 		cfg = config[0]

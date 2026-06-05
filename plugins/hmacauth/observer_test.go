@@ -35,7 +35,7 @@ func TestObserver_FiresOnSuccess(t *testing.T) {
 	signRequest(t, req, body, client, 1735000000, "nonce-success")
 
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 	})).ServeHTTP(rec, req)
 
@@ -75,7 +75,7 @@ func TestObserver_FiresOnClockSkew(t *testing.T) {
 	signRequest(t, req, body, client, 1735000000-600, "nonce-skew")
 
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("handler must not run when timestamp is outside skew")
 	})).ServeHTTP(rec, req)
 
@@ -110,7 +110,7 @@ func TestObserver_FiresOnSignatureInvalid(t *testing.T) {
 	req.Header.Set(DefaultSignatureHeader, "0000000000000000000000000000000000000000000000000000000000000000")
 
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rec, req)
+	mw.Stdlib(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
@@ -139,9 +139,9 @@ func TestObserver_FiresOnReplay(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mw(handler).ServeHTTP(httptest.NewRecorder(), mk())
+	mw.Stdlib(handler).ServeHTTP(httptest.NewRecorder(), mk())
 	rec := httptest.NewRecorder()
-	mw(handler).ServeHTTP(rec, mk())
+	mw.Stdlib(handler).ServeHTTP(rec, mk())
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("second request status = %d, want 401", rec.Code)
@@ -172,7 +172,7 @@ func TestObserver_FiresOnBodyTooLarge(t *testing.T) {
 	signRequest(t, req, body, client, 1735000000, "nonce-big")
 
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rec, req)
+	mw.Stdlib(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413", rec.Code)
@@ -266,7 +266,7 @@ func TestObserver_NilIsZeroOverhead(t *testing.T) {
 	signRequest(t, req, body, client, 1735000000, "nonce-noop")
 
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(rec, req)
 
@@ -298,7 +298,7 @@ func TestObserver_StoreErrorReportsUnauthorizedNotReplay(t *testing.T) {
 	signRequest(t, req, body, client, 1735000000, "nonce-store-err")
 
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("handler must not run when nonce store fails")
 	})).ServeHTTP(rec, req)
 
@@ -335,7 +335,7 @@ func TestObserver_BodyReadTransportErrorReportsUnauthorized(t *testing.T) {
 	req.Body = io.NopCloser(&erroringReader{err: errBodyTransport})
 
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("handler must not run on body transport error")
 	})).ServeHTTP(rec, req)
 
@@ -404,7 +404,7 @@ func TestObserver_DurationIsNonNegative(t *testing.T) {
 	signRequest(t, req, body, client, 1735000000, "nonce-dur")
 
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(rec, req)
 

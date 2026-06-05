@@ -11,7 +11,7 @@ import (
 	"github.com/nilshah80/aarv"
 )
 
-func makeApp(t *testing.T, mw aarv.Middleware) *aarv.App {
+func makeApp(t *testing.T, mw any) *aarv.App {
 	t.Helper()
 	app := aarv.New()
 	app.Use(mw)
@@ -487,7 +487,7 @@ func TestStdlibPath_NoContext(t *testing.T) {
 	// rejectStdlib.
 	mw := New(DefaultConfig())
 	called := false
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -564,8 +564,8 @@ func TestNew_DefaultsApplied(t *testing.T) {
 	// default (CookieName, HeaderName, CookiePath, MaxAge, SameSite,
 	// TokenLength). Not panicking is the success criterion.
 	mw := New(Config{})
-	if mw == nil {
-		t.Fatal("New returned nil")
+	if mw.Stdlib == nil {
+		t.Fatal("New returned NativeMiddleware with nil Stdlib")
 	}
 }
 

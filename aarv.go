@@ -34,7 +34,7 @@ type App struct {
 	ctxPool sync.Pool
 
 	// Middleware
-	globalMiddleware []Middleware
+	globalMiddleware []middlewareSlot
 	handler          http.Handler // pre-built middleware chain (built on first request)
 	handlerOnce      sync.Once
 

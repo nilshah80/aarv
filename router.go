@@ -66,7 +66,7 @@ type routeConfig struct {
 	description        string
 	deprecated         bool
 	maxBodySize        int64
-	middleware         []Middleware
+	middleware         []middlewareSlot
 	summary            string
 	operationID        string
 	schemaReq          reflect.Type
@@ -97,8 +97,18 @@ func WithDeprecated() RouteOption {
 }
 
 // WithRouteMiddleware attaches middleware that runs only for this route.
-func WithRouteMiddleware(mw ...Middleware) RouteOption {
-	return func(rc *routeConfig) { rc.middleware = mw }
+// Accepts Middleware, NativeMiddleware, or func(http.Handler) http.Handler
+// values; mixed types in one call are fine. Panics on nil arguments or
+// unsupported types via coerceSlot.
+//
+// The caller's variadic slice is copied so subsequent mutations on the
+// caller side do not leak into the route's middleware chain.
+func WithRouteMiddleware(mw ...any) RouteOption {
+	slots := coerceSlots(mw, "WithRouteMiddleware")
+	// Defensive clone — coerceSlots already returns a fresh slice, but
+	// re-assert ownership to make the contract explicit.
+	owned := append([]middlewareSlot(nil), slots...)
+	return func(rc *routeConfig) { rc.middleware = owned }
 }
 
 // WithRouteMaxBodySize overrides the global body limit for this route.
@@ -245,7 +255,7 @@ func (a *App) routeInfoFromConfig(method, pattern string, rc *routeConfig) Route
 type RouteGroup struct {
 	prefix     string
 	app        *App
-	middleware []Middleware
+	middleware []middlewareSlot
 }
 
 func (g *RouteGroup) addRoute(method, pattern string, handler any, opts ...RouteOption) {
@@ -262,7 +272,7 @@ func (g *RouteGroup) addRoute(method, pattern string, handler any, opts ...Route
 		routeBodyLimit = g.app.config.MaxBodySize
 	}
 
-	combinedMiddleware := make([]Middleware, 0, len(g.middleware)+len(rc.middleware))
+	combinedMiddleware := make([]middlewareSlot, 0, len(g.middleware)+len(rc.middleware))
 	if len(g.middleware) > 0 {
 		combinedMiddleware = append(combinedMiddleware, g.middleware...)
 	}
@@ -415,19 +425,26 @@ func (g *RouteGroup) Any(pattern string, handler any, opts ...RouteOption) *Rout
 }
 
 // Use appends middleware scoped to routes registered on this group.
-func (g *RouteGroup) Use(middlewares ...Middleware) *RouteGroup {
-	g.middleware = append(g.middleware, middlewares...)
+// Accepts Middleware, NativeMiddleware, or func(http.Handler) http.Handler
+// values; mixed types in one call are fine. Panics on nil arguments or
+// unsupported types via coerceSlot.
+func (g *RouteGroup) Use(middlewares ...any) *RouteGroup {
+	g.middleware = append(g.middleware, coerceSlots(middlewares, "RouteGroup.Use")...)
 	return g
 }
 
 // Group creates a nested route group under the current group's prefix.
+// The sub-group inherits a snapshot of the parent's middleware at the
+// time Group() is called — middleware added to the parent via Use AFTER
+// Group() does NOT propagate to the sub-group. This is intentional and
+// preserved across the v0.9.0 slot redesign.
 func (g *RouteGroup) Group(prefix string, fn func(g *RouteGroup)) *RouteGroup {
 	sub := &RouteGroup{
 		prefix: g.prefix + prefix,
 		app:    g.app,
 	}
 	if len(g.middleware) > 0 {
-		sub.middleware = append([]Middleware(nil), g.middleware...)
+		sub.middleware = append([]middlewareSlot(nil), g.middleware...)
 	}
 	fn(sub)
 	return g

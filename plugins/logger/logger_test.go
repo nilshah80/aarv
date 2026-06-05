@@ -191,7 +191,7 @@ func TestNewAdditionalBranches(t *testing.T) {
 
 	t.Run("stdlib path logs without aarv context", func(t *testing.T) {
 		logBuf.Reset()
-		handler := New()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := New().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		}))
 
@@ -210,7 +210,7 @@ func TestNewAdditionalBranches(t *testing.T) {
 	t.Run("stdlib path honors skip list", func(t *testing.T) {
 		logBuf.Reset()
 		called := false
-		handler := New(Config{SkipPaths: []string{"/skip"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := New(Config{SkipPaths: []string{"/skip"}}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			called = true
 			w.WriteHeader(http.StatusNoContent)
 		}))

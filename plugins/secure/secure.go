@@ -92,7 +92,7 @@ func RelaxedConfig() Config {
 
 // New creates a security headers middleware with optional configuration.
 // If no config is provided, DefaultConfig is used.
-func New(config ...Config) aarv.Middleware {
+func New(config ...Config) aarv.NativeMiddleware {
 	cfg := DefaultConfig()
 	if len(config) > 0 {
 		cfg = config[0]

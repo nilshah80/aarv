@@ -535,7 +535,7 @@ func deliverDump(c *aarv.Context, cfg Config, in dumpInputs) {
 // Panics if the resulting Config has SuppressSlog=true and Sink=nil — that
 // combination is a no-op middleware and almost certainly a configuration
 // mistake.
-func New(config ...Config) aarv.Middleware {
+func New(config ...Config) aarv.NativeMiddleware {
 	cfg := DefaultConfig()
 	if len(config) > 0 {
 		cfg = config[0]

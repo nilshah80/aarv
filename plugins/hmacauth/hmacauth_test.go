@@ -63,7 +63,7 @@ func TestHMACAuth_AcceptsValidSignature(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	called := false
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		if got, _ := io.ReadAll(r.Body); !bytes.Equal(got, body) {
 			t.Fatalf("body re-injection failed: got %q want %q", got, body)
@@ -92,7 +92,7 @@ func TestHMACAuth_MissingHeaders(t *testing.T) {
 			req.Header.Del(missing)
 
 			rec := httptest.NewRecorder()
-			mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				t.Fatalf("handler reached with missing header %s", missing)
 			})).ServeHTTP(rec, req)
 			if rec.Code != http.StatusUnauthorized {
@@ -112,7 +112,7 @@ func TestHMACAuth_MalformedTimestamp(t *testing.T) {
 			signRequest(t, req, nil, client, 1735000000, "nonce-"+ts)
 			req.Header.Set(DefaultTimestampHeader, ts)
 			rec := httptest.NewRecorder()
-			mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				t.Fatalf("handler reached with malformed timestamp %q", ts)
 			})).ServeHTTP(rec, req)
 			if rec.Code != http.StatusUnauthorized {
@@ -142,7 +142,7 @@ func TestHMACAuth_SkewBoundaries(t *testing.T) {
 			req := httptest.NewRequest("GET", "/x", http.NoBody)
 			signRequest(t, req, nil, client, tc.ts, "nonce-"+tc.name)
 			rec := httptest.NewRecorder()
-			mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})).ServeHTTP(rec, req)
 			if rec.Code != tc.expect {
@@ -160,7 +160,7 @@ func TestHMACAuth_UnknownClient(t *testing.T) {
 	req.Header.Set(DefaultClientIDHeader, "stranger")
 
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler reached for unknown client")
 	})).ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -183,7 +183,7 @@ func TestHMACAuth_BadSignature(t *testing.T) {
 	}
 	req.Header.Set(DefaultSignatureHeader, string(flipped))
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler reached with bad signature")
 	})).ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -198,7 +198,7 @@ func TestHMACAuth_MalformedSignatureHex(t *testing.T) {
 	signRequest(t, req, nil, client, 1735000000, "nonce-mal")
 	req.Header.Set(DefaultSignatureHeader, "not-hex")
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler reached with malformed sig")
 	})).ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -216,7 +216,7 @@ func TestHMACAuth_BodyOverflowReturns413(t *testing.T) {
 	signRequest(t, req, body, client, 1735000000, "nonce-big")
 
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler reached on oversize body")
 	})).ServeHTTP(rec, req)
 
@@ -236,7 +236,7 @@ func TestHMACAuth_ReplayRejected(t *testing.T) {
 	}
 
 	rec1 := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(rec1, makeReq())
 	if rec1.Code != http.StatusOK {
@@ -244,7 +244,7 @@ func TestHMACAuth_ReplayRejected(t *testing.T) {
 	}
 
 	rec2 := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler reached on replay")
 	})).ServeHTTP(rec2, makeReq())
 	if rec2.Code != http.StatusUnauthorized {
@@ -270,7 +270,7 @@ func TestHMACAuth_NonceIsolatedPerClient(t *testing.T) {
 		req := httptest.NewRequest("GET", "/x", http.NoBody)
 		signRequest(t, req, nil, clients[id], 1735000000, "shared-nonce")
 		rec := httptest.NewRecorder()
-		mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -299,7 +299,7 @@ func TestHMACAuth_RotationAcceptsBothSecrets(t *testing.T) {
 		signingClient := Client{ClientID: client.ClientID, Secret: secret}
 		signRequest(t, req, nil, signingClient, 1735000000, fmt.Sprintf("nonce-%x", secret[0]))
 		rec := httptest.NewRecorder()
-		mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -477,7 +477,7 @@ func TestHMACAuth_BodyReinjectionPreservesContents(t *testing.T) {
 	signRequest(t, req, body, client, 1735000000, "nonce-reinj")
 
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("downstream read body: %v", err)
@@ -509,7 +509,7 @@ func TestHMACAuth_ConcurrentRequests(t *testing.T) {
 			req := httptest.NewRequest("GET", "/x", http.NoBody)
 			signRequest(t, req, nil, client, 1735000000, fmt.Sprintf("nonce-%d", i))
 			rec := httptest.NewRecorder()
-			mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})).ServeHTTP(rec, req)
 			if rec.Code == http.StatusOK {
@@ -562,7 +562,7 @@ func TestHMACAuth_ContextCancellation(t *testing.T) {
 	req = req.WithContext(ctx)
 
 	rec := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw.Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler reached after ctx-cancelled SetNX")
 	})).ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
