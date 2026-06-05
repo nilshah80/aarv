@@ -111,4 +111,3 @@ type Event struct {
 // plugins/hmacauth-otel/) that depends on this package and on its own
 // observability stack.
 type Observer func(c *aarv.Context, e Event)
-

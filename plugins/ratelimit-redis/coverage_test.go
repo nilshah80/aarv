@@ -231,9 +231,9 @@ func TestStdlibPathAdmitsAndSetsHeaders(t *testing.T) {
 	app := aarv.New()
 	app.Use(
 		New(Config{
-			Client: rdb,
-			Limit:  5,
-			Window: time.Second,
+			Client:  rdb,
+			Limit:   5,
+			Window:  time.Second,
 			KeyFunc: func(c *aarv.Context) string { return "k1" },
 		}),
 		stdlibSibling(),
@@ -260,10 +260,10 @@ func TestStdlibPathDeniesEmitsJSON(t *testing.T) {
 	app := aarv.New()
 	app.Use(
 		New(Config{
-			Client: rdb,
-			Limit:  1,
-			Burst:  1,
-			Window: time.Second,
+			Client:  rdb,
+			Limit:   1,
+			Burst:   1,
+			Window:  time.Second,
 			KeyFunc: func(c *aarv.Context) string { return "deny" },
 		}),
 		stdlibSibling(),

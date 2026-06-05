@@ -333,15 +333,35 @@ func readReplayableBody(req *http.Request) ([]byte, error) {
 	if req.Body == nil || req.Body == http.NoBody {
 		return nil, nil
 	}
-	if req.GetBody == nil {
+	if req.GetBody != nil {
+		rc, err := req.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = rc.Close() }()
+		return io.ReadAll(rc)
+	}
+	// GetBody is nil but Body is set. Only safe to read+rebuffer when
+	// the body has a known positive length — i.e. it came from a typed
+	// reader the stdlib could measure (*strings.Reader, *bytes.Reader,
+	// *bytes.Buffer). This covers the Go 1.22 redirect case (http.Client
+	// populates newReq.Body from oldReq.GetBody() but doesn't propagate
+	// GetBody itself; fixed in Go 1.23) while still rejecting truly
+	// unreplayable streams (io.Pipe and friends have ContentLength == 0
+	// or -1 — reading those would block or read arbitrary upstream data).
+	if req.ContentLength <= 0 {
 		return nil, errors.New("hmacauth: req.GetBody is nil — request body is not replayable; use http.NewRequest with bytes.NewReader/strings.NewReader/bytes.Buffer")
 	}
-	rc, err := req.GetBody()
+	b, err := io.ReadAll(req.Body)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rc.Close() }()
-	return io.ReadAll(rc)
+	_ = req.Body.Close()
+	req.Body = io.NopCloser(bytes.NewReader(b))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(b)), nil
+	}
+	return b, nil
 }
 
 // FailOnRedirect is a CheckRedirect implementation that aborts the
@@ -381,22 +401,18 @@ func FailOnRedirect(req *http.Request, via []*http.Request) error {
 //     started before the rotation.
 func ResignOnRedirect(client Client) func(*http.Request, []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
-		var body []byte
-		if req.GetBody != nil {
-			rc, err := req.GetBody()
-			if err != nil {
-				return err
-			}
-			b, err := io.ReadAll(rc)
-			_ = rc.Close()
-			if err != nil {
-				return err
-			}
-			body = b
-			// Rebind the body so the destination receives it. This
-			// is what the stdlib does internally for the original
-			// body, but on a redirect we need to reset it because
-			// signing has consumed our copy.
+		// readReplayableBody handles both the GetBody path and the
+		// Go-1.22 redirect quirk where GetBody is stripped but Body
+		// is populated. On either path it returns the bytes and
+		// leaves req.Body in a re-readable state for the redirect
+		// target.
+		body, err := readReplayableBody(req)
+		if err != nil {
+			return err
+		}
+		if body != nil {
+			// Rebind the body so the destination receives it.
+			// readReplayableBody consumed one copy via GetBody.
 			req.Body = io.NopCloser(bytes.NewReader(body))
 		}
 		nonce, err := randomNonce()

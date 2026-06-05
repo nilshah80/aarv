@@ -169,6 +169,48 @@ func TestCheckRedirect_PropagatesReadReplayableBodyError(t *testing.T) {
 	}
 }
 
+// TestReadReplayableBody_FallsBackToBodyWhenGetBodyNil simulates the
+// Go 1.22 post-redirect state: Body is populated but GetBody is nil.
+// readReplayableBody must read Body, return the bytes, and rebuffer
+// Body + populate GetBody so the request stays replayable.
+func TestReadReplayableBody_FallsBackToBodyWhenGetBodyNil(t *testing.T) {
+	req := httptest.NewRequest("POST", "http://example.invalid/x", bytes.NewReader([]byte("payload-bytes")))
+	// Simulate Go 1.22 redirect: Body set, GetBody nil.
+	req.GetBody = nil
+
+	b, err := readReplayableBody(req)
+	if err != nil {
+		t.Fatalf("readReplayableBody: %v", err)
+	}
+	if string(b) != "payload-bytes" {
+		t.Fatalf("read body = %q; want %q", b, "payload-bytes")
+	}
+	// Body must be re-readable for the downstream HTTP send.
+	if req.Body == nil {
+		t.Fatal("Body was not rebuffered")
+	}
+	again, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("re-read Body: %v", err)
+	}
+	if string(again) != "payload-bytes" {
+		t.Fatalf("re-read body = %q; want %q", again, "payload-bytes")
+	}
+	// GetBody should now be populated so a second fetch works too.
+	if req.GetBody == nil {
+		t.Fatal("GetBody was not populated by fallback")
+	}
+	rc, err := req.GetBody()
+	if err != nil {
+		t.Fatalf("GetBody: %v", err)
+	}
+	defer func() { _ = rc.Close() }()
+	third, _ := io.ReadAll(rc)
+	if string(third) != "payload-bytes" {
+		t.Fatalf("GetBody read = %q; want %q", third, "payload-bytes")
+	}
+}
+
 // TestResignOnRedirect_PropagatesGetBodyError covers the helper's
 // `if err != nil { return err }` after a failing GetBody.
 func TestResignOnRedirect_PropagatesGetBodyError(t *testing.T) {

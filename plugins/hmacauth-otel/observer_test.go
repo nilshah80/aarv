@@ -135,8 +135,8 @@ func TestObserver_StatusErrorOnNonOK(t *testing.T) {
 	obs := NewObserver(WithTracerProvider(tp))
 
 	obs(nil, hmacauth.Event{
-		Outcome: hmacauth.OutcomeSignatureInvalid,
-		Status:  401,
+		Outcome:  hmacauth.OutcomeSignatureInvalid,
+		Status:   401,
 		Duration: time.Millisecond,
 	})
 
