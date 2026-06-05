@@ -28,9 +28,18 @@ import (
 //     and the bytes are still available to the underlying transport.
 //     Requests built via http.NewRequest with a bytes/strings
 //     reader populate GetBody automatically. If req.Body is set but
-//     GetBody is nil (io.Pipe etc.), Sign returns an error rather
-//     than silently signing an empty body — that mismatch would
-//     produce a request the server immediately rejects with a 401.
+//     GetBody is nil, Sign returns an error rather than silently
+//     signing an empty body — that mismatch would produce a request
+//     the server immediately rejects with a 401.
+//
+// Sign-vs-Transport asymmetry: Sign's body=nil + GetBody=nil rejection
+// is STRICTER than the transport helpers' (Transport, CheckRedirect,
+// ResignOnRedirect). Those helpers call readReplayableBody, which
+// falls back to reading req.Body directly when GetBody is nil AND
+// req.ContentLength > 0 (added in v0.9.1 for Go 1.22 post-redirect
+// compatibility). Sign itself does not have that fallback — callers
+// who want it should either populate req.GetBody explicitly or pass
+// the body bytes via the body parameter.
 //
 // now and nonce are dependency-injected for tests. Production code
 // passes (time.Now, "") and lets Sign generate a fresh random nonce.
@@ -100,7 +109,7 @@ func resolveSignBody(req *http.Request, body []byte) ([]byte, error) {
 		return nil, nil
 	}
 	if req.GetBody == nil {
-		return nil, errors.New("hmacauth: Sign called with body == nil and req.Body is unreplayable (req.GetBody == nil); supply body bytes explicitly or rebuild req with a typed bytes/strings reader")
+		return nil, errors.New("hmacauth: Sign called with body == nil and req.Body is unreplayable (req.GetBody == nil); supply body bytes explicitly via the body parameter, rebuild req with a typed bytes/strings reader, or use Transport/SigningTransport.CheckRedirect/ResignOnRedirect which accept Body+ContentLength>0 as a fallback")
 	}
 	rc, err := req.GetBody()
 	if err != nil {
@@ -160,10 +169,27 @@ func WithTransportHeaders(clientID, timestamp, nonce, signature string) Transpor
 }
 
 // Transport returns an http.RoundTripper that signs every outbound
-// request with the given client. The request body must either be nil
-// or be replayable via GetBody — Transport reads it once (via
-// GetBody) to compute the canonical hash, then leaves the request's
-// body intact for the underlying RoundTripper.
+// request with the given client. The request body must be one of:
+//
+//   - nil / http.NoBody
+//   - a typed body that http.NewRequest measured (*bytes.Buffer,
+//     *bytes.Reader, *strings.Reader) — these populate req.GetBody
+//     and Transport reads it once via GetBody
+//   - any *http.Request whose Body is set AND ContentLength > 0 —
+//     this is the Go 1.22 post-redirect shape (Body populated from
+//     oldReq.GetBody() but GetBody itself stripped, upstream-fixed
+//     in Go 1.23); Transport reads Body once and rebuffers it so
+//     the request stays replayable
+//
+// Truly streaming bodies (io.Pipe, network readers — ContentLength
+// is 0 or -1) are rejected with a clear error rather than being read
+// blindly.
+//
+// Note: this Body+ContentLength>0 fallback is exclusive to the
+// transport-level helpers (Transport, SigningTransport.CheckRedirect,
+// ResignOnRedirect). The lower-level Sign() function remains stricter:
+// it rejects body=nil + req.Body!=nil + req.GetBody==nil regardless of
+// ContentLength. See Sign's godoc for the asymmetry rationale.
 //
 // Redirect handling lives on http.Client, not on the RoundTripper.
 // For "fail on redirect" semantics, set Client.CheckRedirect to
@@ -232,7 +258,10 @@ func (s *SigningTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 //
 // Limitations match ResignOnRedirect: the body must be replayable
 // via req.GetBody (typed bytes/strings readers populate this
-// automatically), and the stdlib's default 10-redirect cap applies.
+// automatically) or, when GetBody has been stripped by Go 1.22's
+// redirect handling, via req.Body with ContentLength > 0 — see the
+// readReplayableBody godoc for the fallback's exact rules. The
+// stdlib's default 10-redirect cap applies.
 func (s *SigningTransport) CheckRedirect(req *http.Request, via []*http.Request) error {
 	body, err := readReplayableBody(req)
 	if err != nil {
@@ -326,9 +355,22 @@ func signWithHeaders(req *http.Request, client Client, body []byte, now func() t
 }
 
 // readReplayableBody returns the body bytes and leaves req.Body
-// usable. If the body is nil it returns (nil, nil). Otherwise it
-// requires req.GetBody so the body can be reconstructed for the
-// underlying transport — io.Pipe-backed requests cannot be signed.
+// usable. If the body is nil or http.NoBody it returns (nil, nil).
+//
+// Preferred path: when req.GetBody is set (the typical case for
+// requests built via http.NewRequest with a typed bytes/strings
+// reader), GetBody is invoked to read a fresh copy of the body.
+//
+// Fallback path: when req.GetBody is nil BUT req.Body is set and
+// req.ContentLength > 0, the body is read directly, then req.Body
+// is rebuffered and req.GetBody is populated so the request stays
+// replayable for any downstream RoundTripper. This handles the
+// Go 1.22 post-redirect shape: net/http.Client populates the new
+// request's Body from oldReq.GetBody() but does not propagate
+// GetBody itself (upstream-fixed in Go 1.23). The positive
+// ContentLength gate keeps the rejection in place for io.Pipe and
+// other streams of unknown length — reading those would block or
+// pull arbitrary upstream data.
 func readReplayableBody(req *http.Request) ([]byte, error) {
 	if req.Body == nil || req.Body == http.NoBody {
 		return nil, nil
@@ -389,11 +431,18 @@ func FailOnRedirect(req *http.Request, via []*http.Request) error {
 //
 // Limitations:
 //
-//   - The body must be replayable via GetBody; otherwise the
-//     redirected request reaches the destination without a body and
-//     fails verification. http.Client populates GetBody automatically
-//     for typed body readers (bytes/strings); custom readers must
-//     supply it.
+//   - The body must be replayable — either via req.GetBody
+//     (http.Client populates this automatically for typed
+//     bytes/strings/buffer readers) or via req.Body with a positive
+//     ContentLength (covers the Go 1.22 post-redirect shape where
+//     GetBody has been stripped; see readReplayableBody for the
+//     fallback rules). Truly streaming bodies (io.Pipe and friends
+//     with ContentLength == 0 or -1) cannot be re-signed:
+//     ResignOnRedirect propagates the readReplayableBody error,
+//     which net/http surfaces as a CheckRedirect failure that
+//     ABORTS the redirect. The redirected request is never sent;
+//     the caller observes a client-side error from http.Client.Do
+//     (not a verification failure at the destination).
 //   - The maximum redirect chain length is the stdlib default (10);
 //     callers needing tighter limits should wrap the function.
 //   - The Client passed in is captured by reference. Rotating the

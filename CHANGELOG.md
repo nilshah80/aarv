@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-06-06
+
+### Fixed
+
+- **`plugins/hmacauth` signing now works across redirects on Go 1.22.** Go 1.22's `net/http.Client` populates the redirect-target request's `Body` from the original request's `GetBody()` but does not propagate `GetBody` itself to the new request (fixed upstream in Go 1.23). On Go 1.22, `SigningTransport.CheckRedirect` and `ResignOnRedirect` therefore saw `req.Body` set but `req.GetBody == nil` and returned `hmacauth: req.GetBody is nil — request body is not replayable`, breaking the existing `TestSigningTransportFollowsRedirect` and `TestResignOnRedirectFunction` under the Go 1.22 CI matrix. The fix is internal to `readReplayableBody`, which now falls back to reading `req.Body` directly when `GetBody` is nil AND `req.ContentLength > 0`; the positive-length gate preserves the existing rejection of truly unreplayable streams (`io.Pipe` and friends have `ContentLength == 0` or `-1` — reading those would block or pull arbitrary upstream data). After the fallback read, `req.Body` is rebuffered via `io.NopCloser(bytes.NewReader(b))` and `req.GetBody` is populated so the request stays replayable for the redirect target. Both `SigningTransport.CheckRedirect` and `Transport.RoundTrip` benefit transparently because they already called `readReplayableBody`; `ResignOnRedirect` was restructured to delegate to `readReplayableBody` instead of its own GetBody-only path, inheriting the same fallback. **Sign() itself does NOT get the fallback** — Sign's body-resolution rules (`resolveSignBody`) are unchanged and still reject `body=nil + req.Body!=nil + req.GetBody==nil`; callers using the lower-level `Sign()` directly with that shape must pass body bytes explicitly. Regression test: `TestReadReplayableBody_FallsBackToBodyWhenGetBodyNil`. No public API change; consumers on Go 1.23+ are unaffected.
+
+### Internal
+
+- `plugins/hmacauth/signer.go` doc-comment + error-message clarifications: `Sign()`'s godoc gains a "Sign-vs-Transport asymmetry" paragraph spelling out that Sign remains GetBody-only while the transport helpers got the Go-1.22 fallback. The corresponding `resolveSignBody` rejection error now lists the alternative entry points (body parameter / typed reader / `Transport` / `SigningTransport.CheckRedirect` / `ResignOnRedirect`). `Transport` / `SigningTransport.CheckRedirect` / `ResignOnRedirect` / `readReplayableBody` docstrings updated to describe the fallback and (in `ResignOnRedirect`'s case) correctly state that streaming bodies cause the redirect to abort client-side rather than reach the destination. Behavior change is limited to the readReplayableBody fallback above; the error-string text is observable for log-grep consumers but not part of Go's public API surface.
+- `gofmt -s` sweep across three files where alignment whitespace had drifted: `plugins/hmacauth-otel/observer_test.go`, `plugins/hmacauth/observer.go`, `plugins/ratelimit-redis/coverage_test.go`. No behavior change.
+
+### Not re-tagged
+
+Submodule pins stay at root `v0.9.0` — none of `plugins/{prometheus,otel,sanitize,ratelimit-redis,hmacauth-otel}` consume code paths affected by this fix, so Stage 2 retagging would be churn. Consumers who pinned root at `@v0.9.0` can move to `@v0.9.1` with no API change required.
+
 ## [0.9.0] - 2026-06-05
 
 ### Breaking Changes
