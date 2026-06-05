@@ -3,7 +3,7 @@ module github.com/nilshah80/aarv/plugins/hmacauth-otel
 go 1.25.0
 
 require (
-	github.com/nilshah80/aarv v0.8.0
+	github.com/nilshah80/aarv v0.9.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/sdk v1.43.0
 	go.opentelemetry.io/otel/trace v1.43.0

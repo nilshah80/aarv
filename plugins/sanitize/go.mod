@@ -3,6 +3,6 @@ module github.com/nilshah80/aarv/plugins/sanitize
 go 1.22.0
 
 require (
-	github.com/nilshah80/aarv v0.8.0
+	github.com/nilshah80/aarv v0.9.0
 	golang.org/x/text v0.21.0
 )

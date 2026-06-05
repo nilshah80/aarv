@@ -4,7 +4,7 @@ go 1.23.0
 
 require (
 	github.com/alicebob/miniredis/v2 v2.37.0
-	github.com/nilshah80/aarv v0.8.0
+	github.com/nilshah80/aarv v0.9.0
 	github.com/redis/go-redis/v9 v9.7.3
 )
 
