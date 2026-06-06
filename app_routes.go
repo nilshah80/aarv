@@ -182,7 +182,7 @@ func (a *App) Any(pattern string, handler any, opts ...RouteOption) *App {
 // Note: the v0.9.0 widening from `...Middleware` to `...any` breaks the
 // pre-v0.9.0 spread pattern `app.Use(mws...)` where `mws` is
 // `[]aarv.Middleware`. Migrate to `mws := []any{...}` or call
-// `app.Use(mw)` in a loop. See docs/MIGRATION_v0.9.md.
+// `app.Use(mw)` in a loop. See CHANGELOG.md `[0.9.0] ### Migration`.
 func (a *App) Use(middlewares ...any) *App {
 	a.globalMiddleware = append(a.globalMiddleware, coerceSlots(middlewares, "App.Use")...)
 	return a

@@ -47,7 +47,6 @@ Submodule pins stay at root `v0.9.0` — none of `plugins/{prometheus,otel,sanit
 - **`plugins/openapi` `Config.Tags`** — declarative tag filter. When non-empty, only routes carrying at least one of the listed tags (set via `aarv.WithTags(...)`) are included in the spec. Ignored when `Include` is set; applied before `Exclude`.
 - **`plugins/prometheus` `SubMillisecondBuckets`** histogram preset — `100µs..5s`, sized for low-latency services whose p50 falls below the `DefaultBuckets` 1ms first bucket.
 - **`docs/middleware.md`**: new "Wrapping a middleware to add observability" recipe covering the stdlib-only / native-only / both-paths patterns plus `c.SetContext` / `c.BindRequest` / `RegisterNativeMiddleware` usage.
-- **`docs/MIGRATION_v0.9.md`**: focused migration guide for consumers and plugin authors.
 
 ### Changed
 
@@ -56,13 +55,17 @@ Submodule pins stay at root `v0.9.0` — none of `plugins/{prometheus,otel,sanit
 
 ### Migration
 
-See [`docs/MIGRATION_v0.9.md`](docs/MIGRATION_v0.9.md) for the full migration guide. Highlights:
-
 - **Plugin constructor return types changed.** `app.Use(plugin.New(...))` works unchanged. `var m aarv.Middleware = plugin.New(...)` no longer compiles — use `var m aarv.NativeMiddleware = plugin.New(...)` or `var m aarv.Middleware = plugin.New(...).Stdlib`.
 - **Helper functions returning `aarv.Middleware` via `aarv.WrapMiddleware`** must change their return type to `aarv.NativeMiddleware`.
 - **`app.Use(mws...)` spread** with `mws []aarv.Middleware` no longer compiles. Rewrite as `mws := []any{...}` or loop.
 - **`pprof.Config.AuthMiddleware = jwtMW` where `jwtMW` is `NativeMiddleware`** no longer compiles. Use `cfg.AuthMiddleware = jwtMW.Stdlib`.
-- **Tuple constructors** (`encrypt.New`, `ratelimit.NewWithCleanup`) return `(aarv.NativeMiddleware, ...)` — only the type word changes.
+- **Tuple constructors** (`encrypt.New`, `ratelimit.NewWithCleanup`) return `(aarv.NativeMiddleware, ...)` — only the type word changes. **Watch the error-path return**: `aarv.NativeMiddleware` is a struct, not a pointer, so the zero-value return is `aarv.NativeMiddleware{}` not `nil`:
+  ```go
+  // Before (v0.8.x):
+  return nil, ErrInvalidKey
+  // After (v0.9.x):
+  return aarv.NativeMiddleware{}, ErrInvalidKey
+  ```
 
 Per-plugin migration scope (`plugins/timeout.New(d)` and `pprof.Config.AuthMiddleware` are the only exceptions that stay `aarv.Middleware`):
 
