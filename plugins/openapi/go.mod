@@ -3,7 +3,7 @@ module github.com/nilshah80/aarv/plugins/openapi
 go 1.23.0
 
 require (
-	github.com/nilshah80/aarv v0.8.0
+	github.com/nilshah80/aarv v0.9.0
 	sigs.k8s.io/yaml v1.6.0
 )
 
