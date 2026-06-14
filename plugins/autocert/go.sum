@@ -1,5 +1,5 @@
-github.com/nilshah80/aarv v0.8.0 h1:SVee5wkwlXwnO/WMrkj+7S3Ib1cU5k1ISRDhVNPWFiw=
-github.com/nilshah80/aarv v0.8.0/go.mod h1:XqjGb6FCa1i9rHuxpsKa3CqxAPAR+4nMZOgTbpbiNTU=
+github.com/nilshah80/aarv v0.9.5 h1:38Cdy/IVQdoCX72DZq8bqGVj6XgXkyywO85pQ3THpTg=
+github.com/nilshah80/aarv v0.9.5/go.mod h1:XqjGb6FCa1i9rHuxpsKa3CqxAPAR+4nMZOgTbpbiNTU=
 golang.org/x/crypto v0.51.0 h1:IBPXwPfKxY7cWQZ38ZCIRPI50YLeevDLlLnyC5wRGTI=
 golang.org/x/crypto v0.51.0/go.mod h1:8AdwkbraGNABw2kOX6YFPs3WM22XqI4EXEd8g+x7Oc8=
 golang.org/x/net v0.55.0 h1:bcvxaJn3e1U6InsFWt1JUq1aSjnRxLzT2rtD2KfkDF8=

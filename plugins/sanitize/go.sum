@@ -1,4 +1,4 @@
-github.com/nilshah80/aarv v0.9.0 h1:4m5Km0WnG9hYVJbhXKyCl5Yr6l8I3vXF0IsD8gjRT2E=
-github.com/nilshah80/aarv v0.9.0/go.mod h1:XqjGb6FCa1i9rHuxpsKa3CqxAPAR+4nMZOgTbpbiNTU=
+github.com/nilshah80/aarv v0.9.5 h1:38Cdy/IVQdoCX72DZq8bqGVj6XgXkyywO85pQ3THpTg=
+github.com/nilshah80/aarv v0.9.5/go.mod h1:XqjGb6FCa1i9rHuxpsKa3CqxAPAR+4nMZOgTbpbiNTU=
 golang.org/x/text v0.21.0 h1:zyQAAkrwaneQ066sspRyJaG9VNi/YJ1NfzcGB3hZ/qo=
 golang.org/x/text v0.21.0/go.mod h1:4IBbMaMmOPCJ8SecivzSH54+73PCFmPWxNTLm+vZkEQ=
