@@ -119,6 +119,12 @@ validation.
 Validation failures return `*ValidationErrors`. Binding failures return
 `*BindError`.
 
+The bound request value (`Req`) is heap-allocated once per request: the binder
+plan passes `&req` as `any` to the codec, binder, and validator, so it cannot
+stay on the stack without abandoning those pluggable abstractions. This is a
+single, expected allocation per bound request — see the escape-analysis audit in
+`bind_escape_test.go`.
+
 ## Hooks
 
 Hooks are stored by phase and sorted by priority. Fast boolean flags on `App`

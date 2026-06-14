@@ -1150,13 +1150,13 @@ The Go multi-module release flow is intentionally staged: submodule `go.mod` fil
 ### Testing
 - [x] 90%+ code coverage target — met for non-example packages per current assessment (98.7%)
 - [x] Race detector enabled in CI: `go test -race ./...`
-- [ ] Fuzz tests for: JSON binding, validation tag parsing, URL parsing — partial only: `FuzzCanonicalQuery` covers HMAC query canonicalization; these three named targets remain pending
+- [x] Fuzz tests for: JSON binding, validation tag parsing, URL parsing — `FuzzBindJSON`, `FuzzParseValidateTag` (NaN-safe determinism check), and `FuzzBindQuery` (raw bytes via `req.URL.RawQuery`) in `fuzz_test.go`. Seed corpus runs under `go test`; active fuzzing is manual/scheduled, not a PR gate. `FuzzCanonicalQuery` additionally covers HMAC query canonicalization
 - [x] Integration test suite: full request lifecycle
 
 ### Performance ✅
 - [x] Zero-allocation hot path audit (use `go test -benchmem`)
 - [x] `sync.Pool` for: Context, buffered writer, gzip writer, validation error slices
-- [ ] Escape analysis audit: ensure Req struct stays on stack in `Bind[T]`
+- [x] Escape analysis audit: `Req` does **not** stay on the stack — `&req` is boxed as `any` for the codec/binder/validator, forcing one heap alloc per bound request (`gcflags=-m=2`: `moved to heap: req` at `bind.go:138`/`174`). Documented as expected (not a regression) in `bind_escape_test.go` + `docs/architecture.md`; stack retention is not achievable without dropping the pluggable codec abstraction
 - [x] Pre-build middleware chain at startup (no per-request chain assembly)
 - [x] Pre-compute binder + validator at registration time (no per-request reflect)
 
