@@ -8,8 +8,10 @@ package aarv
 //	./bind.go:138:8: moved to heap: req   // body-only BindReq closure
 //	./bind.go:174:7: moved to heap: req   // multi-source BindReq closure
 //
-// reported for EVERY instantiation of BindReq[T] / Bind[Req, Res]. So Req does
-// NOT stay on the stack — it is a single heap allocation per bound request.
+// reported for EVERY instantiation of BindReq[T] / Bind[Req, Res]. So the Req
+// value does NOT stay on the stack — it is heap-allocated once per bound
+// request. (This is the Req value's own allocation only; the full bind path
+// performs additional allocations — see BenchmarkBindReqAllocs.)
 //
 // Cause: the prepared closure declares `var req Req`, then passes `&req` as an
 // interface value (`dest any`) to Context.BindJSON, binder.bind, and
@@ -19,9 +21,10 @@ package aarv
 // reflection-based binder/validator. Keeping Req on the stack would require
 // monomorphic decode paths that abandon those abstractions.
 //
-// Outcome: documented as an expected, unavoidable single allocation — not a
-// regression. BenchmarkBindReqAllocs tracks the bind-path allocation count for
-// visibility. No AllocsPerRun assertion is added: CI runs `go test -race`, and
+// Outcome: the Req value's escape is expected and unavoidable — not a
+// regression. BenchmarkBindReqAllocs tracks the TOTAL bind-path allocation
+// count (more than one; the Req escape is a subset) for visibility. No
+// AllocsPerRun assertion is added: CI runs `go test -race`, and
 // race instrumentation distorts allocation counts, so a hard ceiling would be
 // flaky across race/non-race builds.
 
