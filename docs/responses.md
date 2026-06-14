@@ -117,6 +117,39 @@ app.Use(static.New(static.Config{
 `Root` is required. `Browse` defaults to false. `SPA` serves the root index
 file when a file is not found, which is useful for client-side routing.
 
+## .well-known / deep-link files
+
+Mobile deep linking needs Apple's `apple-app-site-association` (AASA) and
+Android's `assetlinks.json`. Serve them with exact routes and `c.Blob`, not
+`plugins/static`: the AASA file has **no extension**, so `http.FileServer`
+sniffs its type and serves it as `text/plain` instead of the required
+`application/json`. Apple also fetches it at both `/.well-known/...` and the
+legacy unprefixed path. Embed the files so they ship in the binary.
+
+```go
+//go:embed apple-app-site-association.json assetlinks.json
+var deeplinkFS embed.FS
+
+func registerWellKnown(app *aarv.App) {
+    aasa, _ := deeplinkFS.ReadFile("apple-app-site-association.json")
+    android, _ := deeplinkFS.ReadFile("assetlinks.json")
+
+    serveAASA := func(c *aarv.Context) error {
+        return c.Blob(http.StatusOK, "application/json", aasa)
+    }
+    app.Get("/.well-known/apple-app-site-association", serveAASA)
+    app.Get("/apple-app-site-association", serveAASA) // Apple legacy path
+
+    app.Get("/.well-known/assetlinks.json", func(c *aarv.Context) error {
+        return c.Blob(http.StatusOK, "application/json", android)
+    })
+}
+```
+
+Serve `application/json` with no redirect and no file extension on the Apple
+paths. The file contents (app IDs, paths) are configuration, not framework
+concern, so they live in the embedded files.
+
 ## Compression
 
 `plugins/compress` buffers enough response data to decide whether gzip or

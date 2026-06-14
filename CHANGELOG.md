@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-06-14
+
+### Removed
+
+- **`plugins/otel`: removed the legacy HTTP semantic-convention attribute keys** (`http.method`, `http.target`, `http.status_code`, `http.user_agent`, `net.peer.ip`) from both spans and metrics. Only the modern semconv v1.37.0 keys are emitted now (`http.request.method`, `url.path`, `http.route`, `http.response.status_code`, `user_agent.original`, `client.address`, `network.protocol.version`; plus `request_id` on spans and the aarv-specific `http.status_class` on metrics). **Breaking** for any trace or metric dashboard still keyed on the legacy names — migrate queries to the modern keys. This removal was accelerated from the originally-planned v0.10.0 window; the primary consumer verified its dashboards use zero legacy attributes. The now-unused private `path` parameter was dropped from `recordHTTPMetrics`.
+
+### Added
+
+- **`docs/responses.md`: a `.well-known` / deep-link serving recipe** — exact `c.Blob` route handlers for `apple-app-site-association` (served as `application/json` at both `/.well-known/apple-app-site-association` and the legacy `/apple-app-site-association`, despite the file having no extension) and `assetlinks.json`. Notes why `plugins/static` is unsuitable (its `http.FileServer` sniffs content type and mis-types the extensionless Apple file).
+
 ## [0.9.5] - 2026-06-14
 
 ### Added
@@ -73,7 +83,7 @@ Submodule pins stay at root `v0.9.0` — none of `plugins/{prometheus,otel,sanit
 
 ### Changed
 
-- **`plugins/otel` HTTP semantic-convention attributes** migrated to OpenTelemetry semconv v1.37.0 (aligned with the plugin's existing OTel pin at v1.43.0). Spans emit modern keys (`http.request.method`, `url.path`, `http.route`, `http.response.status_code`, `user_agent.original`, `client.address`, `network.protocol.version`) alongside the legacy keys (`http.method`, `http.target`, `http.status_code`, `http.user_agent`, `net.peer.ip`) for one transitional minor release. Metric attribute sets use `http.route` only — `url.path` is deliberately NOT emitted on metrics (per-URL labels are a TSDB cardinality bomb; locked in by `TestSemconv_MetricsUseRouteNotURLPath`). Legacy `http.target` preserves its pre-migration shape (route pattern when matched, raw path otherwise) — do NOT confuse it with modern `url.path`. **Legacy keys deprecated in v0.9.0, removed in v0.10.0** (no earlier than 4 weeks after v0.9.0 ships). Migrate any TraceQL / Datadog / Honeycomb / Grafana queries to the modern keys before then. `request_id` keeps its name (aarv-specific, not a semconv rename).
+- **`plugins/otel` HTTP semantic-convention attributes** migrated to OpenTelemetry semconv v1.37.0 (aligned with the plugin's existing OTel pin at v1.43.0). Spans emit modern keys (`http.request.method`, `url.path`, `http.route`, `http.response.status_code`, `user_agent.original`, `client.address`, `network.protocol.version`) alongside the legacy keys (`http.method`, `http.target`, `http.status_code`, `http.user_agent`, `net.peer.ip`) for one transitional minor release. Metric attribute sets use `http.route` only — `url.path` is deliberately NOT emitted on metrics (per-URL labels are a TSDB cardinality bomb; locked in by `TestSemconv_MetricsUseRouteNotURLPath`). Legacy `http.target` preserves its pre-migration shape (route pattern when matched, raw path otherwise) — do NOT confuse it with modern `url.path`. **Legacy keys deprecated in v0.9.0, removed in v0.9.6.** Migrate any TraceQL / Datadog / Honeycomb / Grafana queries to the modern keys. `request_id` keeps its name (aarv-specific, not a semconv rename).
 - **`plugins/logger`**: internal `responseWriter` replaced with `aarv.StatusRecorder` (still pooled privately via `sync.Pool`). No behavior change.
 
 ### Migration
@@ -392,7 +402,8 @@ Per-plugin migration scope (`plugins/timeout.New(d)` and `pprof.Config.AuthMiddl
 4. Push: `git push origin vX.Y.Z`
 5. Create GitHub Release with notes from this file
 
-[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.9.6...HEAD
+[0.9.6]: https://github.com/nilshah80/aarv/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/nilshah80/aarv/compare/v0.9.1...v0.9.5
 [0.9.1]: https://github.com/nilshah80/aarv/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/nilshah80/aarv/compare/v0.8.0...v0.9.0
