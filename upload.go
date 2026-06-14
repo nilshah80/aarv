@@ -2,6 +2,7 @@ package aarv
 
 import (
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/textproto"
 	"slices"
@@ -69,6 +70,29 @@ func validateFile(f *UploadedFile, cfg FileConfig) error {
 		return ErrUnprocessable(fmt.Sprintf("file %q has disallowed content type %q", f.Filename, f.ContentType))
 	}
 	return nil
+}
+
+// progressWriter wraps a writer and invokes onProgress after each non-empty
+// Write with the cumulative bytes successfully written so far and the known
+// total size. It is used by Context.SaveFileWith to report copy progress
+// against the destination — counting writes (not source reads) so a short
+// write or write error never reports bytes the destination did not accept.
+// "written" means accepted by Write, not fsync-durable. onProgress
+// must be non-nil; the callback runs synchronously on the copying goroutine.
+type progressWriter struct {
+	w          io.Writer
+	written    int64
+	total      int64
+	onProgress func(written, total int64)
+}
+
+func (p *progressWriter) Write(b []byte) (int, error) {
+	n, err := p.w.Write(b)
+	if n > 0 {
+		p.written += int64(n)
+		p.onProgress(p.written, p.total)
+	}
+	return n, err
 }
 
 // validateFiles checks a slice of files against the given constraints.

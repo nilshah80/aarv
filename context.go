@@ -739,6 +739,21 @@ func (c *Context) FilesWith(name string, cfg FileConfig) ([]*UploadedFile, error
 
 // SaveFile writes the uploaded file to the given filesystem path.
 func (c *Context) SaveFile(file *UploadedFile, dst string) error {
+	return c.SaveFileWith(file, dst, nil)
+}
+
+// SaveFileWith writes the uploaded file to dst, invoking onProgress after each
+// chunk is copied with the bytes written so far and the total file size
+// (file.Size). onProgress may be nil, in which case it behaves exactly like
+// SaveFile (and retains io.Copy's WriterTo/ReaderFrom fast paths). The callback
+// runs synchronously on the copying goroutine — keep it fast and non-blocking.
+//
+// This reports SAVE progress (already-received bytes being written to dst), not
+// network ingest progress: by the time a handler holds an *UploadedFile the
+// request body has already been fully received and buffered (see FormFile). For
+// server-side ingest progress, wrap r.Body in middleware before multipart
+// parsing instead.
+func (c *Context) SaveFileWith(file *UploadedFile, dst string, onProgress func(written, total int64)) error {
 	src, err := file.Open()
 	if err != nil {
 		return err
@@ -749,7 +764,14 @@ func (c *Context) SaveFile(file *UploadedFile, dst string) error {
 		return err
 	}
 	defer func() { _ = out.Close() }()
-	_, err = io.Copy(out, src)
+	if onProgress == nil {
+		// Fast path: lets io.Copy use WriterTo/ReaderFrom shortcuts.
+		_, err = io.Copy(out, src)
+		return err
+	}
+	// Wrap the destination so progress reflects bytes actually written to dst,
+	// not bytes read from src (a short write must not over-report).
+	_, err = io.Copy(&progressWriter{w: out, total: file.Size, onProgress: onProgress}, src)
 	return err
 }
 

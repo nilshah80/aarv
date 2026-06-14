@@ -312,6 +312,178 @@ func TestSaveFileInvalidPath(t *testing.T) {
 	}
 }
 
+func TestSaveFileWithProgress(t *testing.T) {
+	app := New(WithBanner(false))
+	// Content larger than io.Copy's 32KB buffer so the copy spans multiple
+	// reads and onProgress fires more than once.
+	content := strings.Repeat("a", 100_000)
+	req := multipartRequest(t, map[string][][2]string{
+		"doc": {{"big.txt", content}},
+	})
+	ctx, _ := newAppContext(app, req)
+	defer app.ReleaseContext(ctx)
+
+	f, err := ctx.FormFile("doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var calls int
+	var last int64
+	var lastTotal int64
+	dst := filepath.Join(t.TempDir(), "big-out.txt")
+	err = ctx.SaveFileWith(f, dst, func(written, total int64) {
+		calls++
+		if written < last {
+			t.Fatalf("progress went backwards: %d after %d", written, last)
+		}
+		last = written
+		lastTotal = total
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if calls < 2 {
+		t.Fatalf("expected multiple progress callbacks for a 100KB file, got %d", calls)
+	}
+	if last != int64(len(content)) {
+		t.Fatalf("final written = %d, want %d", last, len(content))
+	}
+	if lastTotal != f.Size {
+		t.Fatalf("reported total = %d, want file size %d", lastTotal, f.Size)
+	}
+
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != content {
+		t.Fatalf("saved content mismatch: got %d bytes, want %d", len(data), len(content))
+	}
+}
+
+func TestSaveFileWithNilProgress(t *testing.T) {
+	app := New(WithBanner(false))
+	req := multipartRequest(t, map[string][][2]string{
+		"doc": {{"save-me.txt", "saved content"}},
+	})
+	ctx, _ := newAppContext(app, req)
+	defer app.ReleaseContext(ctx)
+
+	f, err := ctx.FormFile("doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// nil callback must behave exactly like SaveFile.
+	dst := filepath.Join(t.TempDir(), "output.txt")
+	if err := ctx.SaveFileWith(f, dst, nil); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "saved content" {
+		t.Fatalf("expected saved content, got %q", data)
+	}
+}
+
+func TestSaveFileWithInvalidPath(t *testing.T) {
+	app := New(WithBanner(false))
+	req := multipartRequest(t, map[string][][2]string{
+		"doc": {{"file.txt", "data"}},
+	})
+	ctx, _ := newAppContext(app, req)
+	defer app.ReleaseContext(ctx)
+
+	f, err := ctx.FormFile("doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	err = ctx.SaveFileWith(f, "/no/such/directory/file.txt", func(_, _ int64) {
+		called = true
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid path")
+	}
+	if called {
+		t.Fatal("onProgress must not fire when the destination cannot be created")
+	}
+}
+
+// shortThenFailWriter accepts the first acceptBytes bytes (possibly across
+// writes, short-writing the boundary chunk) and then fails every subsequent
+// write with n == 0. It models a destination that stops accepting writes partway.
+type shortThenFailWriter struct {
+	accept  int
+	written int
+}
+
+func (w *shortThenFailWriter) Write(b []byte) (int, error) {
+	if w.written >= w.accept {
+		return 0, io.ErrShortWrite
+	}
+	n := len(b)
+	if w.written+n > w.accept {
+		n = w.accept - w.written // short write at the boundary
+	}
+	w.written += n
+	if n < len(b) {
+		return n, io.ErrShortWrite
+	}
+	return n, nil
+}
+
+// TestProgressWriterReportsOnlyPersistedBytes verifies the callback counts
+// bytes the destination actually accepted, never bytes that failed to write.
+func TestProgressWriterReportsOnlyPersistedBytes(t *testing.T) {
+	const accept = 50_000
+	src := bytes.NewReader([]byte(strings.Repeat("a", 100_000)))
+	dst := &shortThenFailWriter{accept: accept}
+
+	var last int64
+	pw := &progressWriter{w: dst, total: 100_000, onProgress: func(written, _ int64) {
+		if written < last {
+			t.Fatalf("progress went backwards: %d after %d", written, last)
+		}
+		last = written
+	}}
+
+	_, err := io.Copy(pw, src)
+	if err == nil {
+		t.Fatal("expected copy to fail once the destination stops accepting")
+	}
+	if last != accept {
+		t.Fatalf("final reported written = %d, want exactly the accepted %d", last, accept)
+	}
+	if pw.written != int64(accept) {
+		t.Fatalf("progressWriter.written = %d, want %d", pw.written, accept)
+	}
+}
+
+// TestProgressWriterNoCallbackOnZeroWrite verifies a failing write that
+// writes nothing (n == 0) does not fire the callback.
+func TestProgressWriterNoCallbackOnZeroWrite(t *testing.T) {
+	dst := &shortThenFailWriter{accept: 0} // accepts nothing
+	called := false
+	pw := &progressWriter{w: dst, total: 10, onProgress: func(_, _ int64) { called = true }}
+
+	n, err := pw.Write([]byte("hello"))
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+	if n != 0 {
+		t.Fatalf("expected 0 bytes written, got %d", n)
+	}
+	if called {
+		t.Fatal("onProgress must not fire when no bytes were written")
+	}
+}
+
 // --- parseMultipartIfNeeded tests ---
 
 func TestParseMultipartIfNeededIdempotent(t *testing.T) {

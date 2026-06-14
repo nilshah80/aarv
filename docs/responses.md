@@ -61,6 +61,19 @@ app.Post("/upload", aarv.BindReq(func(c *aarv.Context, req UploadReq) error {
 Use `FileWith` or `FilesWith` for lower-level validation of file size, count,
 and content type.
 
+For large files, `c.SaveFileWith(file, dst, onProgress)` reports copy progress
+as bytes are written to `dst`:
+
+```go
+c.SaveFileWith(req.File, dst, func(written, total int64) {
+    log.Printf("saved %d/%d bytes", written, total)
+})
+```
+
+This is **save** progress (writing already-received bytes to disk), not network
+ingest progress — by the time the handler runs, the request body has already
+been fully received. The callback runs synchronously, so keep it fast.
+
 ## Streaming
 
 `c.Stream` writes an `io.Reader` directly to the response.
