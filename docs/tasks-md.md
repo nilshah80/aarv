@@ -962,7 +962,7 @@ Prerequisite work in the root module to unblock cardinality control on metrics l
 
 ### 12.6.7 ALP observability feedback loop — ALP Track 6 audit shipped
 - [x] After ALP Track 6 RED audit, review whether `plugins/prometheus` needs custom default buckets for sub-ms redirect paths — shipped as `SubMillisecondBuckets` preset (see §12.6.9)
-- [ ] After ALP Track 6 RED audit, review whether `plugins/prometheus` needs safe optional labels such as authenticated client class; avoid high-cardinality defaults — not in this batch; revisit when ALP requests it concretely
+- [ ] After ALP Track 6 RED audit, review whether `plugins/prometheus` needs safe optional labels such as authenticated client class; avoid high-cardinality defaults — **reviewed**: current labels (`method`, grouped `path`, `status`) are cardinality-bounded; an authenticated-client-class label has no safe default and multiplies series, so it stays opt-in pending a concrete ALP request rather than a speculative default. Left unchecked (feature deliberately gated, not the review)
 - [x] After ALP Trace audit, review whether `plugins/otel` needs additional context propagation or span/log correlation hooks — shipped as semconv v1.37.0 migration with `http.route`, `network.protocol.version`, and per-attribute corrections (see §12.6.9)
 - [x] Track every ALP-discovered rough edge as an Aarv issue or PR and mirror it in ALP's `AARV_FEEDBACK.md` — AARV_FEEDBACK P1 #1/#2/#3 + P2 #4/#5/#6/#7 + P3 #10 addressed; see §12.6.9 for the per-item mapping
 - [x] Do not change `plugins/prometheus` or `plugins/otel` preemptively; build only concrete deltas observed under ALP — process rule, honored throughout the batch
@@ -1102,7 +1102,7 @@ The Go multi-module release flow is intentionally staged: submodule `go.mod` fil
 - [x] Add `gofmt -s -l` check to CI lint workflow
 - [x] Advisory `gocyclo` measurement added as a **non-blocking** CI step in `.github/workflows/lint.yml` (`continue-on-error: true`, `gocyclo -over 15 -top 25`, examples/benchmark ignored). Reports the most complex functions for visibility; never release-blocking (no agreed threshold)
 - [x] Deduplicated `plugins/session` normalize helpers — `normalizeCookieConfig` now maps onto the shared session fields and delegates to `normalizeConfig`, so the inversion + defaults logic lives in one place (no behavior change; existing tests green)
-- [ ] Continue plugin curation notes as overlap grows across observability and auth-related plugins
+- [x] Extended plugin curation notes to auth-related plugins (authn schemes: basicauth/apikey/bearer/jwt/hmacauth; authz: rbac; orthogonal: problem) in `docs/plugins.md`, alongside the existing observability note. Standing convention as new plugins land
 
 ---
 

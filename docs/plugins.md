@@ -138,6 +138,14 @@ example, `logger`, `verboselog`, `prometheus`, and `otel` all touch
 observability, but they serve different jobs: request logs, structured verbose
 diagnostics, scrape metrics, and traces/metrics through OpenTelemetry.
 
+The auth-related plugins overlap similarly but stay separate by concern.
+Authentication schemes prove who the caller is: `basicauth` (username/password),
+`apikey` (shared key), `bearer` and `jwt` (token credentials), and `hmacauth`
+(signed service-to-service requests, with `hmacauth-redis` for a distributed
+nonce store and `hmacauth-otel` for tracing). Authorization is separate: `rbac`
+decides what an authenticated identity may do. `problem` is orthogonal — it
+shapes RFC 7807 error bodies regardless of which auth plugin rejected a request.
+
 Keep dependency-heavy integrations as submodules. Keep small security and HTTP
 policy middleware in the root module when they only use the standard library.
 
