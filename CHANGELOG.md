@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Context.SaveFileWith(file, dst, onProgress func(written, total int64)) error`** — saves an uploaded file while reporting copy progress as bytes are written to the destination. `SaveFile` now delegates with a nil callback (no behavior change; the nil path keeps `io.Copy`'s `WriterTo`/`ReaderFrom` fast paths). Progress counts destination writes, so a short write or write error never over-reports. This is save progress, not network-ingest progress.
+- **`aarv.NamedMiddleware(name string, mw any) NativeMiddleware`** — attaches a stable debug name to any middleware for introspection.
+- **`RouteInfo.Middleware []string`** — the route-level and group middleware applied to a route, in execution order (group before route-level), excluding app-global middleware. Deep-copied by `App.Routes()`.
+- **`App.GlobalMiddleware() []string`** — the app-global middleware names (from `App.Use`), in registration order.
+- **`plugins/recover` `Config.IncludeStackInResponse bool`** (default false) — adds the panic value and stack trace to the 500 JSON body for local debugging. Never enable in production; no effect when a custom `Handler` is set.
+
+### Changed
+
+- **`NativeMiddleware` gains a `Name` field** (third field). Naming is optional and defaults to empty. **Breaking for unkeyed struct literals only:** external code using positional literals like `aarv.NativeMiddleware{stdlib, native}` no longer compiles and must switch to keyed fields (`aarv.NativeMiddleware{Stdlib: stdlib, Native: native}`) or the `RegisterNativeMiddleware` / `WrapMiddleware` constructors. Keyed literals and the constructors are unaffected. `SkipPaths` now propagates the inner middleware's `Name`.
+
+### Internal
+
+- `plugins/session`: `normalizeCookieConfig` now delegates to `normalizeConfig` so the normalization logic lives in one place (no behavior change).
+- CI: added a non-blocking advisory cyclomatic-complexity step (`gocyclo`) to the lint workflow; it reports the most complex functions but never gates a release.
+- Documented the escape-analysis finding that the bound request value (`Req`) is heap-allocated once per request (`bind_escape_test.go`, `docs/architecture.md`), and added fuzz targets for JSON binding, validate-tag parsing, and query binding.
+
 ## [0.9.1] - 2026-06-06
 
 ### Fixed

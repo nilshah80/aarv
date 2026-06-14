@@ -171,6 +171,37 @@ func TestSkipPaths_EmptyPathsReturnsInnerUnchanged(t *testing.T) {
 	}
 }
 
+func TestSkipPaths_PreservesName(t *testing.T) {
+	f := &fakeMiddleware{label: "a"}
+	named := NamedMiddleware("auth", f.nativePair())
+
+	// With paths: both stdlib and native variants returned, name preserved.
+	if got := SkipPaths([]string{"/skip"}, named).Name; got != "auth" {
+		t.Fatalf("SkipPaths(paths) dropped name: got %q, want %q", got, "auth")
+	}
+	// Empty paths: inner returned wrapped, name preserved.
+	if got := SkipPaths(nil, named).Name; got != "auth" {
+		t.Fatalf("SkipPaths(nil) dropped name: got %q, want %q", got, "auth")
+	}
+	// Stdlib-only inner (no native): name still preserved.
+	namedStdlib := NamedMiddleware("metrics", f.stdlibOnly())
+	if got := SkipPaths([]string{"/skip"}, namedStdlib).Name; got != "metrics" {
+		t.Fatalf("SkipPaths(stdlib-only) dropped name: got %q, want %q", got, "metrics")
+	}
+}
+
+// TestSkipPaths_NamePropagatesToRouteInfo end-to-end: a named, path-skipping
+// middleware still surfaces its name in App.GlobalMiddleware introspection.
+func TestSkipPaths_NamePropagatesToRouteInfo(t *testing.T) {
+	f := &fakeMiddleware{label: "a"}
+	app := New(WithBanner(false))
+	app.Use(SkipPaths([]string{"/health"}, NamedMiddleware("compress", f.nativePair())))
+
+	if got := app.GlobalMiddleware(); len(got) != 1 || got[0] != "compress" {
+		t.Fatalf("expected [compress], got %v", got)
+	}
+}
+
 func TestSkipPaths_AcceptsNativeMiddleware(t *testing.T) {
 	f := &fakeMiddleware{label: "a"}
 	mw := SkipPaths([]string{"/skip"}, f.nativePair())

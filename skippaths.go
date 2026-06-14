@@ -22,8 +22,9 @@ import "net/http"
 //   - func(http.Handler) http.Handler (the untyped form of Middleware)
 //
 // The returned NativeMiddleware preserves the native fast path when the
-// inner middleware supplies one. Distinct SkipPaths instances each
-// carry their own native fn; no global registry is consulted, so
+// inner middleware supplies one, and propagates the inner middleware's
+// Name so introspection still reports it. Distinct SkipPaths instances
+// each carry their own native fn; no global registry is consulted, so
 // multiple SkipPaths-wrapped middlewares in the same App do not
 // collide.
 //
@@ -42,7 +43,7 @@ func SkipPaths(paths []string, mw any) NativeMiddleware {
 	}
 	slot := coerceSlot(mw, "SkipPaths", 0)
 	if len(paths) == 0 {
-		return NativeMiddleware{Stdlib: slot.stdlib, Native: slot.native}
+		return NativeMiddleware{Stdlib: slot.stdlib, Native: slot.native, Name: slot.name}
 	}
 	skip := make(map[string]struct{}, len(paths))
 	for _, p := range paths {
@@ -63,7 +64,7 @@ func SkipPaths(paths []string, mw any) NativeMiddleware {
 	if slot.native == nil {
 		// Inner has no native variant — chain downgrades to stdlib for
 		// any route that includes this SkipPaths.
-		return NativeMiddleware{Stdlib: stdlib}
+		return NativeMiddleware{Stdlib: stdlib, Name: slot.name}
 	}
 
 	native := MiddlewareFunc(func(next HandlerFunc) HandlerFunc {
@@ -75,5 +76,5 @@ func SkipPaths(paths []string, mw any) NativeMiddleware {
 			return wrapped(c)
 		}
 	})
-	return NativeMiddleware{Stdlib: stdlib, Native: native}
+	return NativeMiddleware{Stdlib: stdlib, Native: native, Name: slot.name}
 }
