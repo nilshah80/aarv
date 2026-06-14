@@ -4,6 +4,65 @@
 
 ---
 
+## 📋 Pending Work Summary (Buckets)
+
+> Snapshot of remaining unchecked items as of 2026-06-14: **107 unchecked / 703
+> checked**. Items are referenced by section rather than line number (line
+> numbers drift). This summary is a dashboard; the authoritative state is the
+> checkboxes in each phase below.
+
+**Bottom line:** there is no actionable in-repo backlog. Everything still
+unchecked is gated on external (ALP) demand, decided won't-do, or explicitly
+optional / over-engineering. The only items that could become real work *if a
+need arises* are the optional Redis/SQL session stores.
+
+### Bucket A — Stale: 0 (all reconciled to git/CI reality)
+
+### Bucket B — 3 intentionally remaining (of 12; 9 resolved)
+
+| Section | Item | Disposition |
+|---------|------|-------------|
+| §12.6.7 | Prometheus optional auth-class labels | Reviewed → gated: no safe default (cardinality); opt-in only, pending concrete ALP demand |
+| §12.6.8 | ALP note: swap internal HMAC/ratelimit/idempotency for Aarv imports | External — lives in ALP's `AARV_FEEDBACK.md` |
+| §12.6.8 | ALP note: evaluate `BindRoute` + openapi/openapi-ui for drift detection | External — ALP's repo |
+
+Resolved this session: fuzz targets (§Cross-Cutting/Testing), `Bind[T]` escape
+audit (§Cross-Cutting/Performance), named-middleware introspection (§4.1),
+recovery stack-in-response (§5.1), context-bridge recommendation (§4.0),
+advisory gocyclo (§13 Quality Gates), session normalize dedupe (§13 Quality
+Gates). The unsafe.Pointer validator fast path (§3.3) was declined.
+
+### Decided won't-do — 5 (unchecked strikethroughs, by design)
+
+| Section | Item | Reason |
+|---------|------|--------|
+| §3.3 | unsafe.Pointer validator fast path | reflect path benchmark-competitive |
+| §5.12 | multipart disk-streaming threshold | stdlib `ParseMultipartForm(32MB)` handles it |
+| §5.12 | multipart **ingest** progress | distinct from shipped `SaveFileWith` save-progress; streaming/middleware territory |
+| §5.12 | chunked/resumable uploads | different protocol (tus-style); plugin territory |
+| §6.1 | configurable JWT claims key | superseded by `jwt.From(c)` |
+
+### Bucket C — Optional / deferred — 99
+
+| Group | Section | Count |
+|-------|---------|-------|
+| Optional distributed stores: `session-redis`, `session-sql` | §6.7 | 2 |
+| Phase 14 — WebSocket / Reverse Proxy / GraphQL (OPTIONAL) | §14.1–14.3 | 28 |
+| Appendix A.1–A.9 — "Probably Not Required / Over-Engineering" | Appendix A | 69 |
+
+### Tally
+
+| Category | Count |
+|----------|-------|
+| Bucket A — stale | 0 |
+| Bucket B — gated + external (intentional) | 3 |
+| Decided won't-do (strikethrough) | 5 |
+| Bucket C — optional / deferred | 99 |
+| **Total unchecked** | **107** |
+| Checked | 703 |
+
+---
+
 ## ⭐ PRIORITY: Production Readiness (Do First!)
 
 > **Start here before any new feature work.**
