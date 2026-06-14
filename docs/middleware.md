@@ -132,9 +132,13 @@ By default, Aarv preserves `*aarv.Context` recovery across stdlib
 middleware that clones requests with `r.WithContext(...)`. This keeps
 mixed middleware stacks predictable.
 
-Use `aarv.WithRequestContextBridge(false)` only for controlled stacks
-where no downstream middleware calls `aarv.FromRequest(r)` after a
-stdlib middleware clones the request.
+**Recommendation: keep the bridge on (the default).** Disabling it is an
+expert-only opt-in, not a general performance recommendation. It saves roughly
+90 ns/op on the bare-minimum path (`BareMinLogger` ~2454→2364 ns/op), which is
+negligible for typical handlers and not worth the correctness risk for most
+services. Turn it off only for a controlled stack where you have verified that
+no downstream middleware calls `aarv.FromRequest(r)` after a stdlib middleware
+clones the request with `r.WithContext(...)`.
 
 ```go
 app := aarv.New(

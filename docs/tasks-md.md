@@ -311,7 +311,7 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Latest `main
   Current benchmark signal: after making the comparison feature-fair by validating on Mach/Fiber too, aarv now leads on both `Bind` and `BindLight` (`Bind`: aarv `2125 ns/op` vs Mach `2570`; `BindLight`: aarv `977.7 ns/op` vs Mach `1421`)
 - [x] Explore reducing residual vanilla / bare-min overhead from baseline context propagation
   Current benchmark signal: added opt-in `WithRequestContextBridge(false)` fast mode for middleware stacks that do not need cloned-request compatibility; it narrows bare-min logger/encrypt cost but intentionally trades away raw `r.WithContext(...)` bridge behavior
-- [ ] Decide whether to recommend `WithRequestContextBridge(false)` outside performance-focused deployments
+- [x] Decided: do **not** recommend `WithRequestContextBridge(false)` generally. Keep the bridge on by default; `false` is an expert-only opt-in for controlled stacks (~90 ns/op on the bare-min path, negligible for typical handlers, correctness risk otherwise). Documented in `docs/middleware.md` "Context bridge"
   Current benchmark signal: fast mode trims the bare-min path (`BareMinLogger`: `2454 -> 2364 ns/op`; `BareMinEncrypt`: `2617 -> 2558 ns/op`) but is not a safe default because cloned-request compatibility is intentionally disabled
 
 Notes from latest benchmark pass:
@@ -1100,7 +1100,7 @@ The Go multi-module release flow is intentionally staged: submodule `go.mod` fil
 
 ### Quality Gates / Follow-ups
 - [x] Add `gofmt -s -l` check to CI lint workflow
-- [ ] Consider advisory `gocyclo` measurement for large handlers and fixtures; do not make it release-blocking without agreed thresholds
+- [x] Advisory `gocyclo` measurement added as a **non-blocking** CI step in `.github/workflows/lint.yml` (`continue-on-error: true`, `gocyclo -over 15 -top 25`, examples/benchmark ignored). Reports the most complex functions for visibility; never release-blocking (no agreed threshold)
 - [x] Deduplicated `plugins/session` normalize helpers — `normalizeCookieConfig` now maps onto the shared session fields and delegates to `normalizeConfig`, so the inversion + defaults logic lives in one place (no behavior change; existing tests green)
 - [ ] Continue plugin curation notes as overlap grows across observability and auth-related plugins
 

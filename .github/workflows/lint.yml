@@ -33,3 +33,13 @@ jobs:
         with:
           version: v2.8.0
           args: --timeout=5m
+
+      # Advisory only: reports the most cyclomatically complex functions for
+      # visibility. continue-on-error keeps it non-blocking — there is no agreed
+      # complexity threshold, so it must never gate a release.
+      - name: Advisory cyclomatic complexity (non-blocking)
+        continue-on-error: true
+        run: |
+          echo "Advisory only — does not gate the build (no agreed threshold)."
+          go run github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 \
+            -over 15 -top 25 -ignore 'examples|tests/benchmark' .
