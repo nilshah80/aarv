@@ -99,6 +99,15 @@ type Config struct {
 	// When true, the panic value is still logged but the stack trace is omitted.
 	DisablePrintStack bool
 
+	// IncludeStackInResponse adds the panic value and stack trace to the
+	// default 500 JSON response body (as "panic" and "stack" fields). It is
+	// intended for local debugging only.
+	//
+	// SECURITY: never enable this in production — it leaks internal stack
+	// traces and panic messages to clients. Default false. Has no effect when
+	// a custom Handler is set (the handler owns the response body).
+	IncludeStackInResponse bool
+
 	// Handler is an optional custom panic handler. When set, it is called
 	// instead of the default 500 JSON response. The handler receives the
 	// response writer, request, recovered panic value, and captured stack
@@ -117,13 +126,20 @@ func DefaultConfig() Config {
 }
 
 // defaultResponse writes the generic 500 JSON error to the given ResponseWriter.
-func defaultResponse(w http.ResponseWriter) {
+// When cfg.IncludeStackInResponse is true, the panic value and stack trace are
+// added as "panic" and "stack" fields (debug only — never enable in production).
+func defaultResponse(w http.ResponseWriter, cfg Config, panicVal string, stack []byte) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusInternalServerError)
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	body := map[string]string{
 		"error":   "internal_error",
 		"message": "Internal server error",
-	})
+	}
+	if cfg.IncludeStackInResponse {
+		body["panic"] = panicVal
+		body["stack"] = string(stack)
+	}
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // New creates a panic recovery middleware with optional configuration.
@@ -181,12 +197,12 @@ func New(config ...Config) aarv.NativeMiddleware {
 						}()
 						if panicked {
 							guard.discard()
-							defaultResponse(w)
+							defaultResponse(w, cfg, err, stack)
 						} else {
 							guard.commit()
 						}
 					} else {
-						defaultResponse(w)
+						defaultResponse(w, cfg, err, stack)
 					}
 				}
 			}()
@@ -237,12 +253,12 @@ func New(config ...Config) aarv.NativeMiddleware {
 						}()
 						if panicked {
 							guard.discard()
-							defaultResponse(w)
+							defaultResponse(w, cfg, err, stack)
 						} else {
 							guard.commit()
 						}
 					} else {
-						defaultResponse(w)
+						defaultResponse(w, cfg, err, stack)
 					}
 				}
 			}()

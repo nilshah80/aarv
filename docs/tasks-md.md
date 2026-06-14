@@ -360,7 +360,7 @@ Notes from latest benchmark pass:
 - [x] Return 500 with generic error response
 - [x] Configurable: stack trace depth, disable stack logging
 - [x] Configurable: custom panic handler
-- [ ] Include stack in response (debug mode) — `DisablePrintStack` only controls logging, not the response body
+- [x] Include stack in response (debug mode) — `plugins/recover` `Config{IncludeStackInResponse: true}` adds `panic`/`stack` to the 500 body; default off, no effect when a custom `Handler` is set. Identical on native + stdlib paths; security guard test asserts absence by default
 - [x] Unit tests: panic in handler, panic in middleware, nested panic
 
 ### 5.2 Request ID Plugin ✅

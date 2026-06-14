@@ -137,6 +137,94 @@ func TestNewNativeRecoverWithoutStack(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigStackResponseOff(t *testing.T) {
+	if DefaultConfig().IncludeStackInResponse {
+		t.Fatal("IncludeStackInResponse must default to false")
+	}
+}
+
+// TestStackNotInResponseByDefault is the security guard: the default 500 body
+// must never expose the panic value or stack trace. Checked on both paths.
+func TestStackNotInResponseByDefault(t *testing.T) {
+	cases := map[string]func() *httptest.ResponseRecorder{
+		"stdlib": func() *httptest.ResponseRecorder {
+			h := New().Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				panic("secret-stdlib")
+			}))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+			return rec
+		},
+		"native": func() *httptest.ResponseRecorder {
+			app := aarv.New(aarv.WithBanner(false))
+			app.Use(New())
+			app.Get("/p", func(c *aarv.Context) error { panic("secret-native") })
+			rec := httptest.NewRecorder()
+			app.ServeHTTP(rec, httptest.NewRequest("GET", "/p", nil))
+			return rec
+		},
+	}
+	for name, run := range cases {
+		t.Run(name, func(t *testing.T) {
+			rec := run()
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("expected 500, got %d", rec.Code)
+			}
+			body := rec.Body.String()
+			if strings.Contains(body, "\"stack\"") || strings.Contains(body, "\"panic\"") {
+				t.Fatalf("default body leaked stack/panic: %q", body)
+			}
+			if strings.Contains(body, "secret-") {
+				t.Fatalf("default body leaked panic value: %q", body)
+			}
+			if !strings.Contains(body, "internal_error") {
+				t.Fatalf("expected generic error body, got %q", body)
+			}
+		})
+	}
+}
+
+// TestStackInResponseWhenEnabled asserts the opt-in includes the panic value
+// and stack trace, with identical behavior across native and stdlib paths.
+func TestStackInResponseWhenEnabled(t *testing.T) {
+	cases := map[string]func() *httptest.ResponseRecorder{
+		"stdlib": func() *httptest.ResponseRecorder {
+			h := New(Config{IncludeStackInResponse: true}).Stdlib(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				panic("debug-stdlib")
+			}))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+			return rec
+		},
+		"native": func() *httptest.ResponseRecorder {
+			app := aarv.New(aarv.WithBanner(false))
+			app.Use(New(Config{IncludeStackInResponse: true}))
+			app.Get("/p", func(c *aarv.Context) error { panic("debug-native") })
+			rec := httptest.NewRecorder()
+			app.ServeHTTP(rec, httptest.NewRequest("GET", "/p", nil))
+			return rec
+		},
+	}
+	for name, run := range cases {
+		t.Run(name, func(t *testing.T) {
+			rec := run()
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("expected 500, got %d", rec.Code)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, "\"panic\"") || !strings.Contains(body, "debug-"+name) {
+				t.Fatalf("expected panic value in body, got %q", body)
+			}
+			if !strings.Contains(body, "\"stack\"") {
+				t.Fatalf("expected stack in body, got %q", body)
+			}
+			if !strings.Contains(body, "internal_error") {
+				t.Fatalf("expected error/message fields retained, got %q", body)
+			}
+		})
+	}
+}
+
 func TestNewCustomPanicHandler(t *testing.T) {
 	var gotErr any
 	var gotStack []byte

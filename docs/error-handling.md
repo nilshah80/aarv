@@ -198,6 +198,11 @@ Production services should treat panic recovery as a last-resort guard. Return
 ordinary errors for expected failures so clients get stable status codes and
 your logs keep a useful signal-to-noise ratio.
 
+For local debugging, `plugins/recover` can echo the panic value and stack trace
+in the 500 response body via `Config{IncludeStackInResponse: true}`. It defaults
+to off and must stay off in production — it leaks internal stack traces and panic
+messages to clients. It has no effect when a custom `Handler` is set.
+
 ## Production checklist
 
 - Install `requestid` before middleware that logs or returns errors.
