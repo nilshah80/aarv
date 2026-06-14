@@ -13,19 +13,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Legacy HTTP semantic-convention attribute keys this plugin used to emit
-// exclusively. Modern keys live alongside them now (see finalizeSpan); the
-// legacy set is retained for one minor release so dashboards keyed on the
-// old names keep working while operators migrate. Plan: drop the legacy
-// emissions in the release after the dual-emit minor.
-const (
-	legacyAttrHTTPMethod     = "http.method"
-	legacyAttrHTTPTarget     = "http.target"
-	legacyAttrHTTPStatusCode = "http.status_code"
-	legacyAttrHTTPUserAgent  = "http.user_agent"
-	legacyAttrNetPeerIP      = "net.peer.ip"
-)
-
 // Modern HTTP semantic-convention attribute keys
 // (go.opentelemetry.io/otel/semconv/v1.37.0). Hardcoded as strings rather
 // than imported from the semconv package to keep the indirect dependency
@@ -60,17 +47,6 @@ func finalizeSpan(span trace.Span, method, path, pattern string, status int, r *
 		span.SetName(method + " " + pattern)
 	}
 
-	// legacyTarget preserves the pre-migration http.target value, which
-	// collapsed to the route pattern when matched and the raw path
-	// otherwise. The modern url.path attribute below uses the raw path
-	// per semconv v1.37.0; the legacy attribute keeps its old shape so
-	// dashboards keyed on http.target continue to work during the
-	// transitional release.
-	legacyTarget := pattern
-	if legacyTarget == "" {
-		legacyTarget = path
-	}
-
 	// Modern HTTP semantic-convention attributes (semconv v1.37.0). These
 	// are what current Tempo TraceQL queries, Datadog/Honeycomb auto-
 	// discovery, and off-the-shelf Grafana dashboards expect.
@@ -94,25 +70,11 @@ func finalizeSpan(span trace.Span, method, path, pattern string, status int, r *
 		span.SetAttributes(attribute.String(attrNetworkProtocolVersion, proto))
 	}
 
-	// Legacy HTTP semantic-convention attributes. Emitted alongside the
-	// modern set for one minor release so dashboards keyed on the old
-	// names keep working during migration; the next release drops them.
-	span.SetAttributes(
-		attribute.String(legacyAttrHTTPMethod, method),
-		attribute.String(legacyAttrHTTPTarget, legacyTarget),
-		attribute.Int(legacyAttrHTTPStatusCode, status),
-	)
 	if ua := r.UserAgent(); ua != "" {
-		span.SetAttributes(
-			attribute.String(attrUserAgentOriginal, ua),
-			attribute.String(legacyAttrHTTPUserAgent, ua),
-		)
+		span.SetAttributes(attribute.String(attrUserAgentOriginal, ua))
 	}
 	if ip := clientIP(r); ip != "" {
-		span.SetAttributes(
-			attribute.String(attrClientAddress, ip),
-			attribute.String(legacyAttrNetPeerIP, ip),
-		)
+		span.SetAttributes(attribute.String(attrClientAddress, ip))
 	}
 	if requestID != "" {
 		// request_id is an aarv-specific addition, not part of OTel HTTP
@@ -139,7 +101,7 @@ func finalizeSpan(span trace.Span, method, path, pattern string, status int, r *
 }
 
 // clientIP returns a best-effort client IP for the span's client.address
-// (and legacy net.peer.ip) attribute. Prefers RemoteAddr (TCP-level peer);
+// attribute. Prefers RemoteAddr (TCP-level peer);
 // X-Forwarded-For is left to applications to interpret since trust depends
 // on proxy topology.
 func clientIP(r *http.Request) string {

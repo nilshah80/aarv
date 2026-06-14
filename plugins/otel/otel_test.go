@@ -66,10 +66,7 @@ func TestNew_StartsServerSpanPerRequest(t *testing.T) {
 		t.Fatalf("span name: want 'GET /users/{id}', got %q", name)
 	}
 
-	// Verify HTTP semconv attributes — both the modern semconv v1.37.0
-	// keys (the names every current dashboard expects) and the legacy
-	// keys (kept for one transitional minor so dashboards keyed on
-	// http.method, http.target, http.status_code keep working).
+	// Verify modern semconv v1.37.0 HTTP attributes.
 	got := attrMap(span.Attributes())
 	if got["http.request.method"] != "GET" {
 		t.Fatalf("http.request.method: want GET, got %v", got["http.request.method"])
@@ -86,26 +83,11 @@ func TestNew_StartsServerSpanPerRequest(t *testing.T) {
 	if got["http.route"] != "/users/{id}" {
 		t.Fatalf("http.route: want /users/{id}, got %v", got["http.route"])
 	}
-	// Legacy http.target preserved its pre-migration shape: the route
-	// pattern when known, raw path otherwise. Don't conflate this with
-	// modern url.path.
-	if got["http.method"] != "GET" {
-		t.Fatalf("http.method: want GET, got %v", got["http.method"])
-	}
-	if got["http.target"] != "/users/{id}" {
-		t.Fatalf("http.target (legacy): want /users/{id}, got %v", got["http.target"])
-	}
-	if got["http.status_code"] != int64(200) {
-		t.Fatalf("http.status_code: want 200, got %v", got["http.status_code"])
-	}
 }
 
-// TestSemconv_ModernAndLegacyAttributesEmitted locks down the dual-emit
-// contract for the transitional release: every modern attribute is paired
-// with its legacy counterpart on the same span, with the same value.
-// Removing a legacy emission later (or breaking the value match) will
-// trip this test loud and clear.
-func TestSemconv_ModernAndLegacyAttributesEmitted(t *testing.T) {
+// TestSemconv_ModernAttributesEmitted locks down the modern semconv v1.37.0
+// attribute set on the span (legacy keys were removed in v0.9.6).
+func TestSemconv_ModernAttributesEmitted(t *testing.T) {
 	tp, rec := newTraceRecorder()
 	app := aarv.New(aarv.WithBanner(false))
 	app.Use(New(Config{TracerProvider: tp}))
@@ -124,37 +106,27 @@ func TestSemconv_ModernAndLegacyAttributesEmitted(t *testing.T) {
 	}
 	got := attrMap(spans[0].Attributes())
 
-	// Pairs whose modern + legacy values match by construction: same
-	// underlying source, same value, just different attribute keys.
-	for _, pair := range []struct {
-		modern, legacy string
-		want           any
+	for _, attr := range []struct {
+		key  string
+		want any
 	}{
-		{"http.request.method", "http.method", "GET"},
-		{"http.response.status_code", "http.status_code", int64(200)},
-		{"user_agent.original", "http.user_agent", "test-ua/1.0"},
-		{"client.address", "net.peer.ip", "10.0.0.1"},
+		{"http.request.method", "GET"},
+		{"http.response.status_code", int64(200)},
+		{"user_agent.original", "test-ua/1.0"},
+		{"client.address", "10.0.0.1"},
 	} {
-		if got[pair.modern] != pair.want {
-			t.Errorf("%s: want %v, got %v", pair.modern, pair.want, got[pair.modern])
-		}
-		if got[pair.legacy] != pair.want {
-			t.Errorf("%s (legacy): want %v, got %v", pair.legacy, pair.want, got[pair.legacy])
+		if got[attr.key] != attr.want {
+			t.Errorf("%s: want %v, got %v", attr.key, attr.want, got[attr.key])
 		}
 	}
 
-	// url.path and http.target intentionally differ: url.path is the
-	// raw request path (semconv v1.37.0); http.target preserved its
-	// pre-migration shape (route pattern when matched). This guards
-	// against a refactor that re-collapses them into the same value.
+	// url.path is the raw request path (semconv v1.37.0); the
+	// low-cardinality template lives on http.route below.
 	if got["url.path"] != "/users/42" {
 		t.Errorf("url.path: want /users/42 (raw path), got %v", got["url.path"])
 	}
-	if got["http.target"] != "/users/{id}" {
-		t.Errorf("http.target (legacy): want /users/{id}, got %v", got["http.target"])
-	}
 
-	// http.route is a modern-only addition (no legacy counterpart).
+	// http.route is the matched route pattern.
 	if got["http.route"] != "/users/{id}" {
 		t.Errorf("http.route: want /users/{id}, got %v", got["http.route"])
 	}
@@ -163,6 +135,66 @@ func TestSemconv_ModernAndLegacyAttributesEmitted(t *testing.T) {
 	// reports HTTP/1.1, so we expect "1.1" verbatim.
 	if got["network.protocol.version"] != "1.1" {
 		t.Errorf("network.protocol.version: want 1.1, got %v", got["network.protocol.version"])
+	}
+}
+
+// TestSemconv_LegacyKeysAbsent locks in the v0.9.6 removal: the legacy HTTP
+// semconv keys must NOT appear on spans or metrics. http.status_class (an
+// aarv-specific metric label) is intentionally retained.
+func TestSemconv_LegacyKeysAbsent(t *testing.T) {
+	tp, rec := newTraceRecorder()
+	mp, mr := newMetricReader()
+	app := aarv.New(aarv.WithBanner(false))
+	app.Use(New(Config{TracerProvider: tp, MeterProvider: mp}))
+	app.Get("/users/{id}", func(c *aarv.Context) error {
+		return c.Text(200, "ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/users/42", nil)
+	req.Header.Set("User-Agent", "test-ua/1.0")
+	req.RemoteAddr = "10.0.0.1:55555"
+	app.ServeHTTP(httptest.NewRecorder(), req)
+
+	// Spans must carry no legacy key.
+	spans := rec.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("spans: want 1, got %d", len(spans))
+	}
+	span := attrMap(spans[0].Attributes())
+	for _, k := range []string{"http.method", "http.target", "http.status_code", "http.user_agent", "net.peer.ip"} {
+		if _, ok := span[k]; ok {
+			t.Errorf("span must not emit legacy key %q after v0.9.6", k)
+		}
+	}
+
+	// Metrics must carry no legacy key but must retain http.status_class.
+	rm := metricdata.ResourceMetrics{}
+	if err := mr.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			for _, attrs := range collectAttributeSets(m.Data) {
+				checked++
+				for _, k := range []string{"http.method", "http.target", "http.status_code"} {
+					if _, ok := attrs.Value(attribute.Key(k)); ok {
+						t.Errorf("metric %q must not emit legacy key %q after v0.9.6", m.Name, k)
+					}
+				}
+				// Modern metric keys must remain (http.route is additionally
+				// guarded by TestSemconv_MetricsUseRouteNotURLPath); http.status_class
+				// is the aarv-specific label that is intentionally retained.
+				for _, k := range []string{"http.request.method", "http.response.status_code", "http.status_class"} {
+					if _, ok := attrs.Value(attribute.Key(k)); !ok {
+						t.Errorf("metric %q lost expected key %q", m.Name, k)
+					}
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no metric data points collected — assertion never ran")
 	}
 }
 
@@ -641,11 +673,11 @@ func TestFinalizeSpan_OptionalAttributesPresentWhenAvailable(t *testing.T) {
 		t.Fatalf("spans: want 1, got %d", len(spans))
 	}
 	got := attrMap(spans[0].Attributes())
-	if got["http.user_agent"] != "TestAgent/1.0" {
-		t.Fatalf("http.user_agent: want TestAgent/1.0, got %v", got["http.user_agent"])
+	if got["user_agent.original"] != "TestAgent/1.0" {
+		t.Fatalf("user_agent.original: want TestAgent/1.0, got %v", got["user_agent.original"])
 	}
-	if got["net.peer.ip"] != "192.0.2.7" {
-		t.Fatalf("net.peer.ip: want 192.0.2.7, got %v", got["net.peer.ip"])
+	if got["client.address"] != "192.0.2.7" {
+		t.Fatalf("client.address: want 192.0.2.7, got %v", got["client.address"])
 	}
 	if got["request_id"] != "rid-7" {
 		t.Fatalf("request_id: want rid-7, got %v", got["request_id"])
@@ -679,11 +711,11 @@ func TestFinalizeSpan_OptionalAttributesOmittedWhenEmpty(t *testing.T) {
 		t.Fatalf("spans: want 1, got %d", len(spans))
 	}
 	got := attrMap(spans[0].Attributes())
-	if _, ok := got["http.user_agent"]; ok {
-		t.Fatal("http.user_agent must be absent when User-Agent is empty")
+	if _, ok := got["user_agent.original"]; ok {
+		t.Fatal("user_agent.original must be absent when User-Agent is empty")
 	}
-	if _, ok := got["net.peer.ip"]; ok {
-		t.Fatal("net.peer.ip must be absent when RemoteAddr is empty")
+	if _, ok := got["client.address"]; ok {
+		t.Fatal("client.address must be absent when RemoteAddr is empty")
 	}
 	if _, ok := got["request_id"]; ok {
 		t.Fatal("request_id must be absent when requestID is empty")
@@ -912,7 +944,7 @@ func TestRecordHTTPMetrics_NoOpWhenSuppressed(t *testing.T) {
 	}
 	// Calling recordHTTPMetrics on a suppressed state must not panic.
 	r := httptest.NewRequest(http.MethodGet, "/x", nil)
-	s.recordHTTPMetrics(context.Background(), "GET", "", "/x", 200, 0, 0, 0)
+	s.recordHTTPMetrics(context.Background(), "GET", "", 200, 0, 0, 0)
 	_ = r
 }
 

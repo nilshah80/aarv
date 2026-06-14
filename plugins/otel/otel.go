@@ -9,16 +9,14 @@
 //     which is where injection belongs.
 //   - Starts a server span around each handler, named via SpanNameFunc
 //     (default: "<METHOD> <RoutePattern>").
-//   - Sets HTTP semantic-convention attributes on the span. The plugin
-//     emits the modern semconv v1.37.0 keys
-//     (http.request.method, url.path, http.route,
-//     http.response.status_code, user_agent.original, client.address,
-//     network.protocol.version) and, for one transitional minor release,
-//     the legacy keys it used to emit exclusively
-//     (http.method, http.target, http.status_code, http.user_agent,
-//     net.peer.ip). request_id is emitted when available; it is an
-//     aarv-specific addition with no semconv rename. The legacy
-//     emissions are removed in the release after the dual-emit minor.
+//   - Sets HTTP semantic-convention attributes on the span using the
+//     modern semconv v1.37.0 keys (http.request.method, url.path,
+//     http.route, http.response.status_code, user_agent.original,
+//     client.address, network.protocol.version). request_id is emitted
+//     when available; it is an aarv-specific addition with no semconv
+//     rename. (The pre-v0.9.6 legacy keys — http.method, http.target,
+//     http.status_code, http.user_agent, net.peer.ip — were removed in
+//     v0.9.6.)
 //   - Marks 5xx responses as span Status Error.
 //   - Emits per-request counter / duration / size metrics via the configured
 //     MeterProvider unless SuppressMetrics is set.
@@ -307,7 +305,7 @@ func (s *state) handleStdlib(w http.ResponseWriter, r *http.Request, next http.H
 		requestID = c.RequestID()
 	}
 	finalizeSpan(span, method, path, pattern, rw.Status(), r, requestID, nil, s.recordErrors, s.defaultSpanNamer)
-	s.recordHTTPMetrics(ctx, method, pattern, path, rw.Status(), r.ContentLength, rw.BytesWritten(), duration)
+	s.recordHTTPMetrics(ctx, method, pattern, rw.Status(), r.ContentLength, rw.BytesWritten(), duration)
 }
 
 // handleNative serves a request through the aarv native HandlerFunc path.
@@ -349,7 +347,7 @@ func (s *state) handleNative(c *aarv.Context, next aarv.HandlerFunc) error {
 
 	requestID := c.RequestID()
 	finalizeSpan(span, method, path, c.RoutePattern(), rw.Status(), r, requestID, err, s.recordErrors, s.defaultSpanNamer)
-	s.recordHTTPMetrics(ctx, method, c.RoutePattern(), path, rw.Status(), r.ContentLength, rw.BytesWritten(), duration)
+	s.recordHTTPMetrics(ctx, method, c.RoutePattern(), rw.Status(), r.ContentLength, rw.BytesWritten(), duration)
 	return err
 }
 
@@ -378,19 +376,10 @@ func releaseRecordingWriter(rw *aarv.StatusRecorder) {
 // recordHTTPMetrics emits the four standard HTTP server metrics on the
 // per-request meter handles. statusStr converts the status to a label
 // value usable for OTel attributes.
-func (s *state) recordHTTPMetrics(ctx interface{ Done() <-chan struct{} }, method, pattern, path string, status int, reqSize, respSize int64, dur time.Duration) {
+func (s *state) recordHTTPMetrics(ctx interface{ Done() <-chan struct{} }, method, pattern string, status int, reqSize, respSize int64, dur time.Duration) {
 	if s.requestCount == nil {
 		return
 	}
-	// legacyTarget preserves the pre-migration http.target metric label
-	// shape: the matched route pattern when known, raw path otherwise.
-	// Kept for one transitional minor so dashboards keyed on the old
-	// label continue to work; the next release drops the legacy emit.
-	legacyTarget := pattern
-	if legacyTarget == "" {
-		legacyTarget = path
-	}
-
 	// Modern semconv v1.37.0 metric attributes. Per the HTTP server
 	// metrics conventions, the low-cardinality dimension on metrics is
 	// http.route — url.path belongs on spans (where high cardinality is
@@ -398,13 +387,8 @@ func (s *state) recordHTTPMetrics(ctx interface{ Done() <-chan struct{} }, metho
 	// would explode TSDB cardinality. We therefore emit http.route here
 	// and intentionally do NOT emit url.path on the metric attribute set.
 	attrSet := []attribute.KeyValue{
-		// Modern.
 		attribute.String(attrHTTPRequestMethod, method),
 		attribute.Int(attrHTTPResponseStatusCode, status),
-		// Legacy.
-		attribute.String(legacyAttrHTTPMethod, method),
-		attribute.String(legacyAttrHTTPTarget, legacyTarget),
-		attribute.Int(legacyAttrHTTPStatusCode, status),
 		// http.status_class is an aarv-specific addition; no semconv
 		// rename, kept as-is.
 		attribute.String("http.status_class", strconv.Itoa(status/100)+"xx"),
