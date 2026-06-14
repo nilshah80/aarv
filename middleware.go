@@ -3,6 +3,8 @@ package aarv
 import (
 	"fmt"
 	"net/http"
+	"reflect"
+	"runtime"
 )
 
 // Middleware is the standard Go middleware signature.
@@ -30,6 +32,12 @@ type MiddlewareFunc func(next HandlerFunc) HandlerFunc
 type NativeMiddleware struct {
 	Stdlib Middleware
 	Native MiddlewareFunc
+
+	// Name is an optional debug label surfaced by RouteInfo.Middleware and
+	// App.GlobalMiddleware. Set it directly or via NamedMiddleware. When
+	// empty, introspection falls back to a best-effort reflect-derived label
+	// that is NOT a stable contract.
+	Name string
 }
 
 // RegisterNativeMiddleware bundles a stdlib middleware with its
@@ -37,6 +45,16 @@ type NativeMiddleware struct {
 // produces an independent NativeMiddleware value.
 func RegisterNativeMiddleware(m Middleware, fn MiddlewareFunc) NativeMiddleware {
 	return NativeMiddleware{Stdlib: m, Native: fn}
+}
+
+// NamedMiddleware attaches a stable debug name to any middleware (Middleware,
+// NativeMiddleware, or func(http.Handler) http.Handler) for introspection via
+// RouteInfo.Middleware and App.GlobalMiddleware. The name is the only stable
+// identity contract; unnamed middleware fall back to a best-effort
+// reflect-derived label. Panics on nil or an unsupported type, like Use.
+func NamedMiddleware(name string, mw any) NativeMiddleware {
+	slot := coerceSlot(mw, "NamedMiddleware", 0)
+	return NativeMiddleware{Stdlib: slot.stdlib, Native: slot.native, Name: name}
 }
 
 // WrapMiddleware converts a framework MiddlewareFunc into a
@@ -75,6 +93,39 @@ func WrapMiddleware(fn MiddlewareFunc) NativeMiddleware {
 type middlewareSlot struct {
 	stdlib Middleware
 	native MiddlewareFunc
+	name   string
+}
+
+// middlewareNames maps slots to display labels for introspection. Each entry
+// uses the explicit name when set, otherwise a best-effort reflect-derived
+// label (see middlewareLabel). Returns nil for an empty slice. Always
+// allocates a fresh slice, so callers may mutate the result freely.
+func middlewareNames(slots []middlewareSlot) []string {
+	if len(slots) == 0 {
+		return nil
+	}
+	names := make([]string, len(slots))
+	for i, s := range slots {
+		if s.name != "" {
+			names[i] = s.name
+		} else {
+			names[i] = middlewareLabel(s.stdlib)
+		}
+	}
+	return names
+}
+
+// middlewareLabel derives a best-effort debug label for an unnamed middleware
+// from its underlying function symbol. For closures this is typically the
+// constructor's "...func1" form — useful for debugging, not a stable contract.
+func middlewareLabel(m Middleware) string {
+	if m == nil {
+		return "unknown"
+	}
+	if fn := runtime.FuncForPC(reflect.ValueOf(m).Pointer()); fn != nil {
+		return fn.Name()
+	}
+	return "unknown"
 }
 
 // coerceSlot is the type-switch helper shared by App.Use, RouteGroup.Use,
@@ -106,7 +157,7 @@ func coerceSlot(arg any, call string, index int) middlewareSlot {
 		if v.Stdlib == nil {
 			panic(fmt.Sprintf("aarv: %s: argument %d is NativeMiddleware with nil Stdlib", call, index))
 		}
-		return middlewareSlot{stdlib: v.Stdlib, native: v.Native}
+		return middlewareSlot{stdlib: v.Stdlib, native: v.Native, name: v.Name}
 	default:
 		panic(fmt.Sprintf("aarv: %s: argument %d has unsupported type %T; want Middleware, NativeMiddleware, or func(http.Handler) http.Handler", call, index, arg))
 	}

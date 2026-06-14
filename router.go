@@ -55,6 +55,15 @@ type RouteInfo struct {
 	// from set-to-zero so callers can audit configured routes
 	// without false negatives.
 	IdempotencyTTL *time.Duration `json:"idempotencyTTL,omitempty"`
+
+	// Middleware lists the route-level and group middleware applied to this
+	// route, in execution order (outermost first: group middleware precede
+	// route-level middleware). It EXCLUDES app-global middleware registered
+	// with App.Use — query those via App.GlobalMiddleware. Explicitly named
+	// middleware (NamedMiddleware or NativeMiddleware.Name) appear by that
+	// name; unnamed middleware fall back to a best-effort reflect-derived
+	// label that is not a stable contract.
+	Middleware []string `json:"middleware,omitempty"`
 }
 
 // RouteOption configures per-route metadata and behavior.
@@ -229,7 +238,7 @@ func unwrapPtr(t reflect.Type) reflect.Type {
 //
 // codecContentType is always populated by setCodec, which runs as part of
 // App.New, so we can read it unconditionally here.
-func (a *App) routeInfoFromConfig(method, pattern string, rc *routeConfig) RouteInfo {
+func (a *App) routeInfoFromConfig(method, pattern string, rc *routeConfig, mwSlots []middlewareSlot) RouteInfo {
 	requestCT := rc.requestContentType
 	if requestCT == "" && rc.schemaReq != nil {
 		requestCT = a.codecContentType
@@ -248,6 +257,7 @@ func (a *App) routeInfoFromConfig(method, pattern string, rc *routeConfig) Route
 		Responses:          rc.responses,
 		RequestContentType: requestCT,
 		IdempotencyTTL:     rc.idempotencyTTL,
+		Middleware:         middlewareNames(mwSlots),
 	}
 }
 
@@ -343,7 +353,7 @@ func (g *RouteGroup) addRoute(method, pattern string, handler any, opts ...Route
 	g.app.trackRedirectSlashPattern(fullPattern, isDynamic, directPattern)
 	g.app.mux.Handle(muxPattern, httpHandler)
 	g.app.routesByKey[muxPattern] = struct{}{}
-	g.app.routes = append(g.app.routes, g.app.routeInfoFromConfig(method, fullPattern, rc))
+	g.app.routes = append(g.app.routes, g.app.routeInfoFromConfig(method, fullPattern, rc, combinedMiddleware))
 	g.app.trackMethodPattern(method, fullPattern, isDynamic, directPattern)
 	g.app.recordRouteIdempotencyTTL(method, fullPattern, rc)
 

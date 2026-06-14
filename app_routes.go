@@ -108,7 +108,7 @@ func (a *App) addRoute(method, pattern string, handler any, opts ...RouteOption)
 	// Track route for 405 detection
 	a.routesByKey[muxPattern] = struct{}{}
 
-	a.routes = append(a.routes, a.routeInfoFromConfig(method, pattern, rc))
+	a.routes = append(a.routes, a.routeInfoFromConfig(method, pattern, rc, rc.middleware))
 	a.trackMethodPattern(method, pattern, isDynamic, directPattern)
 	a.recordRouteIdempotencyTTL(method, pattern, rc)
 
@@ -224,6 +224,9 @@ func (a *App) Routes() []RouteInfo {
 		if r.Tags != nil {
 			copy.Tags = append([]string(nil), r.Tags...)
 		}
+		if r.Middleware != nil {
+			copy.Middleware = append([]string(nil), r.Middleware...)
+		}
 		if r.Responses != nil {
 			copy.Responses = make(map[int]string, len(r.Responses))
 			for k, v := range r.Responses {
@@ -241,6 +244,17 @@ func (a *App) Routes() []RouteInfo {
 		out[i] = copy
 	}
 	return out
+}
+
+// GlobalMiddleware returns the debug names of the app-global middleware
+// registered via App.Use, in registration order (outermost first). These apply
+// to every route and are intentionally excluded from RouteInfo.Middleware, so
+// callers auditing a route's full chain combine GlobalMiddleware with the
+// per-route list. Naming follows the same rules as RouteInfo.Middleware:
+// explicit names where set, best-effort reflect labels otherwise. The returned
+// slice is freshly allocated and safe to mutate.
+func (a *App) GlobalMiddleware() []string {
+	return middlewareNames(a.globalMiddleware)
 }
 
 // AddHook registers a lifecycle hook.

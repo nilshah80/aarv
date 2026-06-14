@@ -330,7 +330,7 @@ Notes from latest benchmark pass:
 - [x] Support `func(http.Handler) http.Handler` (stdlib compatible)
 - [x] Support `func(next HandlerFunc) HandlerFunc` (framework specific)
 - [x] Adapter: convert between the two middleware types
-- [ ] Named middleware interface for debug/route listing
+- [x] Named middleware interface for debug/route listing — `aarv.NamedMiddleware(name, mw)` + `NativeMiddleware.Name`; surfaced via `RouteInfo.Middleware` (route + group, in execution order, **excludes** app-global) and `App.GlobalMiddleware()`. Explicit names are the only stable contract; unnamed middleware get best-effort reflect labels. Native fast path preserved
 - [x] Unit tests: chain order (onion model), early return, error propagation
 
 ### 4.2 Hook System

@@ -194,6 +194,22 @@ for _, r := range app.Routes() {
 The returned slices, maps, and pointer fields can be mutated safely by callers
 without changing the live router.
 
+`RouteInfo.Middleware` lists the route-level and group middleware applied to a
+route, in execution order (group before route-level). It excludes app-global
+middleware — query those with `app.GlobalMiddleware()`. Give middleware a stable
+debug name with `aarv.NamedMiddleware` (or by setting `NativeMiddleware.Name`);
+unnamed middleware fall back to a best-effort reflect-derived label that is not a
+stable contract.
+
+```go
+app.Use(aarv.NamedMiddleware("recover", aarv.Recovery()))
+app.Get("/users", listUsers,
+    aarv.WithRouteMiddleware(aarv.NamedMiddleware("auth", authMW)))
+
+app.GlobalMiddleware()        // ["recover"]
+app.Routes()[0].Middleware    // ["auth"]
+```
+
 ## 404, 405, and trailing slash behavior
 
 Aarv detects method mismatches and returns 405 when a path exists for another
