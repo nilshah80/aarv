@@ -1101,7 +1101,7 @@ The Go multi-module release flow is intentionally staged: submodule `go.mod` fil
 ### Quality Gates / Follow-ups
 - [x] Add `gofmt -s -l` check to CI lint workflow
 - [ ] Consider advisory `gocyclo` measurement for large handlers and fixtures; do not make it release-blocking without agreed thresholds
-- [ ] Consider deduplicating `plugins/session` normalize helpers after v0.8.0 if the API stays stable
+- [x] Deduplicated `plugins/session` normalize helpers — `normalizeCookieConfig` now maps onto the shared session fields and delegates to `normalizeConfig`, so the inversion + defaults logic lives in one place (no behavior change; existing tests green)
 - [ ] Continue plugin curation notes as overlap grows across observability and auth-related plugins
 
 ---

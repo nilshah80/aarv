@@ -188,23 +188,25 @@ func normalizeConfig(cfg Config) *normalized {
 	return n
 }
 
+// normalizeCookieConfig maps the cookie-store config onto the shared session
+// fields and delegates to normalizeConfig so all normalization logic (secure/
+// httpOnly inversion, duration defaults, value defaults) lives in one place.
+// Store is intentionally left zero — normalizeConfig never reads it.
 func normalizeCookieConfig(cfg CookieConfig) *normalized {
-	n := &normalized{
-		cookieName:     cfg.CookieName,
-		idLength:       cfg.IDLength,
-		cookiePath:     cfg.CookiePath,
-		cookieDomain:   cfg.CookieDomain,
-		cookieSecure:   !cfg.DisableSecure,
-		cookieHTTPOnly: !cfg.DisableHTTPOnly,
-		cookieSameSite: cfg.CookieSameSite,
-		skipper:        cfg.Skipper,
-		errFn:          cfg.ErrorHandler,
-		saveErrFn:      cfg.SaveErrorHandler,
-		logger:         cfg.Logger,
-	}
-	applyDurationDefaults(n, cfg.MaxAge)
-	applyDefaults(n)
-	return n
+	return normalizeConfig(Config{
+		CookieName:       cfg.CookieName,
+		MaxAge:           cfg.MaxAge,
+		IDLength:         cfg.IDLength,
+		CookiePath:       cfg.CookiePath,
+		CookieDomain:     cfg.CookieDomain,
+		DisableSecure:    cfg.DisableSecure,
+		DisableHTTPOnly:  cfg.DisableHTTPOnly,
+		CookieSameSite:   cfg.CookieSameSite,
+		Skipper:          cfg.Skipper,
+		ErrorHandler:     cfg.ErrorHandler,
+		SaveErrorHandler: cfg.SaveErrorHandler,
+		Logger:           cfg.Logger,
+	})
 }
 
 func applyDurationDefaults(n *normalized, configured time.Duration) {
