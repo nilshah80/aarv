@@ -190,15 +190,33 @@ func TestSkipPaths_PreservesName(t *testing.T) {
 	}
 }
 
-// TestSkipPaths_NamePropagatesToRouteInfo end-to-end: a named, path-skipping
-// middleware still surfaces its name in App.GlobalMiddleware introspection.
-func TestSkipPaths_NamePropagatesToRouteInfo(t *testing.T) {
+// TestSkipPaths_NamePropagatesToGlobalMiddleware end-to-end: a named,
+// path-skipping app-global middleware surfaces its name in App.GlobalMiddleware.
+func TestSkipPaths_NamePropagatesToGlobalMiddleware(t *testing.T) {
 	f := &fakeMiddleware{label: "a"}
 	app := New(WithBanner(false))
 	app.Use(SkipPaths([]string{"/health"}, NamedMiddleware("compress", f.nativePair())))
 
 	if got := app.GlobalMiddleware(); len(got) != 1 || got[0] != "compress" {
 		t.Fatalf("expected [compress], got %v", got)
+	}
+}
+
+// TestSkipPaths_NamePropagatesToRouteInfo end-to-end: a named, path-skipping
+// route-level middleware surfaces its name in RouteInfo.Middleware.
+func TestSkipPaths_NamePropagatesToRouteInfo(t *testing.T) {
+	f := &fakeMiddleware{label: "a"}
+	app := New(WithBanner(false))
+	app.Get("/x", func(c *Context) error { return c.NoContent(204) },
+		WithRouteMiddleware(SkipPaths([]string{"/health"}, NamedMiddleware("compress", f.nativePair()))),
+	)
+
+	routes := app.Routes()
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(routes))
+	}
+	if got := routes[0].Middleware; len(got) != 1 || got[0] != "compress" {
+		t.Fatalf("expected RouteInfo.Middleware [compress], got %v", got)
 	}
 }
 
