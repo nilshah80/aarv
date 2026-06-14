@@ -194,10 +194,7 @@ func (s *Store) Save(key string, resp *idempotency.Response, ttl time.Duration) 
 	if ttl <= 0 {
 		return fmt.Errorf("idempotencyredis: Save ttl must be > 0, got %v", ttl)
 	}
-	raw, err := encodeResponse(resp)
-	if err != nil {
-		return err
-	}
+	raw := encodeResponse(resp)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := s.client.Set(ctx, s.respKey(key), raw, ttl).Err(); err != nil {
@@ -220,7 +217,7 @@ func (s *Store) Save(key string, resp *idempotency.Response, ttl time.Duration) 
 // short-circuit Get to close the subscribe-after-publish race.
 func (s *Store) Wait(ctx context.Context, key string) (*idempotency.Response, error) {
 	pubsub := s.client.Subscribe(ctx, s.waitChan(key))
-	defer pubsub.Close()
+	defer func() { _ = pubsub.Close() }()
 
 	// Drain the channel buffer once so the goroutine inside
 	// Subscribe completes the SUBSCRIBE handshake before we proceed.
@@ -238,16 +235,20 @@ func (s *Store) Wait(ctx context.Context, key string) (*idempotency.Response, er
 		return nil, err
 	}
 
+	return waitForSavedResponse(ctx, pubsub.Channel(), func() (*idempotency.Response, error) {
+		return s.Get(key)
+	})
+}
+
+func waitForSavedResponse(ctx context.Context, ch <-chan *redis.Message, get func() (*idempotency.Response, error)) (*idempotency.Response, error) {
 	// Now we are subscribed. The Save publish either already
 	// happened (Get short-circuit) or is yet to happen (channel
 	// receive). Both paths are race-safe.
-	if resp, err := s.Get(key); err != nil {
+	if resp, err := get(); err != nil {
 		return nil, err
 	} else if resp != nil {
 		return resp, nil
 	}
-
-	ch := pubsub.Channel()
 	for {
 		select {
 		case <-ctx.Done():
@@ -257,7 +258,7 @@ func (s *Store) Wait(ctx context.Context, key string) (*idempotency.Response, er
 				// Channel closed. Try one final Get; the holder
 				// may have saved between the subscribe and the
 				// channel close.
-				resp, _ := s.Get(key)
+				resp, _ := get()
 				if resp != nil {
 					return resp, nil
 				}
@@ -266,7 +267,7 @@ func (s *Store) Wait(ctx context.Context, key string) (*idempotency.Response, er
 			// "saved" notification fired. The Save in the holder
 			// completed before the publish, so a Get now returns
 			// the response.
-			return s.Get(key)
+			return get()
 		}
 	}
 }
@@ -280,7 +281,7 @@ type wireResponse struct {
 	PayloadHash []byte              `json:"payload_hash,omitempty"`
 }
 
-func encodeResponse(resp *idempotency.Response) ([]byte, error) {
+func encodeResponse(resp *idempotency.Response) []byte {
 	w := wireResponse{
 		Status:  resp.StatusCode,
 		Headers: resp.Headers,
@@ -292,7 +293,8 @@ func encodeResponse(resp *idempotency.Response) ([]byte, error) {
 	if resp.PayloadHash != ([32]byte{}) {
 		w.PayloadHash = resp.PayloadHash[:]
 	}
-	return json.Marshal(w)
+	raw, _ := json.Marshal(w)
+	return raw
 }
 
 func decodeResponse(raw []byte) (*idempotency.Response, error) {

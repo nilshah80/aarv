@@ -1,8 +1,10 @@
 package session
 
 import (
+	"encoding/base64"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -66,6 +68,45 @@ func TestCookieStoreDecodeShortBlob(t *testing.T) {
 	if _, err := cs.decode("AAAA", cfg); err == nil {
 		t.Fatal("decode of too-short blob should fail")
 	}
+}
+
+func TestCookieStoreDecodeBadBase64(t *testing.T) {
+	cs, _ := NewCookieStore(testCookieKey)
+	cfg := normalizeCookieConfig(CookieConfig{Key: testCookieKey})
+	if _, err := cs.decode("@@@", cfg); err == nil {
+		t.Fatal("decode of invalid base64 should fail")
+	}
+}
+
+func TestCookieStoreDecodeBadJSON(t *testing.T) {
+	cs, _ := NewCookieStore(testCookieKey)
+	cfg := normalizeCookieConfig(CookieConfig{Key: testCookieKey})
+	nonce := make([]byte, cs.gcm.NonceSize())
+	sealed := cs.gcm.Seal(nonce, nonce, []byte("{not-json"), aadFor(cfg))
+	encoded := base64.RawURLEncoding.EncodeToString(sealed)
+	if _, err := cs.decode(encoded, cfg); err == nil {
+		t.Fatal("decode of invalid JSON payload should fail")
+	}
+}
+
+func TestReportSaveErrUsesConfiguredHandler(t *testing.T) {
+	called := atomic.Int32{}
+	cfg := &normalized{
+		saveErrFn: func(c *aarv.Context, err error) {
+			called.Add(1)
+		},
+	}
+	reportSaveErr(nil, cfg, errors.New("save failed"))
+	if called.Load() != 1 {
+		t.Fatalf("SaveErrorHandler calls = %d, want 1", called.Load())
+	}
+}
+
+func TestReportSaveErrLogsWithoutHandler(t *testing.T) {
+	cfg := normalizeConfig(Config{
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	reportSaveErr(nil, cfg, errors.New("save failed"))
 }
 
 // TestSaveErrorHandlerOnDelete exercises the Regenerate-delete-fail

@@ -3,9 +3,9 @@ module github.com/nilshah80/aarv/codec/benchmarks
 go 1.26
 
 require (
-	github.com/nilshah80/aarv/codec/jsonv2 v0.8.0
-	github.com/nilshah80/aarv/codec/segmentio v0.8.0
-	github.com/nilshah80/aarv/codec/sonic v0.8.0
+	github.com/nilshah80/aarv/codec/jsonv2 v0.9.5
+	github.com/nilshah80/aarv/codec/segmentio v0.9.5
+	github.com/nilshah80/aarv/codec/sonic v0.9.5
 )
 
 require (

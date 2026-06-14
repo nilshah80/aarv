@@ -23,7 +23,7 @@ import (
 
 	"github.com/nilshah80/aarv"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
+	"golang.org/x/net/http2/h2c" //nolint:staticcheck // This plugin intentionally adapts h2c handlers.
 )
 
 // HTTP/2 frame-size limits per RFC 7540 §6.5.2 (SETTINGS_MAX_FRAME_SIZE).
@@ -117,7 +117,7 @@ func Wrap(h http.Handler, cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	wrapped := h2c.NewHandler(h, h2srv)
+	wrapped := h2c.NewHandler(h, h2srv) //nolint:staticcheck // Keep Wrap(http.Handler) support and first-request limiting.
 
 	limit := cfg.MaxFirstRequestBytes
 	switch {

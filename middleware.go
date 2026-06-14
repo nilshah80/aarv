@@ -122,7 +122,11 @@ func middlewareLabel(m Middleware) string {
 	if m == nil {
 		return "unknown"
 	}
-	if fn := runtime.FuncForPC(reflect.ValueOf(m).Pointer()); fn != nil {
+	return middlewareLabelFromPC(reflect.ValueOf(m).Pointer())
+}
+
+func middlewareLabelFromPC(pc uintptr) string {
+	if fn := runtime.FuncForPC(pc); fn != nil {
 		return fn.Name()
 	}
 	return "unknown"

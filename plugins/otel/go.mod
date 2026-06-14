@@ -3,7 +3,7 @@ module github.com/nilshah80/aarv/plugins/otel
 go 1.25.0
 
 require (
-	github.com/nilshah80/aarv v0.9.0
+	github.com/nilshah80/aarv v0.9.5
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/metric v1.43.0
 	go.opentelemetry.io/otel/sdk v1.43.0

@@ -44,6 +44,10 @@ import (
 // now and nonce are dependency-injected for tests. Production code
 // passes (time.Now, "") and lets Sign generate a fresh random nonce.
 func Sign(req *http.Request, client Client, body []byte, now func() time.Time, nonce string) error {
+	return signWithNonce(req, client, body, now, nonce, randomNonce)
+}
+
+func signWithNonce(req *http.Request, client Client, body []byte, now func() time.Time, nonce string, nonceFn func() (string, error)) error {
 	if req == nil {
 		return errors.New("hmacauth: Sign requires a non-nil request")
 	}
@@ -69,7 +73,7 @@ func Sign(req *http.Request, client Client, body []byte, now func() time.Time, n
 	}
 	if nonce == "" {
 		var err error
-		nonce, err = randomNonce()
+		nonce, err = nonceFn()
 		if err != nil {
 			return err
 		}
@@ -122,8 +126,12 @@ func resolveSignBody(req *http.Request, body []byte) ([]byte, error) {
 // randomNonce produces 16 bytes from crypto/rand encoded as 32-char
 // lowercase hex.
 func randomNonce() (string, error) {
+	return randomNonceFrom(rand.Reader)
+}
+
+func randomNonceFrom(r io.Reader) (string, error) {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := io.ReadFull(r, b[:]); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(b[:]), nil
@@ -449,6 +457,10 @@ func FailOnRedirect(req *http.Request, via []*http.Request) error {
 //     secret on the source struct invalidates in-flight redirects
 //     started before the rotation.
 func ResignOnRedirect(client Client) func(*http.Request, []*http.Request) error {
+	return resignOnRedirectWithNonce(client, randomNonce)
+}
+
+func resignOnRedirectWithNonce(client Client, nonceFn func() (string, error)) func(*http.Request, []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
 		// readReplayableBody handles both the GetBody path and the
 		// Go-1.22 redirect quirk where GetBody is stripped but Body
@@ -464,7 +476,7 @@ func ResignOnRedirect(client Client) func(*http.Request, []*http.Request) error 
 			// readReplayableBody consumed one copy via GetBody.
 			req.Body = io.NopCloser(bytes.NewReader(body))
 		}
-		nonce, err := randomNonce()
+		nonce, err := nonceFn()
 		if err != nil {
 			return err
 		}

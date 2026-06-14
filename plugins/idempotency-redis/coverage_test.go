@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nilshah80/aarv/plugins/idempotency"
+	"github.com/redis/go-redis/v9"
 )
 
 // TestSaveSurfacesRedisSetError covers the Redis-Set-failed branch in
@@ -86,6 +88,47 @@ func TestDecodeResponseAcceptsAbsentPayloadHash(t *testing.T) {
 	}
 	if r.StatusCode != 201 || string(r.Body) != "ok" {
 		t.Fatalf("decoded round-trip mismatch: %+v", r)
+	}
+}
+
+func TestWaitForSavedResponseInitialGetError(t *testing.T) {
+	want := errors.New("get failed")
+	_, err := waitForSavedResponse(context.Background(), make(chan *redis.Message), func() (*idempotency.Response, error) {
+		return nil, want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want %v", err, want)
+	}
+}
+
+func TestWaitForSavedResponseClosedChannelFinalGetHit(t *testing.T) {
+	ch := make(chan *redis.Message)
+	close(ch)
+	want := &idempotency.Response{StatusCode: 200, Body: []byte("saved")}
+	calls := 0
+	got, err := waitForSavedResponse(context.Background(), ch, func() (*idempotency.Response, error) {
+		calls++
+		if calls == 1 {
+			return nil, nil
+		}
+		return want, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("response = %+v, want %+v", got, want)
+	}
+}
+
+func TestWaitForSavedResponseClosedChannelFinalGetMiss(t *testing.T) {
+	ch := make(chan *redis.Message)
+	close(ch)
+	_, err := waitForSavedResponse(context.Background(), ch, func() (*idempotency.Response, error) {
+		return nil, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "closed without save") {
+		t.Fatalf("error = %v, want closed-without-save", err)
 	}
 }
 

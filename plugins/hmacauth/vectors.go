@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"sync"
 )
@@ -72,17 +73,23 @@ var (
 // (callers should not mutate fields).
 func Vectors() ([]Vector, error) {
 	vectorsOnce.Do(func() {
-		data, err := vectorsFS.ReadFile("testdata/vectors.json")
-		if err != nil {
-			vectorsErr = fmt.Errorf("hmacauth: read vectors: %w", err)
-			return
-		}
-		var v []Vector
-		if err := json.Unmarshal(data, &v); err != nil {
-			vectorsErr = fmt.Errorf("hmacauth: parse vectors: %w", err)
-			return
-		}
-		vectorsList = v
+		vectorsList, vectorsErr = loadVectors(vectorsFS)
 	})
 	return vectorsList, vectorsErr
+}
+
+func loadVectors(fsys fs.FS) ([]Vector, error) {
+	data, err := fs.ReadFile(fsys, "testdata/vectors.json")
+	if err != nil {
+		return nil, fmt.Errorf("hmacauth: read vectors: %w", err)
+	}
+	return parseVectors(data)
+}
+
+func parseVectors(data []byte) ([]Vector, error) {
+	var v []Vector
+	if err := json.Unmarshal(data, &v); err != nil {
+		return nil, fmt.Errorf("hmacauth: parse vectors: %w", err)
+	}
+	return v, nil
 }

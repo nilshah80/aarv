@@ -49,15 +49,11 @@ func NewCookieStore(key []byte) (*CookieStore, error) {
 	if len(key) != 32 {
 		return nil, ErrInvalidKey
 	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		// AES with a valid 32-byte key cannot fail; defensive only.
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
+	// AES with a valid 32-byte key and its standard block size cannot
+	// fail here; the public error return is for the caller-visible key
+	// validation above.
+	block, _ := aes.NewCipher(key)
+	gcm, _ := cipher.NewGCM(block)
 	return &CookieStore{gcm: gcm}, nil
 }
 

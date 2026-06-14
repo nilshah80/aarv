@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-06-14
+
 ### Added
 
 - **`Context.SaveFileWith(file, dst, onProgress func(written, total int64)) error`** — saves an uploaded file while reporting copy progress as bytes are written to the destination. `SaveFile` now delegates with a nil callback (no behavior change; the nil path keeps `io.Copy`'s `WriterTo`/`ReaderFrom` fast paths). Progress counts destination writes, so a short write or write error never over-reports. This is save progress, not network-ingest progress.
@@ -18,12 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`NativeMiddleware` gains a `Name` field** (third field). Naming is optional and defaults to empty. **Breaking for unkeyed struct literals only:** external code using positional literals like `aarv.NativeMiddleware{stdlib, native}` no longer compiles and must switch to keyed fields (`aarv.NativeMiddleware{Stdlib: stdlib, Native: native}`) or the `RegisterNativeMiddleware` / `WrapMiddleware` constructors. Keyed literals and the constructors are unaffected. `SkipPaths` now propagates the inner middleware's `Name`.
+- **`plugins/autocert` and `plugins/h2c` dependency refresh**: bumped `golang.org/x/net` to `v0.55.0` and the related `x/crypto` / `x/text` pins where applicable. These standalone modules and their examples now declare `go 1.25.0`, matching the fixed dependency line.
 
 ### Internal
 
 - `plugins/session`: `normalizeCookieConfig` now delegates to `normalizeConfig` so the normalization logic lives in one place (no behavior change).
 - CI: added a non-blocking advisory cyclomatic-complexity step (`gocyclo`) to the lint workflow; it reports the most complex functions but never gates a release.
 - Documented the escape-analysis finding that the bound request value (`Req`) is heap-allocated once per request (`bind_escape_test.go`, `docs/architecture.md`), and added fuzz targets for JSON binding, validate-tag parsing, and query binding.
+- Added focused branch coverage for root packages, codec modules, and Redis-backed plugin modules. Coverage-focused private seams preserve behavior while making error paths deterministic in tests.
+- All plugin and codec submodules are tagged at `v0.9.5` for version alignment; some modules contain no code changes in this release.
 
 ## [0.9.1] - 2026-06-06
 
@@ -387,7 +392,15 @@ Per-plugin migration scope (`plugins/timeout.New(d)` and `pprof.Config.AuthMiddl
 4. Push: `git push origin vX.Y.Z`
 5. Create GitHub Release with notes from this file
 
-[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/nilshah80/aarv/compare/v0.9.5...HEAD
+[0.9.5]: https://github.com/nilshah80/aarv/compare/v0.9.1...v0.9.5
+[0.9.1]: https://github.com/nilshah80/aarv/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/nilshah80/aarv/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/nilshah80/aarv/compare/v0.7.7...v0.8.0
+[0.7.7]: https://github.com/nilshah80/aarv/compare/v0.7.6...v0.7.7
+[0.7.6]: https://github.com/nilshah80/aarv/compare/v0.7.5...v0.7.6
+[0.7.5]: https://github.com/nilshah80/aarv/compare/v0.7.0...v0.7.5
+[0.7.0]: https://github.com/nilshah80/aarv/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/nilshah80/aarv/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/nilshah80/aarv/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/nilshah80/aarv/compare/v0.4.4...v0.5.0

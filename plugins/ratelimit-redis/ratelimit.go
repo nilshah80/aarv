@@ -366,9 +366,13 @@ func (rl *limiter) decide(ctx context.Context, key string) (bool, Snapshot, erro
 		// still useful in the error response.
 		return false, Snapshot{Limit: rl.limit}, err
 	}
+	return snapshotFromScriptReply(res, rl.limit)
+}
+
+func snapshotFromScriptReply(res any, limit int) (bool, Snapshot, error) {
 	arr, ok := res.([]any)
 	if !ok || len(arr) != 3 {
-		return false, Snapshot{Limit: rl.limit}, errors.New("ratelimitredis: unexpected script reply shape")
+		return false, Snapshot{Limit: limit}, errors.New("ratelimitredis: unexpected script reply shape")
 	}
 	allowed := luaInt(arr[0]) == 1
 	remaining := int(luaInt(arr[1]))
@@ -379,7 +383,7 @@ func (rl *limiter) decide(ctx context.Context, key string) (bool, Snapshot, erro
 		retry = 0
 	}
 	return allowed, Snapshot{
-		Limit:      rl.limit,
+		Limit:      limit,
 		Remaining:  remaining,
 		Reset:      resetAt,
 		RetryAfter: retry,

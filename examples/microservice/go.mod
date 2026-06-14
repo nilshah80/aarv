@@ -3,8 +3,8 @@ module github.com/nilshah80/aarv/examples/microservice
 go 1.25.0
 
 require (
-	github.com/nilshah80/aarv v0.8.0
-	github.com/nilshah80/aarv/plugins/prometheus v0.0.0
+	github.com/nilshah80/aarv v0.9.5
+	github.com/nilshah80/aarv/plugins/prometheus v0.9.5
 )
 
 require (

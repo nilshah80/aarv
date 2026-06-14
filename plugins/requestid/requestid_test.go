@@ -2,6 +2,7 @@ package requestid
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -272,6 +273,29 @@ func TestFastGeneratorUniqueness(t *testing.T) {
 		}
 		ids[id] = struct{}{}
 	}
+}
+
+func TestNewFastRand(t *testing.T) {
+	if rng := newFastRand(strings.NewReader(strings.Repeat("a", 32))); rng == nil {
+		t.Fatal("newFastRand returned nil")
+	}
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on seed read failure")
+		} else if !strings.Contains(r.(string), "seed failure") {
+			t.Fatalf("panic = %v, want seed failure", r)
+		}
+	}()
+	_ = newFastRand(failingReader{err: errors.New("seed failure")})
+}
+
+type failingReader struct {
+	err error
+}
+
+func (r failingReader) Read(_ []byte) (int, error) {
+	return 0, r.err
 }
 
 func TestFastConfig(t *testing.T) {

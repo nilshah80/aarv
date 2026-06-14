@@ -57,18 +57,19 @@ func (c *SonicCodec) ContentType() string {
 // to eliminate JIT compilation overhead during the first request.
 // Example: codec.Pretouch(MyRequest{}, MyResponse{}, []MyItem{})
 func (c *SonicCodec) Pretouch(types ...any) error {
-	for _, t := range types {
-		if err := sonic.Pretouch(reflect.TypeOf(t)); err != nil {
-			return err
-		}
-	}
-	return nil
+	return Pretouch(types...)
 }
 
 // Pretouch is a package-level function that pre-compiles types using the default config.
 func Pretouch(types ...any) error {
+	return pretouchWith(func(rt reflect.Type) error {
+		return sonic.Pretouch(rt)
+	}, types...)
+}
+
+func pretouchWith(fn func(reflect.Type) error, types ...any) error {
 	for _, t := range types {
-		if err := sonic.Pretouch(reflect.TypeOf(t)); err != nil {
+		if err := fn(reflect.TypeOf(t)); err != nil {
 			return err
 		}
 	}

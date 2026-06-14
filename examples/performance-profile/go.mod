@@ -3,8 +3,8 @@ module github.com/nilshah80/aarv/examples/performance-profile
 go 1.25.0
 
 require (
-	github.com/nilshah80/aarv v0.0.0
-	github.com/nilshah80/aarv/codec/segmentio v0.0.0
+	github.com/nilshah80/aarv v0.9.5
+	github.com/nilshah80/aarv/codec/segmentio v0.9.5
 )
 
 require (

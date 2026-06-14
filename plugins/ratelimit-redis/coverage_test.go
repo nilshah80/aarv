@@ -78,6 +78,44 @@ func TestLuaInt(t *testing.T) {
 	}
 }
 
+func TestSnapshotFromScriptReplyRejectsBadShape(t *testing.T) {
+	_, snap, err := snapshotFromScriptReply([]any{int64(1), int64(2)}, 9)
+	if err == nil {
+		t.Fatal("expected bad-shape error")
+	}
+	if snap.Limit != 9 {
+		t.Fatalf("snap limit = %d, want 9", snap.Limit)
+	}
+	if !strings.Contains(err.Error(), "unexpected script reply shape") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	_, _, err = snapshotFromScriptReply("not-array", 9)
+	if err == nil {
+		t.Fatal("expected non-array error")
+	}
+}
+
+func TestSnapshotFromScriptReplyClampsPastRetry(t *testing.T) {
+	allowed, snap, err := snapshotFromScriptReply([]any{
+		int64(1),
+		int64(3),
+		time.Now().Add(-time.Second).UnixMilli(),
+	}, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !allowed {
+		t.Fatal("allowed = false, want true")
+	}
+	if snap.Limit != 5 || snap.Remaining != 3 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	if snap.RetryAfter != 0 {
+		t.Fatalf("RetryAfter = %v, want 0", snap.RetryAfter)
+	}
+}
+
 // TestShouldSkipNativeSkipperBranch covers the native-path Skipper
 // branch (existing tests cover SkipPaths but not the function-skipper
 // branch on the native path).

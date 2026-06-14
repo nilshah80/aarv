@@ -172,6 +172,41 @@ func TestCachedHeaders_HardBlockedEvenWhenAllowlisted(t *testing.T) {
 	}
 }
 
+func TestReplayHeadersToFiltersHardStrippedAndAllowlist(t *testing.T) {
+	n := &normalized{
+		cachedHeaders: map[string]struct{}{
+			"Content-Type": {},
+		},
+	}
+	dst := http.Header{}
+	n.replayHeadersTo(dst, http.Header{
+		"Content-Type":  []string{"application/json"},
+		"Set-Cookie":    []string{"sid=secret"},
+		"Authorization": []string{"Bearer secret"},
+		"X-Other":       []string{"drop"},
+	})
+
+	if got := dst.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	if got := dst.Get("Set-Cookie"); got != "" {
+		t.Fatalf("Set-Cookie replayed: %q", got)
+	}
+	if got := dst.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization replayed: %q", got)
+	}
+	if got := dst.Get("X-Other"); got != "" {
+		t.Fatalf("X-Other replayed: %q", got)
+	}
+}
+
+func TestResolveTTLNilContextUsesDefault(t *testing.T) {
+	n := &normalized{ttl: 3 * time.Minute}
+	if got := n.resolveTTL(nil); got != 3*time.Minute {
+		t.Fatalf("resolveTTL(nil) = %v", got)
+	}
+}
+
 func TestCachedHeaders_EmptyDropsAll(t *testing.T) {
 	store := NewMemoryStore()
 	app := aarv.New()

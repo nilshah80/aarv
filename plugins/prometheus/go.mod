@@ -3,7 +3,7 @@ module github.com/nilshah80/aarv/plugins/prometheus
 go 1.25.0
 
 require (
-	github.com/nilshah80/aarv v0.9.0
+	github.com/nilshah80/aarv v0.9.5
 	github.com/prometheus/client_golang v1.19.0
 	github.com/prometheus/client_model v0.6.2
 )

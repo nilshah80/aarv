@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"io"
 	fastrand "math/rand/v2"
 	"net/http"
 	"sync"
@@ -65,12 +66,16 @@ var ulidState atomic.Uint64
 // crypto/rand syscalls and mutex contention from a shared generator.
 var fastRandPool = sync.Pool{
 	New: func() any {
-		var seed [32]byte
-		if _, err := rand.Read(seed[:]); err != nil {
-			panic("requestid: failed to seed fast PRNG: " + err.Error())
-		}
-		return fastrand.New(fastrand.NewChaCha8(seed))
+		return newFastRand(rand.Reader)
 	},
+}
+
+func newFastRand(r io.Reader) *fastrand.Rand {
+	var seed [32]byte
+	if _, err := io.ReadFull(r, seed[:]); err != nil {
+		panic("requestid: failed to seed fast PRNG: " + err.Error())
+	}
+	return fastrand.New(fastrand.NewChaCha8(seed))
 }
 
 // ulidEncoding is Crockford's Base32 encoding.

@@ -94,6 +94,18 @@ func TestStructBinderSingleFileOpenError(t *testing.T) {
 	}
 }
 
+func TestMiddlewareLabelNil(t *testing.T) {
+	if got := middlewareLabel(nil); got != "unknown" {
+		t.Fatalf("middlewareLabel(nil) = %q, want unknown", got)
+	}
+}
+
+func TestMiddlewareLabelFromPCUnknown(t *testing.T) {
+	if got := middlewareLabelFromPC(0); got != "unknown" {
+		t.Fatalf("middlewareLabelFromPC(0) = %q, want unknown", got)
+	}
+}
+
 // =============================================================================
 // context.go: FormFiles defensive nil-File branch
 // =============================================================================

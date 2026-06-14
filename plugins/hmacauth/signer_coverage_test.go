@@ -48,6 +48,25 @@ func TestSign_GeneratesRandomNonceWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestSignWithNonce_PropagatesNonceError(t *testing.T) {
+	sentinel := errors.New("synthetic nonce failure")
+	req := httptest.NewRequest("GET", "/x", nil)
+	err := signWithNonce(req, Client{ClientID: "x", Secret: []byte("k")}, nil,
+		func() time.Time { return time.Unix(1700000000, 0) }, "",
+		func() (string, error) { return "", sentinel })
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected synthetic nonce error, got %v", err)
+	}
+}
+
+func TestRandomNonceFrom_PropagatesReaderError(t *testing.T) {
+	sentinel := errors.New("synthetic rand failure")
+	_, err := randomNonceFrom(errOnReadCloser{err: sentinel})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected synthetic rand error, got %v", err)
+	}
+}
+
 // errReadCloser wraps a bytes.Reader and returns a fixed error from Close,
 // or a fixed error from Read after first call. Used to simulate GetBody
 // returning a reader whose Read fails partway.
@@ -128,8 +147,8 @@ func TestCheckRedirect_DefaultsNowWhenNil(t *testing.T) {
 	tt := NewSigningTransport(
 		Client{ClientID: "x", Secret: []byte("k")},
 		WithTransportNonce(func() (string, error) { return "n", nil }),
-		// deliberately no WithTransportNow → s.t.now stays nil
 	)
+	tt.t.now = nil
 	req := httptest.NewRequest("GET", "http://example.invalid/x", nil)
 	err := tt.CheckRedirect(req, nil)
 	if err != nil {
@@ -137,6 +156,68 @@ func TestCheckRedirect_DefaultsNowWhenNil(t *testing.T) {
 	}
 	if req.Header.Get(DefaultTimestampHeader) == "" {
 		t.Fatal("expected timestamp header to be set after CheckRedirect default-now")
+	}
+}
+
+func TestTransportRoundTrip_PropagatesSignError(t *testing.T) {
+	called := false
+	tr := &transport{
+		client: Client{},
+		base: stubRoundTripper(func(*http.Request) (*http.Response, error) {
+			called = true
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+		}),
+		now:             func() time.Time { return time.Unix(1700000000, 0) },
+		nonce:           func() (string, error) { return "n", nil },
+		clientIDHeader:  DefaultClientIDHeader,
+		timestampHeader: DefaultTimestampHeader,
+		nonceHeader:     DefaultNonceHeader,
+		signatureHeader: DefaultSignatureHeader,
+	}
+
+	_, err := tr.RoundTrip(httptest.NewRequest("GET", "http://example.invalid/x", nil))
+	if err == nil || !strings.Contains(err.Error(), "ClientID") {
+		t.Fatalf("expected ClientID signing error, got %v", err)
+	}
+	if called {
+		t.Fatal("base transport must not run after signing fails")
+	}
+}
+
+func TestSignWithHeaders_RotationSecretAndNilNow(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://example.invalid/x", nil)
+	err := signWithHeaders(req,
+		Client{ClientID: "x", Secrets: [][]byte{nil, []byte("k")}},
+		nil, nil, "n", "X-Client", "X-Ts", "X-Nonce", "X-Sig")
+	if err != nil {
+		t.Fatalf("signWithHeaders: %v", err)
+	}
+	if req.Header.Get("X-Client") != "x" || req.Header.Get("X-Sig") == "" {
+		t.Fatalf("custom headers not populated: %v", req.Header)
+	}
+}
+
+func TestSignWithHeaders_RejectsMissingSecret(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://example.invalid/x", nil)
+	err := signWithHeaders(req,
+		Client{ClientID: "x"}, nil,
+		func() time.Time { return time.Unix(1700000000, 0) },
+		"n", "X-Client", "X-Ts", "X-Nonce", "X-Sig")
+	if err == nil || !strings.Contains(err.Error(), "secret") {
+		t.Fatalf("expected missing secret error, got %v", err)
+	}
+}
+
+func TestSignWithHeaders_PropagatesBodyError(t *testing.T) {
+	sentinel := errors.New("synthetic GetBody failure")
+	req := httptest.NewRequest("POST", "http://example.invalid/x", bytes.NewReader([]byte("hi")))
+	req.GetBody = func() (io.ReadCloser, error) { return nil, sentinel }
+	err := signWithHeaders(req,
+		Client{ClientID: "x", Secret: []byte("k")}, nil,
+		func() time.Time { return time.Unix(1700000000, 0) },
+		"n", "X-Client", "X-Ts", "X-Nonce", "X-Sig")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected synthetic body error, got %v", err)
 	}
 }
 
@@ -211,6 +292,19 @@ func TestReadReplayableBody_FallsBackToBodyWhenGetBodyNil(t *testing.T) {
 	}
 }
 
+func TestReadReplayableBody_FallbackReadError(t *testing.T) {
+	sentinel := errors.New("synthetic Body read failure")
+	req := httptest.NewRequest("POST", "http://example.invalid/x", nil)
+	req.Body = errOnReadCloser{err: sentinel}
+	req.ContentLength = 1
+	req.GetBody = nil
+
+	_, err := readReplayableBody(req)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected synthetic read error, got %v", err)
+	}
+}
+
 // TestResignOnRedirect_PropagatesGetBodyError covers the helper's
 // `if err != nil { return err }` after a failing GetBody.
 func TestResignOnRedirect_PropagatesGetBodyError(t *testing.T) {
@@ -236,5 +330,18 @@ func TestResignOnRedirect_PropagatesReadAllError(t *testing.T) {
 	err := fn(req, nil)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("expected synthetic Read error, got %v", err)
+	}
+}
+
+func TestResignOnRedirect_PropagatesNonceError(t *testing.T) {
+	sentinel := errors.New("synthetic nonce failure")
+	req := httptest.NewRequest("GET", "http://example.invalid/x", nil)
+	fn := resignOnRedirectWithNonce(
+		Client{ClientID: "x", Secret: []byte("k")},
+		func() (string, error) { return "", sentinel },
+	)
+	err := fn(req, nil)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected synthetic nonce error, got %v", err)
 	}
 }
