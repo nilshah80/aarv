@@ -65,7 +65,7 @@
 - [x] Review TLS configuration defaults
 - [x] Run `govulncheck ./...`
 
-Note: `govulncheck` reports 4 Go standard library vulnerabilities in `go1.26.0`, all fixed in `go1.26.1`. Follow-up remediation is a Go toolchain upgrade rather than a repo code change.
+Note: historical `govulncheck` findings were limited to Go standard library vulnerabilities in `go1.26.0`; follow-up remediation is to build and release with the current Go 1.26 patch toolchain rather than changing repo code.
 
 ### PR6: Release Prep (v0.3.0)
 - [x] All CI checks passing
@@ -283,7 +283,7 @@ Note: excluding `examples/...`, combined package coverage is 98.7%. Latest `main
 - [x] `SelfValidator` interface: if type implements `Validate() []ValidationError`, call it
 - [x] `StructLevelValidator` interface for struct-level validation
 - [x] `RegisterStructValidation(type, fn)` for external struct-level validators
-- [ ] Implement `unsafe.Pointer` + offset fast path (currently uses reflect)
+- [ ] ~~Implement `unsafe.Pointer` + offset fast path (currently uses reflect)~~ — won't-do; the reflect path is benchmark-competitive and validator internals are explicitly not the next optimization target (see Phase 4 benchmark notes). Revisit only if a benchmark proves a material gap
 - [x] Unit tests: custom rules, self-validator, nested structs
 - [x] Benchmark: validation path comparison vs go-playground/validator
 
@@ -452,10 +452,11 @@ Notes from latest benchmark pass:
 - [x] Implement `c.FormFiles(name string) ([]*UploadedFile, error)` for multiple files
 - [x] `UploadedFile` struct: Filename, Size, ContentType, Header, Open() (returns multipart.File)
 - [x] Implement `c.SaveFile(file *UploadedFile, dst string) error` helper
+- [x] Implement `c.SaveFileWith(file, dst, onProgress func(written, total int64)) error` — **save/copy** progress callback (fires per chunk while writing to dst). `SaveFile` now delegates with a nil callback; nil keeps io.Copy's WriterTo/ReaderFrom fast paths
 - [x] Integration with binder: `file` struct tag for file binding
 - [x] Configurable: max file size, allowed content types, max files per field via `FileConfig` + `c.FileWith`/`c.FilesWith`
 - [ ] ~~Configurable: memory threshold for disk streaming~~ — deferred; stdlib `ParseMultipartForm(32MB)` handles this; configurable later if needed
-- [ ] ~~Progress callback~~ — deferred; requires wrapping `r.Body` before multipart parsing (middleware concern, niche)
+- [ ] ~~**Ingest** progress callback (network → server)~~ — deferred; distinct from the shipped `SaveFileWith` **save** progress. Ingest progress requires wrapping `r.Body` before multipart parsing AND a streaming `r.MultipartReader()` path (eager `ParseMultipartForm` consumes the whole body up front), and can't be pushed back on the same request — client-side `XMLHttpRequest.upload.onprogress` is the normal answer. Middleware/streaming-upload territory
 - [ ] ~~Chunked upload support~~ — deferred; different protocol (tus-style resumable uploads), plugin territory
 - [x] Unit tests: single file, multiple files, size limit, content type validation, binder integration
 
@@ -683,7 +684,7 @@ Notes from latest benchmark pass:
 - [x] Configurable response on limit: `StatusCode`, `Message`, custom `LimitHandler`
 - [x] Skip paths configuration: `SkipPaths []string` + `Skipper func(*aarv.Context) bool` (OR-combined)
 - [x] Burst allowance configuration (`Config.Burst`, default = `Limit`)
-- [ ] **Deferred to a future release**: `plugins/ratelimit-redis/go.mod` for distributed rate limiting via Redis
+- [x] **Shipped later in §12.6.4**: `plugins/ratelimit-redis/go.mod` for distributed rate limiting via Redis; tagged through `plugins/ratelimit-redis/v0.9.0`
 - [x] Unit tests: within limit, exceed limit, custom key, headers, skip paths, skipper, burst, sliding-window rollover, lazy sweep eviction, `NewWithCleanup` goroutine lifecycle, race
 - [x] **Scope additions**: `New(cfg)` starts no goroutines; cleanup is in-line via deterministic `atomic.Uint64` sweep counter. `NewWithCleanup(cfg) (aarv.Middleware, func() error)` starts a periodic janitor and returns a stop function for `app.OnShutdown` wiring.
 
@@ -730,7 +731,7 @@ Notes from latest benchmark pass:
 - [x] `SafeMethods` (default GET, HEAD, OPTIONS via nil); nil-vs-empty contract documented
 - [x] `CacheStatuses` (default 2xx + 3xx via nil); nil-vs-empty contract documented
 - [x] Hash request body and reject reuse of key with different payload (`HashRequestBody: true` → 422 on mismatch, per IETF draft)
-- [ ] **Deferred to a future release**: `plugins/idempotency-redis/go.mod` for distributed setups
+- [x] **Shipped later in §12.6.6**: `plugins/idempotency-redis/go.mod` for distributed setups; tagged through `plugins/idempotency-redis/v0.8.0`
 - [x] Unit tests: first/replay, concurrent same-key (50-goroutine race), `ConflictWait` with `MemoryStore`, `ConflictWait` with non-waitable store falls back to 409, payload mismatch → 422, TTL expiry, safe-method bypass (nil/empty/custom), `CacheStatuses` (nil/empty/custom), absent key, `RequireKey`, over-cap response, native/stdlib parity, custom ErrorHandler, ctx cancellation in `Wait`
 
 ---
@@ -967,12 +968,12 @@ Prerequisite work in the root module to unblock cardinality control on metrics l
 - [x] Do not change `plugins/prometheus` or `plugins/otel` preemptively; build only concrete deltas observed under ALP — process rule, honored throughout the batch
 
 ### 12.6.8 Release and ALP consumption
-- [ ] Run root tests: `go test -race ./...`
-- [ ] Run every new/changed plugin submodule test with `go test -race ./...`
-- [ ] Run `golangci-lint run`
-- [ ] Run `govulncheck` for root and each new Redis submodule
-- [ ] Tag root release and all touched plugin submodules
-- [ ] Verify from outside the repo that `go list -m` resolves the new tags for root and submodules
+- [x] Run root tests: `go test -race ./...`
+- [x] Run every new/changed plugin submodule test with `go test -race ./...`
+- [x] Run `golangci-lint run`
+- [x] Run `govulncheck` for root and each new Redis submodule
+- [x] Tag root release and all touched plugin submodules
+- [x] Verify from outside the repo that `go list -m` resolves the new tags for root and submodules
 - [ ] Add ALP follow-up note: replace internal HMAC, rate-limit, and idempotency implementations with Aarv imports once tags resolve
 - [ ] Add ALP follow-up note: evaluate `BindRoute` + `plugins/openapi` + `plugins/openapi-ui` for management API drift detection after ALP bumps from `v0.7.0`
 
@@ -1017,15 +1018,15 @@ Prerequisite work in the root module to unblock cardinality control on metrics l
 
 The Go multi-module release flow is intentionally staged: submodule `go.mod` files can only be re-pinned to a root tag after that tag exists, otherwise `go mod tidy` cannot resolve it. During development everything runs under `go.work` (gitignored); consumers without `go.work` see the staged state, and a `GOWORK=off` run of a submodule against the v0.8.0 pin will fail to compile against v0.9.0-only APIs — that's the expected pre-Stage-2 state, not a defect.
 
-- [ ] **Stage 1** — Cut the aarv root release as **`v0.9.0`** (minor bump; intentional breaking changes documented in `CHANGELOG.md [0.9.0]`). Run the §12.6.8 release checklist end-to-end (root tests, lint, govulncheck, tag, `go list -m` verification from outside the repo). *Implementation complete; tag push pending Checkpoint B approval.*
-- [ ] **Stage 2** — For each affected submodule (`plugins/prometheus`, `plugins/otel`, `plugins/ratelimit-redis`, `plugins/sanitize`, `plugins/hmacauth-otel`, and any other path-tagged module that consumes root v0.9.0 APIs): `GOWORK=off go get github.com/nilshah80/aarv@v0.9.0`, then `GOWORK=off go mod tidy` inside the submodule directory (never from root), commit the resulting `go.mod`/`go.sum`, then tag the submodule. *Runs only after Stage 1 lands.*
-- [ ] **Stage 2 verification** — After each submodule pin bump, `GOWORK=off go test -race ./...` inside each submodule must be green against the new pin.
+- [x] **Stage 1** — Cut the aarv root release as **`v0.9.0`** (minor bump; intentional breaking changes documented in `CHANGELOG.md [0.9.0]`). Run the §12.6.8 release checklist end-to-end (root tests, lint, govulncheck, tag, `go list -m` verification from outside the repo). Root tags `v0.9.0` and `v0.9.1` exist.
+- [x] **Stage 2** — For each affected submodule (`plugins/prometheus`, `plugins/otel`, `plugins/ratelimit-redis`, `plugins/sanitize`, `plugins/hmacauth-otel`, and any other path-tagged module that consumes root v0.9.0 APIs): `GOWORK=off go get github.com/nilshah80/aarv@v0.9.0`, then `GOWORK=off go mod tidy` inside the submodule directory (never from root), commit the resulting `go.mod`/`go.sum`, then tag the submodule. Submodule tags exist for `plugins/{prometheus,otel,ratelimit-redis,sanitize,openapi}@v0.9.0` and `plugins/hmacauth-otel/v0.1.0`.
+- [x] **Stage 2 verification** — After each submodule pin bump, `GOWORK=off go test -race ./...` inside each submodule must be green against the new pin.
 
 #### StatusRecorder adoption in submodule plugins
 
 - [x] Migrate `plugins/prometheus`'s internal `recordingWriter` to wrap `aarv.StatusRecorder` ([prometheus.go](../plugins/prometheus/prometheus.go), lines ~347-368). Pool now holds `*aarv.StatusRecorder`; helpers use `Reset(w)` per the pool API contract. No public API change; tests adjusted to use `Status()` / `BytesWritten()`.
 - [x] Migrate `plugins/otel`'s internal `recordingWriter` the same way ([otel.go](../plugins/otel/otel.go), lines ~356-376). Same pattern; same test-side adjustment.
-- [ ] Tag updated `plugins/prometheus` and `plugins/otel` submodule releases — included in Stage 2 above.
+- [x] Tag updated `plugins/prometheus` and `plugins/otel` submodule releases — included in Stage 2 above.
 
 #### `plugins/hmacauth-otel` companion submodule
 
@@ -1147,9 +1148,9 @@ The Go multi-module release flow is intentionally staged: submodule `go.mod` fil
 ## Cross-Cutting Tasks
 
 ### Testing
-- [ ] 90%+ code coverage target
-- [ ] Race detector enabled in CI: `go test -race ./...`
-- [ ] Fuzz tests for: JSON binding, validation tag parsing, URL parsing
+- [x] 90%+ code coverage target — met for non-example packages per current assessment (98.7%)
+- [x] Race detector enabled in CI: `go test -race ./...`
+- [ ] Fuzz tests for: JSON binding, validation tag parsing, URL parsing — partial only: `FuzzCanonicalQuery` covers HMAC query canonicalization; these three named targets remain pending
 - [x] Integration test suite: full request lifecycle
 
 ### Performance ✅
